@@ -1,0 +1,246 @@
+"""Lokalizace CS/EN. Překládají se řetězce s českými slovy; symbolové a
+jednotkové popisky (A [mm²], x [mm], σ [MPa]…) zůstávají shodné.
+
+Použití: ``tr("Nosník")`` → "Beam" při EN, jinak "Nosník".
+Anglické termíny dle standardní inženýrské terminologie (EN 1993, Pilkey).
+"""
+from __future__ import annotations
+
+from .settings import SETTINGS
+
+EN = {
+    # skupiny / panely
+    "Nosník": "Beam",
+    "Materiál": "Material",
+    "Průřez": "Cross-section",
+    "Podpory": "Supports",
+    "Klouby": "Hinges",
+    "Zatížení": "Loads",
+    "Součinitele (letecké)": "Factors (aerospace)",
+    # nosník
+    "Délka L:": "Length L:",
+    "Celková délka L:": "Total length L:",
+    "Teorie:": "Theory:",
+    # úseky
+    "Úseky nosníku": "Beam segments",
+    "Každý úsek má délku, materiál a průřez (vč. náběhu).":
+        "Each segment has a length, material and cross-section (incl. taper).",
+    "Délka:": "Length:",
+    "Materiál:": "Material:",
+    "Průřez": "Cross-section",
+    "Smazat úsek": "Delete segment",
+    "Smazat zatížení": "Delete load",
+    "Materiály (knihovna)": "Materials (library)",
+    "Úsek:": "Segment:",
+    "kritický řez": "critical section",
+    # materiál
+    "Volba:": "Selection:",
+    "+ Vlastní": "+ Custom",
+    "Vlastní materiál": "Custom material",
+    " (vlastní)": " (custom)",
+    "Název:": "Name:",
+    "Re (mez kluzu)": "Re (yield strength)",
+    "Rm (pevnost)": "Rm (ultimate strength)",
+    "Smazat tento materiál": "Delete this material",
+    # typy průřezů
+    "Obdélník": "Rectangle",
+    "Dutý obdélník (RHS)": "Rectangular hollow section (RHS)",
+    "Kruh": "Circle",
+    "Trubka (CHS)": "Tube (CHS)",
+    "I-profil": "I-section",
+    "T-profil": "T-section",
+    "L-profil": "Angle (L)",
+    "U/C-profil": "Channel (U/C)",
+    "Vlastní (polygon)": "Custom (polygon)",
+    # rozměry průřezu
+    "šířka b": "width b",
+    "výška h": "height h",
+    "šířka B": "width B",
+    "tl. stěny tw": "wall thickness tw",
+    "průměr D": "diameter D",
+    "vnější ⌀ Do": "outer dia. Do",
+    "tloušťka t": "thickness t",
+    "stojina tw": "web tw",
+    "horní pásnice bf1": "top flange bf1",
+    "tl. tf1": "thk. tf1",
+    "dolní pásnice bf2": "bottom flange bf2",
+    "tl. tf2": "thk. tf2",
+    "pásnice b": "flange b",
+    "pásnice tf": "flange tf",
+    # průřez – ovládání
+    "Proměnný průřez podél nosníku (úseky / náběh)":
+        "Variable cross-section along beam (segments / taper)",
+    "✎  Editovat v okně…": "✎  Edit in window…",
+    "Úseky nosníku (mm). Náběh = plynulá změna průřezu mezi A a B (stejný typ).":
+        "Beam segments (mm). Taper = smooth change between A and B (same type).",
+    "+ Přidat úsek": "+ Add segment",
+    "Úsek": "Segment",
+    "Náběh (tapered) → průřez B": "Taper → cross-section B",
+    "Průřez A": "Cross-section A",
+    "Průřez B": "Cross-section B",
+    # podpory
+    "x [mm]": "x [mm]",
+    "typ": "type",
+    "úhel [°]": "angle [°]",
+    "kloub": "pin",
+    "rolna": "roller",
+    "vetknutí": "fixed",
+    "+ Přidat podporu": "+ Add support",
+    "+ Přidat kloub": "+ Add hinge",
+    # zatížení
+    "+ Síla": "+ Force",
+    "+ Spojité": "+ Distributed",
+    "+ Moment": "+ Moment",
+    "+ Krut": "+ Torque",
+    "Bodová síla": "Point force",
+    "Spojité": "Distributed load",
+    "Ohyb. moment": "Bending moment",
+    "Krut": "Torque",
+    "popisek zatížení": "load label",
+    "Fz (+nahoru):": "Fz (+up):",
+    "excentricita:": "eccentricity:",
+    # součinitel
+    "Součinitel": "Factor",
+    "Dodatečný součinitel:": "Additional factor:",
+    "Zatížení se zadává jako početní (ultimate) síla.":
+        "Loads are entered as design (ultimate) force.",
+    "Využít součinitel plasticity (RF_ultimate)":
+        "Use plastic shape factor (RF_ultimate)",
+    "Metoda α_pl:": "α_pl method:",
+    "analyticky (W_pl/W_el)": "analytic (W_pl/W_el)",
+    "tabulkově (známé profily)": "tabular (known profiles)",
+    # výsledky
+    "Veličina": "Quantity",
+    "Hodnota": "Value",
+    "— Průřez —": "— Cross-section —",
+    "— Průřez (uprostřed) —": "— Cross-section (midspan) —",
+    "metoda IT/Iω": "IT/Iω method",
+    "FEM (přesné)": "FEM (exact)",
+    "scanline": "scanline",
+    "střed smyku z_SC [mm]": "shear centre z_SC [mm]",
+    "κ (Timoshenko)": "κ (Timoshenko)",
+    "— VVÚ (extrémy) —": "— Internal forces (extremes) —",
+    "— Posouzení —": "— Assessment —",
+    "Reakce": "Reaction",
+    "Průřez (kritický x=": "Cross-section (critical x=",
+    "Průřez (uprostřed)": "Cross-section (midspan)",
+    "neplatný průřez": "invalid cross-section",
+    "— VVÚ / posouzení —": "— Internal forces / assessment —",
+    "stiskněte Spočítat": "press Calculate",
+    # hlavní okno
+    "BEAMER – statická analýza nosníku": "BEAMER – beam static analysis",
+    "▶  Spočítat  (F5)": "▶  Calculate  (F5)",
+    "● změněno – stiskněte Spočítat": "● changed – press Calculate",
+    "Počítám…": "Calculating…",
+    "Přepočítáno.": "Recalculated.",
+    "&Soubor": "&File",
+    "Nový": "New",
+    "Otevřít…": "Open…",
+    "Uložit jako…": "Save as…",
+    "Export protokolu (TXT)…": "Export report (TXT)…",
+    "Export VVÚ (PNG)…": "Export diagrams (PNG)…",
+    "Konec": "Quit",
+    "Demo nosník": "Demo beam",
+    "Nastavení…": "Settings…",
+    "O programu": "About",
+    "Statická analýza přímého nosníku a posouzení napjatosti po průřezu. "
+    "Letecké konstrukční výpočty (VVÚ, průhyb, RF).":
+        "Static analysis of a straight beam and cross-section stress assessment. "
+        "Aerospace structural calculations (internal forces, deflection, RF).",
+    "Otevřít projekt": "Open project",
+    "Uložit projekt": "Save project",
+    "Export protokolu": "Export report",
+    "Export VVÚ": "Export diagrams",
+    "Chyba": "Error",
+    "VVÚ v jednom grafu": "Diagrams in one chart",
+    "Průřez a napjatost": "Cross-section & stress",
+    "Posouzení (RF)": "Assessment (RF)",
+    "Počítám…": "Calculating…",
+    "Nelze načíst: ": "Cannot load: ",
+    "Importovat Ministatik (*.nos)…": "Import Ministatik (*.nos)…",
+    "Importováno z Ministatik: ": "Imported from Ministatik: ",
+    "Nelze uložit: ": "Cannot save: ",
+    "Nelze exportovat: ": "Cannot export: ",
+    "Uloženo: ": "Saved: ",
+    "Protokol uložen: ": "Report saved: ",
+    "Obrázek uložen: ": "Image saved: ",
+    # plots
+    "Schéma nosníku": "Beam scheme",
+    "N – osová síla [N]": "N – axial force [N]",
+    "V – posouvající síla [N]": "V – shear force [N]",
+    "M – ohybový moment [N·mm]": "M – bending moment [N·mm]",
+    "Mk – kroutící moment [N·mm]": "Mk – torsional moment [N·mm]",
+    "w – průhyb [mm]": "w – deflection [mm]",
+    "φ – pootočení [rad]": "φ – rotation [rad]",
+    "Bez výsledku": "No result",
+    "Náhled zadání – stiskněte Spočítat pro VVÚ":
+        "Input preview – press Calculate for diagrams",
+    "Neplatný průřez": "Invalid cross-section",
+    "střed smyku": "shear centre",
+    "Bez průřezu": "No cross-section",
+    "z [mm od těžiště]": "z [mm from centroid]",
+    "Napjatost": "Stress",
+    "Bez dat": "No data",
+    "Rezervní faktor podél nosníku": "Reserve factor along beam",
+    "  (osa oříznuta)": "  (axis clipped)",
+    "RF (ořez 10)": "RF (clipped 10)",
+    "Vnitřní účinky": "Internal forces",
+    "Síly [N]": "Forces [N]",
+    "Momenty [N·mm]": "Moments [N·mm]",
+    "Průhyb w [mm]": "Deflection w [mm]",
+    "Pootočení φ [rad]": "Rotation φ [rad]",
+    # dialog průřezu
+    "Editor průřezu": "Cross-section editor",
+    "Typ a rozměry": "Type and dimensions",
+    "Neplatný průřez:": "Invalid cross-section:",
+    "Spočítat (FEM)": "Compute (FEM)",
+    "FEM přepočteno (přesné IT, Iω, střed smyku).":
+        "FEM recomputed (exact IT, Iω, shear centre).",
+    "Předběžné (scanline). Stiskněte Spočítat (FEM) pro přesné hodnoty.":
+        "Preliminary (scanline). Press Compute (FEM) for exact values.",
+    # poly editor
+    "Snap na mřížku 5 mm": "Snap to 5 mm grid",
+    "Vymazat vše": "Clear all",
+    "+ Přidat bod": "+ Add point",
+    "L-klik: přidat/táhnout bod · P-klik: smazat bod":
+        "L-click: add/drag point · R-click: delete point",
+    # nastavení
+    "Nastavení": "Settings",
+    "Jazyk / Language": "Jazyk / Language",
+    "Čeština": "Čeština",
+    "English": "English",
+    "Formát čísel": "Number format",
+    "Fixed (pevný)": "Fixed",
+    "Scientific (vědecký)": "Scientific",
+    "Desetinná místa:": "Decimal places:",
+    "Zavřít": "Close",
+    "Změna jazyka se projeví v celém rozhraní.":
+        "Language change applies across the whole interface.",
+    # knihovna / profily / materiály
+    "💾 Do knihovny": "💾 To library",
+    "📂 Z knihovny": "📂 From library",
+    "💾 Uložit profil": "💾 Save profile",
+    "⤓ Import": "⤓ Import",
+    "⤒ Export": "⤒ Export",
+    "Knihovna": "Library",
+    "Materiál uložen do knihovny: ": "Material saved to library: ",
+    "(knihovna je prázdná)": "(library is empty)",
+    "Uložit profil": "Save profile",
+    "Název profilu:": "Profile name:",
+    "Profil uložen: ": "Profile saved: ",
+    "Import profilu": "Import profile",
+    "Export profilu": "Export profile",
+    "Nelze importovat: ": "Cannot import: ",
+    # záložka výsledky + zobrazení
+    "Výsledky": "Results",
+    "Schéma (zadání + reakce)": "Scheme (input + reactions)",
+    "Zobrazit průhyb a pootočení": "Show deflection and rotation",
+    "deformovaný tvar": "deformed shape",
+    "Všechny veličiny jsou nulové": "All quantities are zero",
+}
+
+
+def tr(s: str) -> str:
+    if SETTINGS.language == "en":
+        return EN.get(s, s)
+    return s

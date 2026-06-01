@@ -1,0 +1,104 @@
+"""Textový protokol výpočtu."""
+from __future__ import annotations
+
+import datetime
+
+from .settings import fmt
+
+
+def build_report(state, result, margins) -> str:
+    L = []
+    L.append("=" * 60)
+    L.append("  BEAMER – PROTOKOL STATICKÉ ANALÝZY NOSNÍKU")
+    L.append("  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    L.append("=" * 60)
+    L.append("")
+
+    L.append("NOSNÍK")
+    L.append(f"  Délka L = {state.length} mm")
+    L.append(f"  Teorie  = {state.theory}")
+    L.append(f"  Dodatečný součinitel = {state.additional_factor}  (zatížení = početní/ultimate)")
+    L.append("  Podpory:")
+    for s in state.supports:
+        L.append(f"    x={s.x:.0f} mm  {s.type}  úhel={s.angle}°")
+    if state.hinges:
+        L.append("  Klouby: " + ", ".join(f"x={h.x:.0f}" for h in state.hinges))
+    L.append("  Zatížení:")
+    for ld in state.loads:
+        L.append(f"    {ld.type}: " + _load_desc(ld))
+    L.append("")
+
+    # ── úseky: materiál, průřez, kritický RF ──
+    from .sections_along import normalized_segments
+    from .section import build_section
+    from .analysis import critical_per_part
+    segs = normalized_segments(state)
+    parts_crit = critical_per_part(state, margins) if margins else [None]*len(segs)
+    L.append("ÚSEKY NOSNÍKU")
+    for i, seg in enumerate(segs):
+        mid = getattr(seg, "material_id", None)
+        mat = next((m for m in state.materials if m.id == mid), None) or state.material()
+        L.append(f"  ── Úsek {i+1}:  x = {seg.x1:.0f} … {seg.x2:.0f} mm  "
+                 f"(délka {seg.length:.0f} mm)")
+        L.append(f"     Materiál: {mat.name}  E={fmt(mat.E)} MPa  G={fmt(mat.G)} MPa  "
+                 f"Re={fmt(mat.Re)} MPa  Rm={fmt(mat.Rm)} MPa")
+        tap = "" if not seg.tapered else f" → {seg.sec2.type}"
+        L.append(f"     Průřez: {seg.sec1.type}{tap}")
+        try:
+            sc = build_section(seg.sec1)
+            L.append(f"     A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
+                     f"IT={fmt(sc.IT)} mm⁴  Iω={fmt(sc.Iw)} mm⁶")
+            L.append(f"     Wb,y={fmt(getattr(sc,'Wb_y',0))} Wb,z={fmt(getattr(sc,'Wb_z',0))} "
+                     f"Wt={fmt(getattr(sc,'Wb_t',0))}   α_pl={fmt(getattr(sc,'alpha_pl',1.0))}")
+        except Exception:
+            pass
+        cp = parts_crit[i] if i < len(parts_crit) else None
+        if cp and cp.get("crit"):
+            c = cp["crit"]
+            L.append(f"     Kritický řez x={c.x:.0f}: σ_red={fmt(c.mises_max)} MPa  "
+                     f"RF_yield={fmt(c.RF_yield)}  RF_ult={fmt(c.RF_ultimate)}  "
+                     f"RF_min={fmt(c.RF)} ({c.critical})")
+        L.append("")
+
+    if result and result.is_stable and result.points:
+        N = [p.N for p in result.points]
+        V = [p.V for p in result.points]
+        M = [p.M for p in result.points]
+        Mk = [p.Mk for p in result.points]
+        w = [p.w for p in result.points]
+        L.append("VNITŘNÍ ÚČINKY (extrémy)")
+        L.append(f"  N : {fmt(min(N))} … {fmt(max(N))} N")
+        L.append(f"  V : {fmt(min(V))} … {fmt(max(V))} N")
+        L.append(f"  M : {fmt(min(M))} … {fmt(max(M))} N·mm")
+        L.append(f"  Mk: {fmt(min(Mk))} … {fmt(max(Mk))} N·mm")
+        L.append(f"  w : {fmt(min(w))} … {fmt(max(w))} mm")
+        L.append("")
+        L.append("REAKCE")
+        for rc in result.reactions:
+            L.append(f"  x={rc.x:.0f}: Rx={fmt(rc.Rx)} N  Rz={fmt(rc.Rz)} N  "
+                     f"My={fmt(rc.Ry)} N·mm  Mk={fmt(rc.Rx_torsion)} N·mm")
+        L.append("")
+
+    if margins:
+        crit = min(margins, key=lambda mm: mm.RF)
+        L.append("POSOUZENÍ (RF = reserve factor, ≥ 1 vyhovuje)")
+        if getattr(state, "plasticity_enabled", False):
+            L.append(f"  Plasticita: ZAP ({state.plasticity_method}) – RF_ultimate = α_pl·Rm/σ")
+        L.append(f"  σ_red,max (celý nosník) = {fmt(max(mm.mises_max for mm in margins))} MPa")
+        L.append(f"  RF_min (celý nosník) = {fmt(crit.RF)} ({crit.critical}) v x={crit.x:.0f} mm")
+        L.append("")
+
+    L.append("=" * 60)
+    return "\n".join(L)
+
+
+def _load_desc(ld):
+    if ld.type == "point_force":
+        return f"x={ld.x:.0f} Fx={ld.Fx} N Fz={ld.Fz} N ecc={ld.eccentricity} mm"
+    if ld.type == "distributed":
+        return f"x1={ld.x1:.0f} x2={ld.x2:.0f} q1={ld.q1} q2={ld.q2} N/mm"
+    if ld.type == "moment":
+        return f"x={ld.x:.0f} My={ld.My} N·mm"
+    if ld.type == "torsion":
+        return f"x={ld.x:.0f} Mx={ld.Mx} N·mm"
+    return ""
