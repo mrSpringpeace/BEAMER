@@ -1,4 +1,7 @@
-# BEAMER
+<h1>
+  <img src="assets/beamer_icon.png" alt="" width="44" valign="middle">
+  BEAMER
+</h1>
 
 **Desktop application for static analysis of a straight beam and stress
 evaluation across the cross-section.** Built for structural / strength
@@ -9,6 +12,8 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
 > requests are not accepted at this time.
+
+![BEAMER application screenshot](assets/screenshot.png)
 
 ---
 
