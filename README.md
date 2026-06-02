@@ -15,6 +15,14 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 
 ![BEAMER application screenshot](assets/screenshot.png)
 
+> ### ⚠️ Disclaimer
+>
+> BEAMER is an **engineering aid and learning tool**, not a certified design
+> tool. It is provided **as is**, without any warranty (see [LICENSE](LICENSE)).
+> Results may contain errors. **Always verify any result with an independent
+> method** before using it in design, analysis or certification. The author
+> accepts no responsibility for decisions made on the basis of its output.
+
 ---
 
 ## Features
@@ -87,6 +95,35 @@ properties combine an exact Green's-theorem evaluation of *A*, *Iy*, *Iz*,
 shear areas. Stress is assembled from the internal-force contributions
 (σ = N/A + M·z/Iy, τ = V·Q/(Iy·b) + Mk·t/IT, …) and reduced by the von Mises
 criterion; the reserve factor is RF = min(Re, Rm)/σ_red.
+
+---
+
+## Validation
+
+Section properties are checked against closed-form analytical values. Area and
+moments of inertia (*A*, *Iy*, *Iz*, *Iyz*) come from exact Green's-theorem
+integration and match analytical results to machine precision; torsion,
+warping and shear-center quantities come from the FEM solver and show the small
+mesh-dependent deviations expected of a discretized solution.
+
+| Case | Quantity | Analytical | BEAMER |
+|------|----------|-----------:|-------:|
+| Rectangle 100 × 60 mm | *A* | 6 000 mm² | 6 000 |
+| | *Iy* = b·h³/12 | 1 800 000 mm⁴ | 1 800 000 |
+| | *Iz* = h·b³/12 | 5 000 000 mm⁴ | 5 000 000 |
+| Square 100 × 100 mm, centered 40 × 40 hole | *A* | 8 400 mm² | 8 400 |
+| | *Iy* = *Iz* = (100⁴ − 40⁴)/12 | 8 120 000 mm⁴ | 8 120 000 |
+| Composite: two 100 × 20 flanges at z = ±90 mm | *A* | 4 000 mm² | 4 000 |
+| | *Iy* = 2·(b·t³/12 + A·d²) | 32 533 333 mm⁴ | 32 533 333 |
+| | centroid / shear center | (0, 0) | (0, 0) |
+
+The FEM Saint-Venant core (torsion constant *J/IT*, warping constant *Iω*,
+shear center, shear areas) follows the formulation in
+W. D. Pilkey, *Analysis and Design of Elastic Beams* (Wiley, 2002), and was
+cross-checked against reference section-property tools.
+
+This is a starting set, not exhaustive coverage. If you find a case where the
+output disagrees with a trusted reference, please open an issue.
 
 ---
 
