@@ -84,6 +84,9 @@ python main.py
 On Windows you can also use `BEAMER.bat`, which launches the app without a
 console window.
 
+To package BEAMER into a single standalone `.exe`, see
+[BUILD_EXECUTABLE.md](BUILD_EXECUTABLE.md).
+
 ---
 
 ## How it works (short)

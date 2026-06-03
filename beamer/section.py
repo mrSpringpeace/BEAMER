@@ -1139,7 +1139,22 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
     if t == "rectangle":
         pts, walls, sl, IT = make_rect(gv("b", 100), gv("h", 200))
     elif t == "box":
-        pts, walls, sl, IT = make_box(gv("H", 200), gv("B", 100), gv("tw", 6))
+        # Dutý obdélník (RHS) = jedno těleso s pravoúhlou dírou. Dřívější zápis
+        # jako jeden polygon (vnější+vnitřní body za sebou) vedl k rozpojenému
+        # obrysu; korektně je to outer + hole. IT dle Bredt-Batho (uzavřený).
+        H = gv("H", 200); B = gv("B", 100); tw = gv("tw", 6)
+        outer = [(-B/2, -H/2), (B/2, -H/2), (B/2, H/2), (-B/2, H/2)]
+        bi, hi = B - 2*tw, H - 2*tw
+        holes = []
+        if bi > 0 and hi > 0:
+            holes = [[(-bi/2, -hi/2), (bi/2, -hi/2), (bi/2, hi/2), (-bi/2, hi/2)]]
+            Am = (H - tw) * (B - tw)
+            IT = 4 * Am**2 / (2*(H - tw)/tw + 2*(B - tw)/tw)
+        else:
+            IT = None   # degenerovaný (tw ≥ rozměr) → ponech výpočet na jádře
+        cs = CrossSection(bodies=[(outer, holes)], IT_override=IT)
+        cs.section_type = "box"
+        return cs
     elif t == "circle":
         pts, walls, sl, IT = make_circle(gv("D", 100))
     elif t == "tube":
@@ -1211,6 +1226,14 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
 
     cs = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls, IT_override=IT)
     cs.section_type = t
+    # poloměry pro čisté vykreslení obrysu kruhu / trubky v náhledu
+    if t == "circle":
+        cs._circle_r_out = gv("D", 100) / 2.0
+        cs._circle_r_in = 0.0
+    elif t == "tube":
+        ro = gv("Do", 100) / 2.0
+        cs._circle_r_out = ro
+        cs._circle_r_in = max(0.0, ro - gv("t", 5))
     return cs
 
 

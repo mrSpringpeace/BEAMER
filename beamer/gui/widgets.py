@@ -832,6 +832,166 @@ class ResultsPanel(QWidget):
         self._analysis_rows = rows
         self._render()
 
+
+class ReportPanel(QWidget):
+    """Karta Report: hodnoty (VVÚ, napětí, RF) v libovolně zvoleném řezu x.
+
+    Souřadnici lze zadat ručně, nebo skočit tlačítky na charakteristické řezy
+    (max |V|, max |M|, max |Mk|, nejkritičtější řez). Data se naplní přes
+    `set_context(result, state, reserves)` po výpočtu.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._result = None
+        self._state = None
+        self._reserves = None
+
+        v = QVBoxLayout(self)
+
+        # ── volba souřadnice ──
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("Souřadnice x [mm]:")))
+        self.x_spin = QDoubleSpinBox()
+        self.x_spin.setDecimals(1)
+        self.x_spin.setRange(0.0, 1e9)
+        self.x_spin.setSingleStep(10.0)
+        self.x_spin.setKeyboardTracking(False)
+        row.addWidget(self.x_spin, 1)
+        self.btn_show = QPushButton(tr("Zobrazit"))
+        self.btn_show.clicked.connect(self._on_show)
+        row.addWidget(self.btn_show)
+        v.addLayout(row)
+
+        # ── tlačítka na charakteristické řezy ──
+        grid = QHBoxLayout()
+        self.btn_v = QPushButton(tr("Max |V|"))
+        self.btn_m = QPushButton(tr("Max |M|"))
+        self.btn_mk = QPushButton(tr("Max |Mk|"))
+        self.btn_crit = QPushButton(tr("Kritický (min RF)"))
+        self.btn_v.clicked.connect(lambda: self._jump_extremum("V"))
+        self.btn_m.clicked.connect(lambda: self._jump_extremum("M"))
+        self.btn_mk.clicked.connect(lambda: self._jump_extremum("Mk"))
+        self.btn_crit.clicked.connect(self._jump_critical)
+        for b in (self.btn_v, self.btn_m, self.btn_mk, self.btn_crit):
+            grid.addWidget(b)
+        v.addLayout(grid)
+
+        # ── výstupní tabulka ──
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels([tr("Veličina"), tr("Hodnota")])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        v.addWidget(self.table, 1)
+
+        self._set_enabled(False)
+        self._info(tr("Spusťte výpočet (Spočítat) a zvolte řez."))
+
+    # ── veřejné API ──
+    def set_context(self, result, state, reserves):
+        self._result = result
+        self._state = state
+        self._reserves = reserves
+        ok = bool(result and getattr(result, "is_stable", False) and result.points)
+        self._set_enabled(ok)
+        if not ok:
+            self._info(tr("Výsledek není k dispozici (nosník nestabilní?)."))
+            return
+        # rozsah x dle délky nosníku, klampni aktuální hodnotu
+        L = float(getattr(state, "length", 0.0) or result.points[-1].x)
+        self.x_spin.setMaximum(L)
+        if self.x_spin.value() > L:
+            self.x_spin.setValue(L)
+        self._show_at(self.x_spin.value())
+
+    # ── interní ──
+    def _set_enabled(self, on):
+        for wdg in (self.x_spin, self.btn_show, self.btn_v, self.btn_m,
+                    self.btn_mk, self.btn_crit):
+            wdg.setEnabled(on)
+
+    def _info(self, msg):
+        self.table.setRowCount(0)
+        self.table.insertRow(0)
+        self.table.setItem(0, 0, QTableWidgetItem(msg))
+        self.table.setItem(0, 1, QTableWidgetItem(""))
+
+    def _on_show(self):
+        self._show_at(self.x_spin.value())
+
+    def _jump_extremum(self, attr):
+        from ..analysis import extremum_x
+        x = extremum_x(self._result, attr)
+        if x is None:
+            return
+        self._set_x(x)
+
+    def _jump_critical(self):
+        from ..analysis import critical_x
+        x = critical_x(self._reserves)
+        if x is None:
+            return
+        self._set_x(x)
+
+    def _set_x(self, x):
+        self.x_spin.blockSignals(True)
+        self.x_spin.setValue(float(x))
+        self.x_spin.blockSignals(False)
+        self._show_at(float(x))
+
+    def _show_at(self, x):
+        from ..analysis import values_at_x
+        import math
+        d = values_at_x(self._result, self._state, x)
+        if d is None:
+            self._info(tr("Výsledek není k dispozici."))
+            return
+        sec = d["section"]
+        mat = d["material"]
+        deg = 180.0 / math.pi
+        rows = [
+            (f"— {tr('Řez')} x = {fmt(d['x'])} mm —", ""),
+            (tr("— Vnitřní účinky —"), ""),
+            ("N [N]", fmt(d["N"])),
+            ("V [N]", fmt(d["V"])),
+            ("M [N·mm]", fmt(d["M"])),
+            ("Mk [N·mm]", fmt(d["Mk"])),
+            ("w (průhyb) [mm]", fmt(d["w"])),
+            ("φ (ohyb. pootočení) [°]", fmt(d["phi"] * deg)),
+            ("θ (torzní pootočení) [°]", fmt(d["theta"] * deg)),
+        ]
+        if sec is not None and getattr(sec, "valid", False):
+            rows += [
+                (tr("— Průřez v řezu —"), ""),
+                (tr("typ"), str(getattr(sec, "section_type", "?"))),
+                ("A [mm²]", fmt(sec.A)),
+                ("Iy [mm⁴]", fmt(sec.Iy)),
+                ("IT [mm⁴]", fmt(sec.IT)),
+            ]
+        rows += [
+            (tr("— Napětí —"), ""),
+            ("σ max [MPa]", fmt(d["sigma_max"])),
+            ("τ max [MPa]", fmt(d["tau_max"])),
+            ("σ_red (von Mises) [MPa]", fmt(d["mises_max"])),
+        ]
+        if mat is not None:
+            rows += [
+                (tr("— Materiál / posouzení —"), ""),
+                (tr("materiál"), getattr(mat, "name", "?")),
+                ("Re / Rm [MPa]", f"{fmt(getattr(mat,'Re',0))} / {fmt(getattr(mat,'Rm',0))}"),
+            ]
+        rows += [
+            ("RF_yield", fmt(d["RF_yield"])),
+            ("RF_ultimate", fmt(d["RF_ultimate"])),
+            ("RF (min)", f"{fmt(d['RF'])}  ({d['critical']})"),
+        ]
+        self.table.setRowCount(0)
+        for name, val in rows:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(name))
+            self.table.setItem(r, 1, QTableWidgetItem(val))
+
     def clear_analysis(self):
         self._analysis_rows = [(tr("— VVÚ / posouzení —"), tr("stiskněte Spočítat"))]
         self._render()

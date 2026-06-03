@@ -9,7 +9,7 @@ matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
-from matplotlib.patches import PathPatch
+from matplotlib.patches import PathPatch, Circle, Annulus
 
 from ..analysis import stress_profile, forces_from_beam
 from ..i18n import tr
@@ -410,13 +410,24 @@ class SectionCanvas(MplCanvas):
             all_ys = [p[0] for p in pc]
             all_zs = [p[1] for p in pc]
         elif section._sl_circ:
-            for zb, zt, yl, yr in section._sl_circ:
-                ys = [yl*1e3-section.cx, yr*1e3-section.cx,
-                      yr*1e3-section.cx, yl*1e3-section.cx]
-                zs = [zb*1e3-section.cz, zb*1e3-section.cz,
-                      zt*1e3-section.cz, zt*1e3-section.cz]
-                ax.fill(ys, zs, color="#b4cdeb", ec="none")
-                all_ys.extend(ys); all_zs.extend(zs)
+            # kruh / trubka: vykresli plný kruh nebo mezikruží jako patch
+            # s plochou i obrysovou čárou (střed = těžiště, tj. počátek)
+            r_out = getattr(section, "_circle_r_out", None)
+            r_in = getattr(section, "_circle_r_in", 0.0) or 0.0
+            if r_out is None:
+                # fallback: odvoď vnější poloměr z vrstev
+                r_out = max(max(abs(yl), abs(yr))
+                            for _, _, yl, yr in section._sl_circ) * 1e3
+            if r_in > 1e-9:
+                patch = Annulus((0.0, 0.0), r_out, width=r_out - r_in,
+                                facecolor="#b4cdeb", edgecolor="#30568f",
+                                lw=1.4, alpha=0.9)
+            else:
+                patch = Circle((0.0, 0.0), r_out,
+                               facecolor="#b4cdeb", edgecolor="#30568f",
+                               lw=1.4, alpha=0.9)
+            ax.add_patch(patch)
+            all_ys.extend([-r_out, r_out]); all_zs.extend([-r_out, r_out])
 
         # limity tak, aby celý kompozit byl vidět včetně rezervy
         if all_ys and all_zs:

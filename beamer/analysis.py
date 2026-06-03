@@ -208,6 +208,76 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     return out
 
 
+def values_at_x(result, state, x):
+    """Kompletní hodnoty v libovolném řezu x: VVÚ (lineárně interpolované),
+    průřez a materiál v řezu, napětí (σ/τ/σ_red) a rezervní faktory.
+    Vrací dict, nebo None pokud výsledek není stabilní."""
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return None
+    pts = result.points
+    xs = [p.x for p in pts]
+    x = max(xs[0], min(xs[-1], float(x)))      # clamp do rozsahu nosníku
+
+    def interp(attr):
+        return float(np.interp(x, xs, [getattr(p, attr) for p in pts]))
+
+    N = interp("N"); V = interp("V"); M = interp("M"); Mk = interp("Mk")
+    w = interp("w"); phi = interp("phi"); theta = interp("theta")
+
+    resolver = getattr(result, "resolver", None)
+    if resolver is not None:
+        section = resolver.at(x)
+        mat = resolver.material_at(x)
+    else:
+        section = result.section
+        mat = state.material()
+
+    sg = tu = mz = 0.0
+    if section is not None and getattr(section, "valid", False):
+        infl = build_influence(section, n=80)
+        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk)
+
+    # součinitel plasticity (jen do RF_ultimate, dle nastavení)
+    from .section import ALPHA_PL_TABLE
+    alpha = 1.0
+    if getattr(state, "plasticity_enabled", False) and section is not None:
+        if getattr(state, "plasticity_method", "analytic") == "tabular":
+            alpha = ALPHA_PL_TABLE.get(getattr(section, "section_type", None),
+                                       getattr(section, "alpha_pl", 1.0))
+        else:
+            alpha = getattr(section, "alpha_pl", 1.0)
+
+    Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
+    RF_y = (Re / mz) if mz > 1e-9 else float("inf")
+    RF_u = (alpha * Rm / mz) if mz > 1e-9 else float("inf")
+    RF = min(RF_y, RF_u)
+    crit = "yield" if RF_y <= RF_u else "ultimate"
+
+    return {
+        "x": x, "N": N, "V": V, "M": M, "Mk": Mk,
+        "w": w, "phi": phi, "theta": theta,
+        "section": section, "material": mat,
+        "sigma_max": sg, "tau_max": tu, "mises_max": mz,
+        "RF_yield": RF_y, "RF_ultimate": RF_u, "RF": RF,
+        "critical": crit, "alpha_pl": alpha,
+    }
+
+
+def extremum_x(result, attr):
+    """x [mm], kde |attr| (např. 'V', 'M', 'Mk') nabývá maxima. None pokud nelze."""
+    if result is None or not result.points:
+        return None
+    p = max(result.points, key=lambda pt: abs(getattr(pt, attr)))
+    return p.x
+
+
+def critical_x(reserves):
+    """x [mm] nejkritičtějšího řezu (nejnižší RF). None pokud nejsou rezervy."""
+    if not reserves:
+        return None
+    return min(reserves, key=lambda r: r.RF).x
+
+
 def critical_per_part(state, reserves):
     """Pro každý úsek (section_segment) vrátí kritickou stanici (nejnižší RF).
     Vrací list dictů: {idx, x1, x2, material, section_type, crit (ReserveResult|None)}."""

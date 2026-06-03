@@ -2,6 +2,34 @@
 
 Version format: **X.XX**
 
+## 1.10
+
+### Cross-sections
+- Fixed the hollow rectangle (RHS / box): it is now represented as one body with
+  a rectangular hole (continuous outline, hole actually cut out). Area and
+  moments of inertia from Green's theorem; torsion constant *IT* from
+  Bredt–Batho (closed thin-walled).
+- Circle and tube previews now draw a proper outline (filled `Circle` /
+  `Annulus` with edge), instead of edgeless slice shading.
+
+### New: Report tab
+- A new **Report** tab shows values at any chosen section *x*: internal forces
+  (N, V, M, Mk, deflection, rotations), the cross-section at *x* (type, A, Iy,
+  IT), stresses (σ, τ, von Mises) and reserve factors. The coordinate can be
+  typed in, or jumped to characteristic sections via buttons: max |V|, max |M|,
+  max |Mk| and the most critical section (min RF).
+
+### Export
+- Export of result curves to **CSV** (File → Export curves (CSV)…): N, V, M, Mk,
+  deflection and rotation curves plus the reactions table, in one file.
+  Engineering format (comma separator, decimal point). Resolution is optional —
+  the default is the full solver resolution; a lower count is resampled by
+  linear interpolation.
+
+### Docs
+- Added [BUILD_EXECUTABLE.md](BUILD_EXECUTABLE.md) — how to package a standalone
+  `.exe` with PyInstaller.
+
 ## 1.09
 
 First public release.

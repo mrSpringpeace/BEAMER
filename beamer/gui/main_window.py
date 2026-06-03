@@ -14,7 +14,7 @@ from ..defaults import create_default_state, create_empty_state
 from .. import project_io
 from ..i18n import tr
 from ..settings import SETTINGS
-from .widgets import InputPanel, ResultsPanel
+from .widgets import InputPanel, ResultsPanel, ReportPanel
 from .plots import BeamDiagramCanvas, SchemaCanvas, SectionCanvas, StressCanvas, MarginCanvas
 from .worker import ComputeWorker
 
@@ -134,12 +134,16 @@ class MainWindow(QMainWindow):
         self.results_text.setStyleSheet("font-family:'Consolas',monospace; font-size:11px;")
         self.tabs.addTab(self.results_text, tr("Výsledky"))
 
-        # tab posouzení – poslední
+        # tab posouzení
         margin_tab = QWidget()
         mv = QVBoxLayout(margin_tab)
         self.margin_canvas = MarginCanvas()
         mv.addWidget(self.margin_canvas)
         self.tabs.addTab(margin_tab, tr("Posouzení (RF)"))
+
+        # tab report – hodnoty ve zvoleném řezu x
+        self.report_panel = ReportPanel()
+        self.tabs.addTab(self.report_panel, tr("Report"))
 
         splitter.addWidget(self.tabs)
         splitter.setSizes([400, 600, 500])
@@ -163,6 +167,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._a_exp = QAction(self); self._a_exp.triggered.connect(self.export_report); m.addAction(self._a_exp)
         self._a_png = QAction(self); self._a_png.triggered.connect(self.export_png); m.addAction(self._a_png)
+        self._a_csv = QAction(self); self._a_csv.triggered.connect(self.export_csv); m.addAction(self._a_csv)
         m.addSeparator()
         self._a_quit = QAction(self); self._a_quit.triggered.connect(self.close); m.addAction(self._a_quit)
 
@@ -179,6 +184,7 @@ class MainWindow(QMainWindow):
         self._a_nos.setText(tr("Importovat Ministatik (*.nos)…"))
         self._a_exp.setText(tr("Export protokolu (TXT)…"))
         self._a_png.setText(tr("Export VVÚ (PNG)…"))
+        self._a_csv.setText(tr("Export křivek (CSV)…"))
         self._a_quit.setText(tr("Konec"))
         self._a_demo.setText(tr("Demo nosník"))
         self._a_set.setText(tr("Nastavení…"))
@@ -274,6 +280,7 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(0, tr("Průřez a napjatost"))
         self.tabs.setTabText(1, tr("Výsledky"))
         self.tabs.setTabText(2, tr("Posouzení (RF)"))
+        self.tabs.setTabText(3, tr("Report"))
         self.input_panel.reload_from_state()
         self._sec_sig = None
         self._live_update_section()
@@ -284,7 +291,7 @@ class MainWindow(QMainWindow):
         """Vstup se změnil – real-time překreslí schéma a (debounced) náhled
         průřezu + charakteristiky; VVÚ a MS se počítají až tlačítkem."""
         self._dirty = True
-        self.dirty_lbl.setText("● změněno – stiskněte Spočítat")
+        self.dirty_lbl.setText("● " + tr("změněno – stiskněte Spočítat"))
         self.results_panel.clear_analysis()
         try:
             self.schema_canvas.plot(self.state)   # živý náhled zadání (bez reakcí)
@@ -360,6 +367,7 @@ class MainWindow(QMainWindow):
         self._render_selected_part()
         self.margin_canvas.plot(self.reserves)
         self.results_panel.set_analysis(self.result, self.state, self.reserves)
+        self.report_panel.set_context(self.result, self.state, self.reserves)
         try:
             from ..report import build_report
             self.results_text.setPlainText(build_report(self.state, self.result, self.reserves))
@@ -480,3 +488,31 @@ class MainWindow(QMainWindow):
             return
         self.beam_canvas.fig.savefig(path, dpi=150)
         self.statusBar().showMessage(tr("Obrázek uložen: ") + path)
+
+    def export_csv(self):
+        if not (self.result and self.result.is_stable and self.result.points):
+            QMessageBox.information(self, tr("Export křivek (CSV)…"),
+                                    tr("Nejsou k dispozici výsledky."))
+            return
+        path, _ = QFileDialog.getSaveFileName(self, tr("Export křivek (CSV)…"),
+                                              "beamer_curves.csv", "CSV (*.csv)")
+        if not path:
+            return
+        # volitelné rozlišení (default = plné rozlišení solveru)
+        from PySide6.QtWidgets import QInputDialog
+        total = len(self.result.points)
+        n, ok = QInputDialog.getInt(
+            self, tr("Rozlišení exportu"),
+            tr("Počet bodů (max = plné rozlišení):"),
+            total, 2, total, 1)
+        if not ok:
+            return
+        try:
+            from ..csv_export import export_curves_csv
+            cnt = export_curves_csv(self.state, self.result, path,
+                                    n_points=(None if n >= total else n))
+        except Exception as e:
+            QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat: ") + str(e))
+            return
+        self.statusBar().showMessage(
+            tr("Křivky uloženy: ") + f"{path}  ({cnt} {tr('bodů')})")
