@@ -832,6 +832,10 @@ class ResultsPanel(QWidget):
         self._analysis_rows = rows
         self._render()
 
+    def clear_analysis(self):
+        self._analysis_rows = [(tr("— VVÚ / posouzení —"), tr("stiskněte Spočítat"))]
+        self._render()
+
 
 class ReportPanel(QWidget):
     """Karta Report: hodnoty (VVÚ, napětí, RF) v libovolně zvoleném řezu x.
@@ -991,7 +995,3 @@ class ReportPanel(QWidget):
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(name))
             self.table.setItem(r, 1, QTableWidgetItem(val))
-
-    def clear_analysis(self):
-        self._analysis_rows = [(tr("— VVÚ / posouzení —"), tr("stiskněte Spočítat"))]
-        self._render()

@@ -30,7 +30,8 @@ class MainWindow(QMainWindow):
         self.reserves = []
         self._parts_crit = []
         self._worker = None
-        self._dirty = True
+        self._dirty = True            # výsledky je třeba přepočítat
+        self._modified = False        # dokument má neuložené změny (ochrana práce)
         self._sec_sig = None
 
         self._build_ui()
@@ -291,6 +292,7 @@ class MainWindow(QMainWindow):
         """Vstup se změnil – real-time překreslí schéma a (debounced) náhled
         průřezu + charakteristiky; VVÚ a MS se počítají až tlačítkem."""
         self._dirty = True
+        self._modified = True
         self.dirty_lbl.setText("● " + tr("změněno – stiskněte Spočítat"))
         self.results_panel.clear_analysis()
         try:
@@ -416,11 +418,44 @@ class MainWindow(QMainWindow):
             self.section_canvas.plot(sec)
             self.stress_canvas.plot(sec, 0, 0, 0, 0)
 
+    # ── ochrana neuložené práce ──
+    def _confirm_discard(self) -> bool:
+        """Vrátí True, pokud lze pokračovat (žádné změny, uloženo, nebo zahozeno);
+        False pokud uživatel zvolil Storno. Při neuložených změnách se zeptá."""
+        if not self._modified:
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(tr("Neuložené změny"))
+        box.setText(tr("Projekt obsahuje neuložené změny. Chcete je uložit?"))
+        box.setStandardButtons(
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Save)
+        box.button(QMessageBox.Save).setText(tr("Uložit"))
+        box.button(QMessageBox.Discard).setText(tr("Zavřít bez uložení"))
+        box.button(QMessageBox.Cancel).setText(tr("Storno"))
+        ret = box.exec()
+        if ret == QMessageBox.Save:
+            return self.save_project()        # True jen při skutečném uložení
+        if ret == QMessageBox.Discard:
+            return True
+        return False                          # Storno
+
+    def closeEvent(self, event):
+        if self._confirm_discard():
+            event.accept()
+        else:
+            event.ignore()
+
     # ── soubor ──
     def new_project(self):
+        if not self._confirm_discard():
+            return
         self._load_state(create_empty_state())
 
     def load_demo(self):
+        if not self._confirm_discard():
+            return
         self._load_state(create_default_state())
 
     def _load_state(self, state):
@@ -434,8 +469,13 @@ class MainWindow(QMainWindow):
         self._sec_sig = None
         self._live_update_section()
         self.compute()
+        # čerstvě načtený dokument = bez neuložených změn (reload mohl emitovat
+        # `changed`, proto reset až tady, na konci)
+        self._modified = False
 
     def open_project(self):
+        if not self._confirm_discard():
+            return
         path, _ = QFileDialog.getOpenFileName(self, tr("Otevřít projekt"), "", "BEAMER (*.json)")
         if not path:
             return
@@ -447,6 +487,8 @@ class MainWindow(QMainWindow):
         self._load_state(state)
 
     def import_nos(self):
+        if not self._confirm_discard():
+            return
         path, _ = QFileDialog.getOpenFileName(self, tr("Importovat Ministatik (*.nos)…"),
                                               "", "Ministatik (*.nos)")
         if not path:
@@ -460,15 +502,20 @@ class MainWindow(QMainWindow):
         self._load_state(state)
         self.statusBar().showMessage(tr("Importováno z Ministatik: ") + path)
 
-    def save_project(self):
+    def save_project(self) -> bool:
+        """Uloží projekt. Vrací True při úspěšném uložení, jinak False
+        (zrušený dialog nebo chyba) – využívá `_confirm_discard`."""
         path, _ = QFileDialog.getSaveFileName(self, tr("Uložit projekt"), "projekt.json", "BEAMER (*.json)")
         if not path:
-            return
+            return False
         try:
             project_io.save_project(self.state, path)
+            self._modified = False
             self.statusBar().showMessage(tr("Uloženo: ") + path)
+            return True
         except Exception as e:
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze uložit: ") + str(e))
+            return False
 
     def export_report(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu"), "protokol.txt", "Text (*.txt)")

@@ -15,6 +15,13 @@ from ..analysis import stress_profile, forces_from_beam
 from ..i18n import tr
 from ..settings import SETTINGS, fmt
 
+# ── společné zarovnání: schéma nosníku a oddělené VVÚ grafy mají stejně širokou
+#    kreslicí oblast (stejné figure-fraction okraje) a stejný x-padding, takže
+#    začátek/konec nosníku opticky lícuje se začátkem/koncem výsledných křivek.
+ALIGN_LEFT = 0.10     # levý okraj os (zlomek šířky figury) – místo pro popisky y
+ALIGN_RIGHT = 0.975   # pravý okraj os
+X_PAD = 0.03          # přesah osy x za nosník (zlomek délky L)
+
 
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, nrows=1, ncols=1, figsize=(5, 4)):
@@ -177,7 +184,7 @@ def _draw_schema(ax, state, result=None):
 
     ax.set_ylim(-42, 38)
     ax.set_yticks([])
-    ax.set_xlim(-0.05 * L, 1.05 * L)
+    ax.set_xlim(-X_PAD * L, (1 + X_PAD) * L)
     ax.grid(True, axis="x", alpha=0.3)
 
 
@@ -205,9 +212,14 @@ class SchemaCanvas(MplCanvas):
 
     def plot(self, state, result=None):
         self.fig.clear()
+        # pevné okraje (shodné s VVÚ grafy) → nosník lícuje s křivkami;
+        # None odebere layout engine (umožní subplots_adjust)
+        self.fig.set_layout_engine(None)
         ax = self.fig.add_subplot(111)
         _draw_schema(ax, state, result)
         ax.set_xlabel("x [mm]", fontsize=8)
+        self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
+                                 top=0.80, bottom=0.28)
         self.draw()
 
 
@@ -223,6 +235,7 @@ class BeamDiagramCanvas(MplCanvas):
     def plot(self, state, result):
         self.fig.clear()
         if not result or not result.is_stable or not result.points:
+            self.fig.set_layout_engine("constrained")
             ax = self.fig.add_subplot(111)
             ax.text(0.5, 0.5, result.error_message if result else tr("Bez výsledku"),
                     ha="center", va="center", color="crimson", wrap=True)
@@ -235,8 +248,10 @@ class BeamDiagramCanvas(MplCanvas):
                  M=np.array([p.M for p in pts]), Mk=np.array([p.Mk for p in pts]),
                  w=np.array([p.w for p in pts]), phi=np.array([p.phi for p in pts]))
         if self.combined:
+            self.fig.set_layout_engine("constrained")
             self._plot_combined(x, d)
         else:
+            self.fig.set_layout_engine(None)
             self._plot_separate(x, d)
         self.draw()
 
@@ -269,6 +284,7 @@ class BeamDiagramCanvas(MplCanvas):
         axes = self.fig.subplots(len(specs), 1, sharex=True)
         if len(specs) == 1:
             axes = [axes]
+        xL = float(x[-1]) if len(x) else 1.0
         for ax, (title, arr, color) in zip(axes, specs):
             ax.axhline(0, color="#999", lw=0.8)
             ax.plot(x, arr, color=color, lw=1.4)
@@ -277,7 +293,16 @@ class BeamDiagramCanvas(MplCanvas):
             ax.set_title(title, fontsize=8, loc="left")
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=7)
+            # headroom: nahoře víc (aby se popisek maxima vešel pod titulek)
+            amin = min(float(np.nanmin(arr)), 0.0)
+            amax = max(float(np.nanmax(arr)), 0.0)
+            span = (amax - amin) or 1.0
+            ax.set_ylim(amin - 0.12 * span, amax + 0.24 * span)
+        # shodné okraje + x-rozsah jako schéma → svislé lícování nosníku a křivek
+        axes[-1].set_xlim(-X_PAD * xL, (1 + X_PAD) * xL)
         axes[-1].set_xlabel("x [mm]", fontsize=8)
+        self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
+                                 top=0.97, bottom=0.05, hspace=0.42)
 
     def _plot_combined(self, x, d):
         """Jeden graf VVÚ s více osami seskupenými dle jednotek;

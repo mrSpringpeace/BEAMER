@@ -2,6 +2,20 @@
 
 Version format: **X.XX**
 
+## 1.11
+
+- **Unsaved-work protection:** actions that would discard the current project
+  (New, Open, Demo beam, or closing the app) now prompt to save when there are
+  unsaved changes — Save / Don't save / Cancel. No prompt for a fresh, unmodified
+  project.
+- VVÚ diagrams: max/min value labels no longer overlap the chart title (added
+  top headroom on the y-axis).
+- The beam scheme and the result curves are now visually aligned — same drawing
+  margins and x-range, so the beam start/end line up with the curve start/end,
+  with minimal empty space on the left.
+- Fixed a 1.10 regression where the live preview (scheme + cross-section) did not
+  refresh after editing inputs.
+
 ## 1.10
 
 ### Cross-sections

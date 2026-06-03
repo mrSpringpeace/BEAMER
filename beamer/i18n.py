@@ -159,6 +159,13 @@ EN = {
     "Nejsou k dispozici výsledky.": "No results available.",
     "Křivky uloženy: ": "Curves saved: ",
     "bodů": "points",
+    # ochrana neuložené práce
+    "Neuložené změny": "Unsaved changes",
+    "Projekt obsahuje neuložené změny. Chcete je uložit?":
+        "The project has unsaved changes. Do you want to save them?",
+    "Uložit": "Save",
+    "Zavřít bez uložení": "Don't save",
+    "Storno": "Cancel",
     "Chyba": "Error",
     "VVÚ v jednom grafu": "Diagrams in one chart",
     "Průřez a napjatost": "Cross-section & stress",
