@@ -89,6 +89,13 @@ To package BEAMER into a single standalone `.exe`, see
 
 ---
 
+## Documentation
+
+A full user manual is available:
+[manual/BEAMER_manual_EN_v1.12.docx](manual/BEAMER_manual_EN_v1.12.docx).
+
+---
+
 ## How it works (short)
 
 The beam is solved as a planar frame element by the direct stiffness method and
