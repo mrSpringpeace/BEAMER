@@ -10,6 +10,8 @@ reserve-factor assessment.
 
 Python · PySide6 · NumPy · Matplotlib · SciPy.
 
+[![tests](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml/badge.svg)](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml)
+
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
 > requests are not accepted at this time.
 
