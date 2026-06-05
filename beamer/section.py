@@ -905,7 +905,9 @@ class CrossSection:
             return dict(sigma=nan, tauVz=nan, tauVy=0.0, tauT=nan,
                         tau=nan, mises=nan, Q=0.0, hollow=True)
 
-        sigma = Fx/A + My*z/Iy + Mz*y/Iz
+        # znaménková konvence: sagging M>0 → tlak na horním vlákně (+z), tah dole.
+        # (von Mises σ_red a RF jsou na znaménku σ nezávislé.)
+        sigma = Fx/A - My*z/Iy - Mz*y/Iz
 
         Q = self.Q_at(z_mm)/1e9
         bz = self.width_at(z_mm)/1e3

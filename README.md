@@ -94,6 +94,17 @@ To package BEAMER into a single standalone `.exe`, see
 A full user manual is available:
 [manual/BEAMER_manual_EN_v1.12.docx](manual/BEAMER_manual_EN_v1.12.docx).
 
+## Tests
+
+A verification suite checks the results against closed-form solutions
+(cantilever / simply supported / fixed-fixed beams, torsion, Timoshenko vs
+Euler–Bernoulli, stress sign convention):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest beamer/tests/ -v
+```
+
 ---
 
 ## How it works (short)

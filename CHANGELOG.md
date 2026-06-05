@@ -2,6 +2,21 @@
 
 Version format: **X.XX**
 
+## 1.13
+
+- **Verification test suite** (`beamer/tests/test_verification.py`, pytest):
+  results are checked against closed-form solutions — cantilever / simply
+  supported / fixed-fixed beams (deflection and moment), torsion (θ = Mk·L/GJ),
+  Timoshenko vs Euler–Bernoulli, and the stress sign convention. Run with
+  `python -m pytest beamer/tests/ -v` (pytest is listed in requirements-dev.txt).
+  Internal forces and deflections match the analytical solutions to machine
+  precision.
+- **Stress sign convention fix:** bending stress σ now follows physics — a
+  sagging moment (M > 0) gives compression on the top fibre and tension on the
+  bottom fibre (previously inverted). This affects the stress diagram and the
+  signed σ values. The assessment (von Mises σ_red and RF) is independent of the
+  sign of σ, so the reserve factors are unchanged.
+
 ## 1.12
 
 - **Shared library (materials & profiles):** in addition to the per-user library

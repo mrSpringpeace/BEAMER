@@ -59,7 +59,8 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
             c_tV[i] = np.nan
             c_tT[i] = np.nan
             continue
-        c_sM[i] = (zi/1e3)/Iy_si if Iy_si > 1e-30 else 0.0
+        # sagging M>0 → tlak nahoře (+z): záporné znaménko (shodně s section.stress)
+        c_sM[i] = -(zi/1e3)/Iy_si if Iy_si > 1e-30 else 0.0
         Q_si = section.Q_at(zi)/1e9
         b_si = bz_mm/1e3
         c_tV[i] = Q_si/(Iy_si*b_si) if (Iy_si > 1e-30 and b_si > 1e-15) else 0.0

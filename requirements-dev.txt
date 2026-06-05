@@ -1,0 +1,3 @@
+# Vývojové závislosti (testy). Běžný provoz je nevyžaduje – viz requirements.txt.
+# Spuštění testů:  python -m pytest beamer/tests/ -v
+pytest>=7.0
