@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QComboBox, QCheckBox,
-    QDialogButtonBox, QLabel, QGroupBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QCheckBox,
+    QDialogButtonBox, QLabel, QGroupBox, QLineEdit, QPushButton, QFileDialog,
 )
 
 from ..settings import SETTINGS
@@ -57,6 +57,30 @@ class SettingsDialog(QDialog):
         f.addRow(self.deform_cb)
 
         v.addWidget(g)
+
+        # ── sdílená knihovna ──
+        gl = QGroupBox(tr("Sdílená knihovna (materiály a profily)"))
+        fl = QVBoxLayout(gl)
+        row = QHBoxLayout()
+        self.shared_edit = QLineEdit(SETTINGS.shared_library_dir or "")
+        self.shared_edit.setReadOnly(True)
+        self.shared_edit.setPlaceholderText(tr("(nenastaveno – jen uživatelská knihovna)"))
+        row.addWidget(self.shared_edit, 1)
+        browse = QPushButton(tr("Procházet…"))
+        browse.clicked.connect(self._browse_shared)
+        row.addWidget(browse)
+        clear = QPushButton(tr("Vymazat"))
+        clear.clicked.connect(self._clear_shared)
+        row.addWidget(clear)
+        fl.addLayout(row)
+        hint = QLabel(tr("Společná složka (např. síťový disk). Knihovny se pak "
+                         "načítají ze sdílené i uživatelské; zápis jde do "
+                         "uživatelské, do sdílené jen přes „Publikovat“."))
+        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setWordWrap(True)
+        fl.addWidget(hint)
+        v.addWidget(gl)
+
         note = QLabel(tr("Změna jazyka se projeví v celém rozhraní."))
         note.setStyleSheet("color:#666; font-size:11px;")
         note.setWordWrap(True)
@@ -91,3 +115,17 @@ class SettingsDialog(QDialog):
         SETTINGS.vvu_show_deform = bool(on)
         SETTINGS.save()
         self.display_changed.emit()
+
+    def _browse_shared(self):
+        start = SETTINGS.shared_library_dir or ""
+        path = QFileDialog.getExistingDirectory(
+            self, tr("Vyberte složku sdílené knihovny"), start)
+        if path:
+            SETTINGS.shared_library_dir = path
+            SETTINGS.save()
+            self.shared_edit.setText(path)
+
+    def _clear_shared(self):
+        SETTINGS.shared_library_dir = ""
+        SETTINGS.save()
+        self.shared_edit.clear()

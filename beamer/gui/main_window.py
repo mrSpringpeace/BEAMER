@@ -39,6 +39,8 @@ class MainWindow(QMainWindow):
 
         # vstupy se aktualizují real-time, těžký výpočet (VVÚ+MS) se spouští tlačítkem
         self.input_panel.changed.connect(self._on_input_changed)
+        # kontrolní body neovlivní výpočet – jen překreslí schéma + kartu Výsledky
+        self.input_panel.control_changed.connect(self._on_control_points_changed)
         QShortcut(QKeySequence("F5"), self, activated=self.compute)
 
         # debounce pro živou aktualizaci náhledu průřezu
@@ -370,15 +372,31 @@ class MainWindow(QMainWindow):
         self.margin_canvas.plot(self.reserves)
         self.results_panel.set_analysis(self.result, self.state, self.reserves)
         self.report_panel.set_context(self.result, self.state, self.reserves)
-        try:
-            from ..report import build_report
-            self.results_text.setPlainText(build_report(self.state, self.result, self.reserves))
-        except Exception:
-            pass
+        self._refresh_results_text()
         if self.result and not self.result.is_stable:
             self.statusBar().showMessage("⚠ " + self.result.error_message)
         else:
             self.statusBar().showMessage(tr("Přepočítáno."))
+
+    def _refresh_results_text(self):
+        """Přegeneruje textový protokol (karta Výsledky) z aktuálního výsledku.
+        Volá se po výpočtu i při změně kontrolních bodů (bez přepočtu)."""
+        try:
+            from ..report import build_report
+            self.results_text.setPlainText(
+                build_report(self.state, self.result, self.reserves))
+        except Exception:
+            pass
+
+    def _on_control_points_changed(self):
+        """Kontrolní body se změnily – nemění fyziku, takže žádný přepočet.
+        Jen překreslíme schéma (značky) a přegenerujeme kartu Výsledky."""
+        self._modified = True
+        try:
+            self.schema_canvas.plot(self.state, self.result)
+        except Exception:
+            pass
+        self._refresh_results_text()
 
     def _refresh_part_selector(self):
         self.part_sel.blockSignals(True)

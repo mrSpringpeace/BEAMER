@@ -41,8 +41,8 @@ class CollapsibleBox(QWidget):
         self.toggle.setText(t)
 
 from ..model import (
-    Material, Support, Hinge, Load, LoadCase, LoadCombination, CrossSectionDef,
-    SectionSegment, new_id,
+    Material, Support, Hinge, ControlPoint, Load, LoadCase, LoadCombination,
+    CrossSectionDef, SectionSegment, new_id,
 )
 from ..i18n import tr
 from ..settings import fmt
@@ -101,8 +101,10 @@ def _spin(val, mn=-1e9, mx=1e9, step=1.0, dec=3, suffix=""):
 
 
 class InputPanel(QScrollArea):
-    """Levý panel se vstupy. Při změně emituje `changed`."""
+    """Levý panel se vstupy. Při změně emituje `changed`;
+    změna kontrolních bodů (která nevyžaduje přepočet) emituje `control_changed`."""
     changed = Signal()
+    control_changed = Signal()
 
     def __init__(self, state):
         super().__init__()
@@ -123,6 +125,7 @@ class InputPanel(QScrollArea):
         self._build_hinges()
         self._build_loads()
         self._build_factors()
+        self._build_control_points()
         self.layout.addStretch(1)
 
     def _emit(self, *_):
@@ -173,8 +176,8 @@ class InputPanel(QScrollArea):
         v.addLayout(row)
 
         librow = QHBoxLayout()
-        save_lib = QPushButton(tr("💾 Do knihovny"))
-        save_lib.clicked.connect(self._save_material_to_lib)
+        save_lib = QPushButton(tr("💾 Do knihovny ▾"))
+        save_lib.clicked.connect(self._material_save_menu)
         librow.addWidget(save_lib)
         from_lib = QPushButton(tr("📂 Z knihovny"))
         from_lib.clicked.connect(self._material_from_lib)
@@ -253,24 +256,66 @@ class InputPanel(QScrollArea):
         self.mat_cb.setItemText(idx, m.name + tr(" (vlastní)"))
         self._emit()
 
+    def _material_save_menu(self):
+        from .. import library
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        a_user = menu.addAction(tr("Uložit do uživatelské knihovny"))
+        a_user.triggered.connect(self._save_material_to_lib)
+        a_pub = menu.addAction(tr("Publikovat do sdílené knihovny…"))
+        a_pub.setEnabled(library.shared_dir_configured())
+        a_pub.triggered.connect(self._publish_material)
+        menu.exec(self.cursor().pos())
+
     def _save_material_to_lib(self):
         from .. import library
         from PySide6.QtWidgets import QMessageBox
         m = self.state.material()
         library.save_material(m)
         QMessageBox.information(self, tr("Knihovna"),
-                                tr("Materiál uložen do knihovny: ") + m.name)
+                                tr("Materiál uložen do uživatelské knihovny: ") + m.name)
+
+    def _publish_material(self):
+        from .. import library
+        from PySide6.QtWidgets import QMessageBox
+        if not library.shared_dir_configured():
+            QMessageBox.information(self, tr("Sdílená knihovna"),
+                tr("Nejprve nastavte složku sdílené knihovny v Nastavení."))
+            return
+        m = self.state.material()
+        if QMessageBox.question(
+                self, tr("Publikovat do sdílené"),
+                tr("Publikovat materiál „%s“ do SDÍLENÉ knihovny pro všechny uživatele?") % m.name,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if QMessageBox.warning(
+                self, tr("Potvrdit publikaci"),
+                tr("Sdílená knihovna je společná pro celý tým. Opravdu zapsat?"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if library.publish_material(m):
+            QMessageBox.information(self, tr("Sdílená knihovna"),
+                                    tr("Materiál publikován do sdílené knihovny: ") + m.name)
+        else:
+            QMessageBox.critical(self, tr("Sdílená knihovna"),
+                                 tr("Publikace selhala (zkontrolujte cestu a práva)."))
 
     def _material_from_lib(self):
         from .. import library
         from PySide6.QtWidgets import QMenu
-        mats = library.load_materials()
+        groups = library.load_materials_grouped()
         menu = QMenu(self)
-        if not mats:
+        any_item = False
+        for src, mats in groups:
+            if not mats:
+                continue
+            menu.addSection(tr("Sdílená") if src == "shared" else tr("Uživatelská"))
+            for m in mats:
+                any_item = True
+                act = menu.addAction(m.name)
+                act.triggered.connect(lambda _=False, mm=m: self._add_lib_material(mm))
+        if not any_item:
             menu.addAction(tr("(knihovna je prázdná)")).setEnabled(False)
-        for m in mats:
-            act = menu.addAction(m.name)
-            act.triggered.connect(lambda _=False, mm=m: self._add_lib_material(mm))
         menu.exec(self.cursor().pos())
 
     def _add_lib_material(self, mat):
@@ -358,7 +403,7 @@ class InputPanel(QScrollArea):
         cl.addWidget(ea)
         # profily knihovna / import / export (pro sec1)
         prow = QHBoxLayout()
-        for txt, fn in ((tr("💾 Uložit profil"), self._save_profile),
+        for txt, fn in ((tr("💾 Uložit profil ▾"), self._profile_save_menu),
                         (tr("📂 Z knihovny"), self._profile_from_lib),
                         (tr("⤓ Import"), self._import_profile),
                         (tr("⤒ Export"), self._export_profile)):
@@ -452,24 +497,70 @@ class InputPanel(QScrollArea):
         self._refresh_parts()
         self._emit()
 
+    def _profile_save_menu(self, seg):
+        from .. import library
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        a_user = menu.addAction(tr("Uložit do uživatelské knihovny"))
+        a_user.triggered.connect(lambda: self._save_profile(seg))
+        a_pub = menu.addAction(tr("Publikovat do sdílené knihovny…"))
+        a_pub.setEnabled(library.shared_dir_configured())
+        a_pub.triggered.connect(lambda: self._publish_profile(seg))
+        menu.exec(self.cursor().pos())
+
     def _save_profile(self, seg):
         from .. import library
         from PySide6.QtWidgets import QInputDialog, QMessageBox
         name, ok = QInputDialog.getText(self, tr("Uložit profil"), tr("Název profilu:"))
         if ok and name.strip():
             library.save_profile(name.strip(), seg.sec1)
-            QMessageBox.information(self, tr("Knihovna"), tr("Profil uložen: ") + name.strip())
+            QMessageBox.information(self, tr("Knihovna"),
+                                   tr("Profil uložen do uživatelské knihovny: ") + name.strip())
+
+    def _publish_profile(self, seg):
+        from .. import library
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        if not library.shared_dir_configured():
+            QMessageBox.information(self, tr("Sdílená knihovna"),
+                tr("Nejprve nastavte složku sdílené knihovny v Nastavení."))
+            return
+        name, ok = QInputDialog.getText(self, tr("Publikovat profil"), tr("Název profilu:"))
+        name = name.strip() if ok else ""
+        if not name:
+            return
+        if QMessageBox.question(
+                self, tr("Publikovat do sdílené"),
+                tr("Publikovat profil „%s“ do SDÍLENÉ knihovny pro všechny uživatele?") % name,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if QMessageBox.warning(
+                self, tr("Potvrdit publikaci"),
+                tr("Sdílená knihovna je společná pro celý tým. Opravdu zapsat?"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if library.publish_profile(name, seg.sec1):
+            QMessageBox.information(self, tr("Sdílená knihovna"),
+                                   tr("Profil publikován do sdílené knihovny: ") + name)
+        else:
+            QMessageBox.critical(self, tr("Sdílená knihovna"),
+                                 tr("Publikace selhala (zkontrolujte cestu a práva)."))
 
     def _profile_from_lib(self, seg):
         from .. import library
         from PySide6.QtWidgets import QMenu
-        profs = library.load_profiles()
+        groups = library.load_profiles_grouped()
         menu = QMenu(self)
-        if not profs:
+        any_item = False
+        for src, profs in groups:
+            if not profs:
+                continue
+            menu.addSection(tr("Sdílená") if src == "shared" else tr("Uživatelská"))
+            for name, sdef in profs:
+                any_item = True
+                act = menu.addAction(f"{name}  ({tr(SECTION_LABELS.get(sdef.type, sdef.type))})")
+                act.triggered.connect(lambda _=False, s=sdef, sg=seg: self._apply_profile(sg, s))
+        if not any_item:
             menu.addAction(tr("(knihovna je prázdná)")).setEnabled(False)
-        for name, sdef in profs:
-            act = menu.addAction(f"{name}  ({SECTION_LABELS.get(sdef.type, sdef.type)})")
-            act.triggered.connect(lambda _=False, s=sdef, sg=seg: self._apply_profile(sg, s))
         menu.exec(self.cursor().pos())
 
     def _import_profile(self, seg):
@@ -590,6 +681,63 @@ class InputPanel(QScrollArea):
         self.state.hinges.remove(h)
         self._refresh_hinges()
         self._emit()
+
+    # ── kontrolní body (report, neovlivní výpočet) ──
+    def _build_control_points(self):
+        g = QGroupBox(tr("Kontrolní body"))
+        v = QVBoxLayout(g)
+        hint = QLabel(tr("Volitelné řezy, ve kterých se vypíšou výsledky "
+                         "(karta Výsledky + export). Nemění výpočet."))
+        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        self.cp_table = QTableWidget(0, 3)
+        self.cp_table.setHorizontalHeaderLabels(["x [mm]", tr("název"), ""])
+        self.cp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.cp_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cp_table.verticalHeader().setVisible(False)
+        v.addWidget(self.cp_table)
+        btn = QPushButton(tr("+ Přidat bod"))
+        btn.clicked.connect(self._add_control_point)
+        v.addWidget(btn)
+        self.layout.addWidget(g)
+        self._refresh_control_points()
+
+    def _refresh_control_points(self):
+        self.cp_table.setRowCount(0)
+        for cp in self.state.control_points:
+            r = self.cp_table.rowCount()
+            self.cp_table.insertRow(r)
+            xsp = _spin(cp.x, 0, 1e6, 50, 1)
+            xsp.valueChanged.connect(
+                lambda val, c=cp: (setattr(c, "x", val), self._emit_control()))
+            self.cp_table.setCellWidget(r, 0, xsp)
+            nm = QLineEdit(cp.name)
+            nm.setPlaceholderText(tr("(volitelné)"))
+            nm.textChanged.connect(
+                lambda s, c=cp: (setattr(c, "name", s), self._emit_control()))
+            self.cp_table.setCellWidget(r, 1, nm)
+            db = QPushButton("✕")
+            db.setMaximumWidth(30)
+            db.clicked.connect(lambda _, c=cp: self._del_control_point(c))
+            self.cp_table.setCellWidget(r, 2, db)
+        _fit_table(self.cp_table)
+
+    def _emit_control(self, *_):
+        """Změna kontrolních bodů – nevyžaduje přepočet, jen překreslení
+        výsledků/schématu."""
+        self.control_changed.emit()
+
+    def _add_control_point(self):
+        self.state.control_points.append(
+            ControlPoint(new_id("cp"), self.state.length / 2))
+        self._refresh_control_points()
+        self._emit_control()
+
+    def _del_control_point(self, cp):
+        self.state.control_points.remove(cp)
+        self._refresh_control_points()
+        self._emit_control()
 
     # ── zatížení ──
     def _build_loads(self):

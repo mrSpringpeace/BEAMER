@@ -21,6 +21,7 @@ class Settings:
     decimals: int = 2               # počet desetinných míst
     vvu_combined: bool = False      # VVÚ v jednom grafu
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
+    shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
 
     def save(self):
         try:
@@ -36,7 +37,8 @@ def _load() -> Settings:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
             d = json.load(f)
         s = Settings()
-        for k in ("language", "number_format", "decimals", "vvu_combined", "vvu_show_deform"):
+        for k in ("language", "number_format", "decimals", "vvu_combined",
+                  "vvu_show_deform", "shared_library_dir"):
             if k in d:
                 setattr(s, k, d[k])
         return s

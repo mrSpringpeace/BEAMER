@@ -1,29 +1,31 @@
-"""Textový protokol výpočtu."""
+"""Textový protokol výpočtu (lokalizovaný CS/EN přes tr())."""
 from __future__ import annotations
 
 import datetime
 
 from .settings import fmt
+from .i18n import tr
 
 
 def build_report(state, result, margins) -> str:
     L = []
     L.append("=" * 60)
-    L.append("  BEAMER – PROTOKOL STATICKÉ ANALÝZY NOSNÍKU")
+    L.append("  " + tr("BEAMER – PROTOKOL STATICKÉ ANALÝZY NOSNÍKU"))
     L.append("  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
     L.append("=" * 60)
     L.append("")
 
-    L.append("NOSNÍK")
-    L.append(f"  Délka L = {state.length} mm")
-    L.append(f"  Teorie  = {state.theory}")
-    L.append(f"  Dodatečný součinitel = {state.additional_factor}  (zatížení = početní/ultimate)")
-    L.append("  Podpory:")
+    L.append(tr("NOSNÍK"))
+    L.append(f"  {tr('Délka L')} = {state.length} mm")
+    L.append(f"  {tr('Teorie')} = {state.theory}")
+    L.append(f"  {tr('Dodatečný součinitel')} = {state.additional_factor}  "
+             f"({tr('zatížení = početní/ultimate')})")
+    L.append("  " + tr("Podpory:"))
     for s in state.supports:
-        L.append(f"    x={s.x:.0f} mm  {s.type}  úhel={s.angle}°")
+        L.append(f"    x={s.x:.0f} mm  {s.type}  {tr('úhel')}={s.angle}°")
     if state.hinges:
-        L.append("  Klouby: " + ", ".join(f"x={h.x:.0f}" for h in state.hinges))
-    L.append("  Zatížení:")
+        L.append("  " + tr("Klouby:") + " " + ", ".join(f"x={h.x:.0f}" for h in state.hinges))
+    L.append("  " + tr("Zatížení:"))
     for ld in state.loads:
         L.append(f"    {ld.type}: " + _load_desc(ld))
     L.append("")
@@ -34,16 +36,16 @@ def build_report(state, result, margins) -> str:
     from .analysis import critical_per_part
     segs = normalized_segments(state)
     parts_crit = critical_per_part(state, margins) if margins else [None]*len(segs)
-    L.append("ÚSEKY NOSNÍKU")
+    L.append(tr("ÚSEKY NOSNÍKU"))
     for i, seg in enumerate(segs):
         mid = getattr(seg, "material_id", None)
         mat = next((m for m in state.materials if m.id == mid), None) or state.material()
-        L.append(f"  ── Úsek {i+1}:  x = {seg.x1:.0f} … {seg.x2:.0f} mm  "
-                 f"(délka {seg.length:.0f} mm)")
-        L.append(f"     Materiál: {mat.name}  E={fmt(mat.E)} MPa  G={fmt(mat.G)} MPa  "
+        L.append(f"  ── {tr('Úsek')} {i+1}:  x = {seg.x1:.0f} … {seg.x2:.0f} mm  "
+                 f"({tr('délka')} {seg.length:.0f} mm)")
+        L.append(f"     {tr('Materiál:')} {mat.name}  E={fmt(mat.E)} MPa  G={fmt(mat.G)} MPa  "
                  f"Re={fmt(mat.Re)} MPa  Rm={fmt(mat.Rm)} MPa")
         tap = "" if not seg.tapered else f" → {seg.sec2.type}"
-        L.append(f"     Průřez: {seg.sec1.type}{tap}")
+        L.append(f"     {tr('Průřez:')} {seg.sec1.type}{tap}")
         try:
             sc = build_section(seg.sec1)
             L.append(f"     A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
@@ -55,7 +57,7 @@ def build_report(state, result, margins) -> str:
         cp = parts_crit[i] if i < len(parts_crit) else None
         if cp and cp.get("crit"):
             c = cp["crit"]
-            L.append(f"     Kritický řez x={c.x:.0f}: σ_red={fmt(c.mises_max)} MPa  "
+            L.append(f"     {tr('Kritický řez')} x={c.x:.0f}: σ_red={fmt(c.mises_max)} MPa  "
                      f"RF_yield={fmt(c.RF_yield)}  RF_ult={fmt(c.RF_ultimate)}  "
                      f"RF_min={fmt(c.RF)} ({c.critical})")
         L.append("")
@@ -66,14 +68,14 @@ def build_report(state, result, margins) -> str:
         M = [p.M for p in result.points]
         Mk = [p.Mk for p in result.points]
         w = [p.w for p in result.points]
-        L.append("VNITŘNÍ ÚČINKY (extrémy)")
+        L.append(tr("VNITŘNÍ ÚČINKY (extrémy)"))
         L.append(f"  N : {fmt(min(N))} … {fmt(max(N))} N")
         L.append(f"  V : {fmt(min(V))} … {fmt(max(V))} N")
         L.append(f"  M : {fmt(min(M))} … {fmt(max(M))} N·mm")
         L.append(f"  Mk: {fmt(min(Mk))} … {fmt(max(Mk))} N·mm")
         L.append(f"  w : {fmt(min(w))} … {fmt(max(w))} mm")
         L.append("")
-        L.append("REAKCE")
+        L.append(tr("REAKCE"))
         for rc in result.reactions:
             L.append(f"  x={rc.x:.0f}: Rx={fmt(rc.Rx)} N  Rz={fmt(rc.Rz)} N  "
                      f"My={fmt(rc.Ry)} N·mm  Mk={fmt(rc.Rx_torsion)} N·mm")
@@ -81,11 +83,31 @@ def build_report(state, result, margins) -> str:
 
     if margins:
         crit = min(margins, key=lambda mm: mm.RF)
-        L.append("POSOUZENÍ (RF = reserve factor, ≥ 1 vyhovuje)")
+        L.append(tr("POSOUZENÍ (RF = reserve factor, ≥ 1 vyhovuje)"))
         if getattr(state, "plasticity_enabled", False):
-            L.append(f"  Plasticita: ZAP ({state.plasticity_method}) – RF_ultimate = α_pl·Rm/σ")
-        L.append(f"  σ_red,max (celý nosník) = {fmt(max(mm.mises_max for mm in margins))} MPa")
-        L.append(f"  RF_min (celý nosník) = {fmt(crit.RF)} ({crit.critical}) v x={crit.x:.0f} mm")
+            L.append(f"  {tr('Plasticita: ZAP')} ({state.plasticity_method}) – RF_ultimate = α_pl·Rm/σ")
+        L.append(f"  σ_red,max ({tr('celý nosník')}) = {fmt(max(mm.mises_max for mm in margins))} MPa")
+        L.append(f"  RF_min ({tr('celý nosník')}) = {fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f} mm")
+        L.append("")
+
+    # ── kontrolní body (volitelné řezy) ──
+    cps = getattr(state, "control_points", None) or []
+    if cps and result and result.is_stable and result.points:
+        from .analysis import values_at_x
+        L.append(tr("KONTROLNÍ BODY"))
+        items = sorted(enumerate(cps), key=lambda t: t[1].x)
+        for orig_idx, cp in items:
+            d = values_at_x(result, state, cp.x)
+            if d is None:
+                continue
+            nm = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{orig_idx+1}"
+            L.append(f"  ── {nm}  (x = {d['x']:.0f} mm)")
+            L.append(f"     N={fmt(d['N'])} N  V={fmt(d['V'])} N  "
+                     f"M={fmt(d['M'])} N·mm  Mk={fmt(d['Mk'])} N·mm")
+            L.append(f"     w={fmt(d['w'])} mm  σ={fmt(d['sigma_max'])}  "
+                     f"τ={fmt(d['tau_max'])}  σ_red={fmt(d['mises_max'])} MPa")
+            L.append(f"     RF={fmt(d['RF'])} ({d['critical']})  "
+                     f"[RF_yield={fmt(d['RF_yield'])}  RF_ult={fmt(d['RF_ultimate'])}]")
         L.append("")
 
     L.append("=" * 60)

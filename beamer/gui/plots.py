@@ -69,6 +69,18 @@ def _draw_schema(ax, state, result=None):
     for h in state.hinges:
         ax.plot(h.x, 0, "o", mfc="white", mec="#c62828", ms=8)
 
+    # kontrolní body (report) – svislá čárkovaná značka + kosočtverec + popisek
+    C_CP = "#455a64"
+    for k, cp in enumerate(getattr(state, "control_points", None) or []):
+        ax.axvline(cp.x, color=C_CP, lw=1.0, ls=(0, (4, 3)), alpha=0.7)
+        ax.plot(cp.x, 0, "D", mfc="white", mec=C_CP, ms=6)
+        lbl = cp.name.strip() if (cp.name and cp.name.strip()) else f"K{k+1}"
+        ax.annotate(lbl, xy=(cp.x, 0), textcoords="offset points",
+                    xytext=(0, -28), ha="center", va="top",
+                    fontsize=7, color=C_CP,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white",
+                              ec=C_CP, alpha=0.9, lw=0.6))
+
     # měřítko spojitého zatížení: max |q| → pevná amplituda (společné pro všechny)
     dloads = [ld for ld in state.loads if ld.type == "distributed"]
     qmax = max((max(abs(ld.q1), abs(ld.q2)) for ld in dloads), default=0.0)

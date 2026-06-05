@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 from .model import (
     Material, Support, Hinge, Load, LoadCase, LoadCombination,
-    CrossSectionDef, SectionSegment, ProjectState, Body,
+    CrossSectionDef, SectionSegment, ProjectState, Body, ControlPoint,
 )
 
 
@@ -15,6 +15,7 @@ def state_to_dict(state: ProjectState) -> dict:
         "length": state.length,
         "supports": [asdict(s) for s in state.supports],
         "hinges": [asdict(h) for h in state.hinges],
+        "control_points": [asdict(c) for c in state.control_points],
         "load_cases": [asdict(c) for c in state.load_cases],
         "load_combinations": [asdict(c) for c in state.load_combinations],
         "loads": [asdict(l) for l in state.loads],
@@ -60,6 +61,7 @@ def dict_to_state(d: dict) -> ProjectState:
         length=d.get("length", 2000),
         supports=[Support(**s) for s in d.get("supports", [])],
         hinges=[Hinge(**h) for h in d.get("hinges", [])],
+        control_points=[ControlPoint(**c) for c in d.get("control_points", [])],
         load_cases=[LoadCase(**c) for c in d.get("load_cases", [])],
         load_combinations=[LoadCombination(**c) for c in d.get("load_combinations", [])],
         loads=[Load(**l) for l in d.get("loads", [])],

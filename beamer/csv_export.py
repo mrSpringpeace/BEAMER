@@ -38,6 +38,26 @@ def _fmt(v) -> str:
         return str(v)
 
 
+def _control_point_rows(state, result):
+    """Řádky tabulky kontrolních bodů (seřazeno dle x; auto-název K# dle pořadí
+    zadání, shodně se schématem)."""
+    cps = getattr(state, "control_points", None) or []
+    if not cps:
+        return []
+    from .analysis import values_at_x
+    rows = []
+    for orig_idx, cp in sorted(enumerate(cps), key=lambda t: t[1].x):
+        d = values_at_x(result, state, cp.x)
+        if d is None:
+            continue
+        name = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{orig_idx + 1}"
+        rows.append([_fmt(d["x"]), name, _fmt(d["N"]), _fmt(d["V"]), _fmt(d["M"]),
+                     _fmt(d["Mk"]), _fmt(d["w"]), _fmt(d["phi"]), _fmt(d["theta"]),
+                     _fmt(d["sigma_max"]), _fmt(d["tau_max"]), _fmt(d["mises_max"]),
+                     _fmt(d["RF"]), d["critical"]])
+    return rows
+
+
 def export_curves_csv(state, result, path, n_points=None) -> int:
     """Zapíše reakce + průběhové křivky do CSV. Vrací počet exportovaných
     bodů křivek."""
@@ -74,6 +94,16 @@ def export_curves_csv(state, result, path, n_points=None) -> int:
             w.writerow([_fmt(rc.x), rc.support_type, _fmt(rc.Rx), _fmt(rc.Rz),
                         _fmt(rc.Ry), _fmt(rc.Rx_torsion)])
         w.writerow([])
+        # kontrolní body (volitelné)
+        cp_rows = _control_point_rows(state, result)
+        if cp_rows:
+            w.writerow(["# Control points"])
+            w.writerow(["x_mm", "name", "N_N", "V_N", "M_Nmm", "Mk_Nmm", "w_mm",
+                        "phi_rad", "theta_rad", "sigma_MPa", "tau_MPa",
+                        "sigma_red_MPa", "RF", "RF_critical"])
+            for row in cp_rows:
+                w.writerow(row)
+            w.writerow([])
         # křivky
         w.writerow(["# Internal force and deformation curves"])
         w.writerow([h for h, _ in CURVE_COLUMNS])

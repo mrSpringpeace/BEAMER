@@ -2,6 +2,23 @@
 
 Version format: **X.XX**
 
+## 1.12
+
+- **Shared library (materials & profiles):** in addition to the per-user library
+  (`~/.beamer/`), you can set a **shared folder** in Settings (e.g. a network
+  drive). The “From library” menus then show separate **Shared** / **User**
+  sections, so the global and local databases never clash. Saving goes to the
+  user library; writing to the shared one is done via **Publish** with a double
+  confirmation (so it is never changed by accident). If the shared path is empty
+  or unreachable, the app keeps working with the user library only.
+- **Control points:** optional sections (x coordinate + name) added in the left
+  panel. They are drawn as markers on the beam scheme and their results
+  (N, V, M, Mk, deflection, σ, τ, von Mises, RF) are listed in the Results tab
+  and both exports (text report and a dedicated CSV table). They do not affect
+  the analysis — adding one only refreshes the report, no recompute.
+- The text report (Results tab + TXT export) is now localized — it follows the
+  selected language (previously it was always Czech).
+
 ## 1.11
 
 - **Unsaved-work protection:** actions that would discard the current project

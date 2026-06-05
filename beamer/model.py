@@ -46,6 +46,15 @@ class Hinge:
 
 
 @dataclass
+class ControlPoint:
+    """Kontrolní bod – řez, ve kterém se reportují výsledky (VVÚ, napětí, RF).
+    Nemá vliv na výpočet, jen na kartu Výsledky a export."""
+    id: str
+    x: float                 # poloha řezu (mm)
+    name: str = ""           # volitelný popisek
+
+
+@dataclass
 class Load:
     """Univerzální zatížení – pole se interpretují podle `type`."""
     id: str
@@ -132,6 +141,7 @@ class ProjectState:
     length: float = 2000.0
     supports: list = field(default_factory=list)
     hinges: list = field(default_factory=list)
+    control_points: list = field(default_factory=list)   # kontrolní body pro report (neovlivní výpočet)
     load_cases: list = field(default_factory=list)
     load_combinations: list = field(default_factory=list)
     loads: list = field(default_factory=list)

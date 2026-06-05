@@ -166,6 +166,74 @@ EN = {
     "Uložit": "Save",
     "Zavřít bez uložení": "Don't save",
     "Storno": "Cancel",
+    # sdílená knihovna
+    "Sdílená knihovna (materiály a profily)": "Shared library (materials and profiles)",
+    "(nenastaveno – jen uživatelská knihovna)": "(not set – user library only)",
+    "Procházet…": "Browse…",
+    "Vymazat": "Clear",
+    "Společná složka (např. síťový disk). Knihovny se pak "
+    "načítají ze sdílené i uživatelské; zápis jde do "
+    "uživatelské, do sdílené jen přes „Publikovat“.":
+        "A common folder (e.g. a network drive). Libraries are then loaded from "
+        "both the shared and the user library; saving writes to the user "
+        "library, the shared one only via “Publish”.",
+    "Vyberte složku sdílené knihovny": "Select shared library folder",
+    "💾 Do knihovny ▾": "💾 To library ▾",
+    "Uložit do uživatelské knihovny": "Save to user library",
+    "Publikovat do sdílené knihovny…": "Publish to shared library…",
+    "Materiál uložen do uživatelské knihovny: ": "Material saved to user library: ",
+    "Sdílená knihovna": "Shared library",
+    "Nejprve nastavte složku sdílené knihovny v Nastavení.":
+        "First set the shared library folder in Settings.",
+    "Publikovat do sdílené": "Publish to shared",
+    "Publikovat materiál „%s“ do SDÍLENÉ knihovny pro všechny uživatele?":
+        "Publish material “%s” to the SHARED library for all users?",
+    "Potvrdit publikaci": "Confirm publish",
+    "Sdílená knihovna je společná pro celý tým. Opravdu zapsat?":
+        "The shared library is common to the whole team. Really write?",
+    "Materiál publikován do sdílené knihovny: ": "Material published to shared library: ",
+    "Publikace selhala (zkontrolujte cestu a práva).":
+        "Publish failed (check the path and permissions).",
+    "Sdílená": "Shared",
+    "Uživatelská": "User",
+    "💾 Uložit profil ▾": "💾 Save profile ▾",
+    "Publikovat profil": "Publish profile",
+    "Publikovat profil „%s“ do SDÍLENÉ knihovny pro všechny uživatele?":
+        "Publish profile “%s” to the SHARED library for all users?",
+    "Profil uložen do uživatelské knihovny: ": "Profile saved to user library: ",
+    "Profil publikován do sdílené knihovny: ": "Profile published to shared library: ",
+    # kontrolní body
+    "Kontrolní body": "Control points",
+    "Volitelné řezy, ve kterých se vypíšou výsledky "
+    "(karta Výsledky + export). Nemění výpočet.":
+        "Optional sections where results are reported "
+        "(Results tab + export). They do not change the analysis.",
+    "název": "name",
+    "(volitelné)": "(optional)",
+    "+ Přidat bod": "+ Add point",
+    # textový protokol (report.py)
+    "BEAMER – PROTOKOL STATICKÉ ANALÝZY NOSNÍKU": "BEAMER – BEAM STATIC ANALYSIS REPORT",
+    "NOSNÍK": "BEAM",
+    "Délka L": "Length L",
+    "Teorie": "Theory",
+    "Dodatečný součinitel": "Additional factor",
+    "zatížení = početní/ultimate": "loads = ultimate",
+    "Podpory:": "Supports:",
+    "úhel": "angle",
+    "Klouby:": "Hinges:",
+    "Zatížení:": "Loads:",
+    "ÚSEKY NOSNÍKU": "BEAM SEGMENTS",
+    "Úsek": "Segment",
+    "délka": "length",
+    "Průřez:": "Cross-section:",
+    "Kritický řez": "Critical section",
+    "VNITŘNÍ ÚČINKY (extrémy)": "INTERNAL FORCES (extremes)",
+    "REAKCE": "REACTIONS",
+    "POSOUZENÍ (RF = reserve factor, ≥ 1 vyhovuje)":
+        "ASSESSMENT (RF = reserve factor, ≥ 1 passes)",
+    "Plasticita: ZAP": "Plasticity: ON",
+    "celý nosník": "whole beam",
+    "KONTROLNÍ BODY": "CONTROL POINTS",
     "Chyba": "Error",
     "VVÚ v jednom grafu": "Diagrams in one chart",
     "Průřez a napjatost": "Cross-section & stress",
