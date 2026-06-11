@@ -260,6 +260,7 @@ def solve_beam(state) -> SolverResult:
 
     # ── okrajové podmínky ──
     constrained = set()
+    skew_rollers = []      # (dof_u, sinα, cosα) – šikmé rolny přes penaltu
     for sup in state.supports:
         nd = node_at(sup.x)
         if not nd:
@@ -270,21 +271,35 @@ def solve_beam(state) -> SolverResult:
         elif sup.type == "pin":
             constrained |= {d, d+1, d+3}
         elif sup.type == "roller":
-            rad = np.radians(sup.angle)
-            if abs(np.sin(rad)) < 1e-5:
-                constrained.add(d+1)
-            elif abs(np.cos(rad)) < 1e-5:
-                constrained.add(d)
+            rad = np.radians(sup.angle or 0.0)
+            s_, c_ = float(np.sin(rad)), float(np.cos(rad))
+            if abs(s_) < 1e-5:
+                constrained.add(d+1)          # vodorovná rolna → drží w
+            elif abs(c_) < 1e-5:
+                constrained.add(d)            # svislá → drží u
             else:
-                constrained.add(d+1)
+                skew_rollers.append((d, s_, c_))
 
     if not any(dof % 4 == 3 for dof in constrained) and nodes:
         constrained.add(nodes[0]["dof"]+3)
-    if not any(dof % 4 == 0 for dof in constrained) and nodes:
+    if not any(dof % 4 == 0 for dof in constrained) and nodes and not skew_rollers:
         constrained.add(nodes[0]["dof"]+0)
 
     K_solved = K.copy()
     F_solved = F.copy()
+
+    # šikmá rolna: vazba ve směru normály n = (sin α, cos α) penaltovou
+    # pružinou v rovině (u, w). Penalta jde JEN do K_solved – reakce se pak
+    # rekonstruují z původního K: R = K·U − F = −K_pen·U ∥ n.
+    if skew_rollers:
+        # 1e5× max. diagonála: dost tuhé na vazbu (rel. chyba ~1e-5),
+        # ale nezničí podmíněnost soustavy (float64).
+        kpen = 1e5 * max(float(np.abs(np.diag(K)).max()), 1.0)
+        for d, s_, c_ in skew_rollers:
+            K_solved[d, d] += kpen * s_ * s_
+            K_solved[d, d+1] += kpen * s_ * c_
+            K_solved[d+1, d] += kpen * s_ * c_
+            K_solved[d+1, d+1] += kpen * c_ * c_
     for dof in constrained:
         K_solved[dof, :] = 0
         K_solved[dof, dof] = 1.0
@@ -293,7 +308,16 @@ def solve_beam(state) -> SolverResult:
     try:
         U = np.linalg.solve(K_solved, F_solved)
     except np.linalg.LinAlgError:
-        return SolverResult([], [], [], False, section,
+        return SolverResult([], [], [], False, rep_section,
+                            "Nestabilní soustava (mechanismus / nedostatečné podepření).")
+    # LAPACK téměř-singulární soustavu „vyřeší" s nesmysly – kontrola
+    # konečnosti a rezidua odhalí mechanismus/nedostatečné podepření.
+    if not np.all(np.isfinite(U)):
+        return SolverResult([], [], [], False, rep_section,
+                            "Nestabilní soustava (mechanismus / nedostatečné podepření).")
+    resid = float(np.linalg.norm(K_solved @ U - F_solved))
+    if resid > 1e-6 * (float(np.linalg.norm(F_solved)) + 1.0):
+        return SolverResult([], [], [], False, rep_section,
                             "Nestabilní soustava (mechanismus / nedostatečné podepření).")
 
     # ── reakce ──
@@ -390,16 +414,20 @@ def solve_beam(state) -> SolverResult:
             xi = i/nsteps
             xloc = xi*L_e
 
-            N1 = 1 - 3*xi**2 + 2*xi**3
-            N2 = xloc*(1-xi)**2
-            N3 = 3*xi**2 - 2*xi**3
-            N4 = xloc*(xi**2 - xi)
+            # IIE interpolace (Reddy, Interdependent Interpolation Element):
+            # w i φ konzistentní s Timoshenkovým prvkem; pro Φ=0 přechází
+            # přesně v klasické Hermitovy funkce (Euler-Bernoulli).
+            op = 1.0 + Phi_e
+            N1 = (1 - 3*xi**2 + 2*xi**3 + Phi_e*(1 - xi)) / op
+            N2 = L_e*(xi - 2*xi**2 + xi**3 + 0.5*Phi_e*(xi - xi**2)) / op
+            N3 = (3*xi**2 - 2*xi**3 + Phi_e*xi) / op
+            N4 = L_e*(-xi**2 + xi**3 - 0.5*Phi_e*(xi - xi**2)) / op
             w = N1*w1 + N2*phi1 + N3*w2 + N4*phi2
-            dN1 = (-6*xi + 6*xi**2)/L_e
-            dN2 = (1 - 4*xi + 3*xi**2)
-            dN3 = (6*xi - 6*xi**2)/L_e
-            dN4 = (-2*xi + 3*xi**2)
-            phi = dN1*w1 + dN2*phi1 + dN3*w2 + dN4*phi2
+            H1 = 6*(xi**2 - xi) / (L_e*op)
+            H2 = (3*xi**2 - 4*xi + 1 + Phi_e*(1 - xi)) / op
+            H3 = 6*(xi - xi**2) / (L_e*op)
+            H4 = (3*xi**2 - 2*xi + Phi_e*xi) / op
+            phi = H1*w1 + H2*phi1 + H3*w2 + H4*phi2
             theta = th1 + (th2-th1)*xi
 
             a0 = float(np.interp(xloc, sgrid, A0))

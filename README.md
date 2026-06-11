@@ -94,7 +94,7 @@ To package BEAMER into a single standalone `.exe`, see
 ## Documentation
 
 A full user manual is available:
-[manual/BEAMER_manual_EN_v1.12.docx](manual/BEAMER_manual_EN_v1.12.docx).
+[manual/BEAMER_manual_EN_v1.14.docx](manual/BEAMER_manual_EN_v1.14.docx).
 
 ## Tests
 

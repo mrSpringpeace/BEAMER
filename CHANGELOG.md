@@ -2,6 +2,43 @@
 
 Version format: **X.XX**
 
+## 1.14
+
+Results of an internal mathematics audit — corrections and refinements:
+
+- **Fixed the torsion constant of a solid rectangle** (scanline path): the
+  Saint-Venant formula had the sides swapped (c1·t·a³ instead of c1·a·t³),
+  overestimating IT by up to (a/t)² — 4× for a 100×200 section. This affected
+  the parametric rectangle and the no-SciPy fallback; the FEM path (polygons)
+  was correct. Now matches Roark within 0.1 %.
+- **Fixed the torsional shear stress τ_t**: previously a single open-thin-walled
+  formula (Mk·t/IT) was used for all sections, underestimating the stress for
+  tubes (up to ~125×), closed boxes (~10×) and solid circles. Now a per-type
+  torsion model is used: circle/tube τ = Mk·R/J, closed box by Bredt
+  τ = Mk/(2·Am·t), solid rectangle τ = Mk/(α·a·b²) (Roark), open profiles
+  unchanged. A single shared implementation feeds both the point-stress
+  evaluation and the assessment influence coefficients. Pure-bending results
+  are unaffected.
+- **Skew roller support**: a roller angle other than 0°/90° was silently
+  treated as vertical. It is now constrained by a penalty spring along the
+  roller normal n = (sin α, cos α); the reaction acts along the normal and
+  global equilibrium holds.
+- **Timoshenko interpolation**: deflection and rotation between nodes now use
+  the Interdependent Interpolation Element (Reddy) consistent with the
+  Timoshenko element; for Φ = 0 it reduces exactly to the Hermite functions
+  (Euler–Bernoulli unchanged).
+- **More robust instability detection**: near-singular systems (which LAPACK
+  "solves" with garbage) are now caught by finiteness and residual checks;
+  also fixed a crash in the singular-matrix error handler.
+- **Test suite extended to 28 tests** (`beamer/tests/test_accuracy.py`):
+  accuracy of IT (rectangle/circle/tube/I vs Roark and analytics), τ_t per
+  torsion model, σ = M/W, τ = 1.5·V/A, point-moment reactions, Gerber hinge,
+  equilibrium, 45° skew roller, exact Timoshenko UDL, instability reporting.
+- Documented modelling assumptions in the manual: scalar summation of shear
+  components in von Mises (conservative on flanges), Iω/shear centre of
+  parametric profiles as estimates (FEM for polygons only), α_pl as a
+  pure-bending heuristic, composite J = Σ Jᵢ.
+
 ## 1.13
 
 - **Verification test suite** (`beamer/tests/test_verification.py`, pytest):

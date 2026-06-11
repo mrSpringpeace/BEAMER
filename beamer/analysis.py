@@ -64,8 +64,8 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
         Q_si = section.Q_at(zi)/1e9
         b_si = bz_mm/1e3
         c_tV[i] = Q_si/(Iy_si*b_si) if (Iy_si > 1e-30 and b_si > 1e-15) else 0.0
-        t_si = section.t_wall_at(zi)/1e3
-        c_tT[i] = t_si/IT_si if IT_si > 1e-30 else 0.0
+        # τ_t dle torzního modelu průřezu (open/Bredt/kruh/…) – sdílené se stress()
+        c_tT[i] = section._tau_t_coeff(zi)
     c_sN = 1.0/A_si if A_si > 1e-30 else 0.0
     return StressInfluence(z, c_sN, c_sM, c_tV, c_tT)
 

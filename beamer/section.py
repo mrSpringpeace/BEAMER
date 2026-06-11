@@ -319,6 +319,16 @@ class CrossSection:
         self._sl_circ = slices_for_circle
         self._walls_input = walls
         self._IT_override = IT_override
+        # torzní model pro smykové napětí τ_t (nastavuje build_section):
+        #   "open"       τ = Mk·t/IT     (otevřené tenkostěnné – I, T, L, U, polygon)
+        #   "circle"     τ = Mk·R/IT     (plný kruh, okraj)
+        #   "tube"       τ = Mk·R/IT     (mezikruží, vnější okraj)
+        #   "closed_box" τ = Mk/(2·Am·t) (Bredt – uzavřený box)
+        #   "solid_rect" τ = Mk/(α·a·b²) (plný obdélník, Roark α≈1/(3+1.8·b/a))
+        self.torsion_model = "open"
+        self.torsion_R = 0.0       # vnější poloměr [mm] (circle/tube)
+        self.torsion_Am = 0.0      # plocha střednice [mm²] (closed_box)
+        self.torsion_ab = None     # (a, b) [mm] – delší, kratší strana (solid_rect)
         # bodies = list of (outer_pts_xy, [hole_pts_xy, ...]) v původních souř.;
         # None = legacy single polygon (přes pts_xy / slices_for_circle).
         self._bodies_orig = bodies
@@ -628,7 +638,8 @@ class CrossSection:
         return self._IT_solid_scanline(pts)
 
     def _IT_solid_scanline(self, pts):
-        """IT masivního obdélníkového průřezu (Timoshenko korekce)."""
+        """IT masivního obdélníkového průřezu dle Saint-Venant:
+        J = c1·a·t³ (a = delší, t = KRATŠÍ strana v třetí mocnině)."""
         all_z = [p[1] for p in pts]
         all_x = [p[0] for p in pts]
         h_total = max(all_z) - min(all_z)
@@ -639,7 +650,7 @@ class CrossSection:
             return 0.0
         bt = a_ / t_
         c1 = 1.0/3.0 * (1.0 - 0.630/bt + 0.052/bt**5)
-        return c1 * t_ * a_**3
+        return c1 * a_ * t_**3
 
     # ─── warping Iω (Vlasov) ─────────────────────────────────
     def _approx_Iw(self):
@@ -891,6 +902,29 @@ class CrossSection:
         return t_min if t_min < 1e9 else 1e-15
 
     # ─── napjatost ───────────────────────────────────────────
+    def _tau_t_coeff(self, z_mm):
+        """τ_t na jednotkový Mk [1/m³] dle torzního modelu průřezu (SI).
+        Společné pro stress() i vlivové koeficienty (build_influence)."""
+        IT = self.IT / 1e12
+        if IT <= 1e-30:
+            return 0.0
+        m = self.torsion_model
+        if m in ("circle", "tube"):
+            return (self.torsion_R / 1e3) / IT
+        if m == "closed_box":
+            t = self.t_wall_at(z_mm) / 1e3
+            Am = self.torsion_Am / 1e6
+            return 1.0 / (2.0 * Am * t) if (t > 1e-15 and Am > 1e-15) else 0.0
+        if m == "solid_rect" and self.torsion_ab:
+            a, b = self.torsion_ab
+            a /= 1e3; b /= 1e3
+            if a > 1e-15 and b > 1e-15:
+                alpha = 1.0 / (3.0 + 1.8 * b / a)
+                return 1.0 / (alpha * a * b * b)
+            return 0.0
+        # open (default): tenkostěnný otevřený – τ = Mk·t/IT
+        return (self.t_wall_at(z_mm) / 1e3) / IT
+
     def stress(self, forces, z_mm, y_mm=0.0):
         """Napětí v bodě (y_mm, z_mm) [mm od těžiště]. Síly N, momenty N·m."""
         Fx = forces["Fx"]; Fy = forces["Fy"]; Fz = forces["Fz"]
@@ -917,9 +951,7 @@ class CrossSection:
         hy = self.height_at_y(y_mm)/1e3
         tauVy = Fy*Qy/(Iz*hy) if hy > 1e-15 else 0.0
 
-        IT = self.IT/1e12
-        tw = self.t_wall_at(z_mm)/1e3
-        tauT = Mk*tw/IT if IT > 1e-30 else 0.0
+        tauT = Mk * self._tau_t_coeff(z_mm)
 
         tau = tauVz + tauVy + tauT
         mises = math.sqrt(sigma**2 + 3*tau**2)
@@ -1154,8 +1186,15 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
             IT = 4 * Am**2 / (2*(H - tw)/tw + 2*(B - tw)/tw)
         else:
             IT = None   # degenerovaný (tw ≥ rozměr) → ponech výpočet na jádře
+            Am = 0.0
         cs = CrossSection(bodies=[(outer, holes)], IT_override=IT)
         cs.section_type = "box"
+        if Am > 0:
+            cs.torsion_model = "closed_box"     # Bredt: τ = Mk/(2·Am·t)
+            cs.torsion_Am = Am
+        else:
+            cs.torsion_model = "solid_rect"
+            cs.torsion_ab = (max(B, H), min(B, H))
         return cs
     elif t == "circle":
         pts, walls, sl, IT = make_circle(gv("D", 100))
@@ -1228,14 +1267,27 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
 
     cs = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls, IT_override=IT)
     cs.section_type = t
-    # poloměry pro čisté vykreslení obrysu kruhu / trubky v náhledu
+    # poloměry pro vykreslení obrysu + torzní model pro τ_t
     if t == "circle":
-        cs._circle_r_out = gv("D", 100) / 2.0
+        R = gv("D", 100) / 2.0
+        cs._circle_r_out = R
         cs._circle_r_in = 0.0
+        cs.torsion_model = "circle"          # τ = Mk·R/J (okraj)
+        cs.torsion_R = R
     elif t == "tube":
         ro = gv("Do", 100) / 2.0
         cs._circle_r_out = ro
         cs._circle_r_in = max(0.0, ro - gv("t", 5))
+        cs.torsion_model = "tube"            # τ = Mk·R/J (vnější okraj)
+        cs.torsion_R = ro
+    elif t == "rectangle":
+        b_, h_ = gv("b", 100), gv("h", 200)
+        cs.torsion_model = "solid_rect"      # τ = Mk/(α·a·b²), Roark
+        cs.torsion_ab = (max(b_, h_), min(b_, h_))
+    elif t == "direct":
+        hh = (12.0 * max(gv("Iy", 1000.0), 1e-9)) ** 0.25
+        cs.torsion_model = "solid_rect"
+        cs.torsion_ab = (hh, hh)
     return cs
 
 
