@@ -22,6 +22,7 @@ class Settings:
     vvu_combined: bool = False      # VVÚ v jednom grafu
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
+    last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
 
     def save(self):
         try:
@@ -38,7 +39,7 @@ def _load() -> Settings:
             d = json.load(f)
         s = Settings()
         for k in ("language", "number_format", "decimals", "vvu_combined",
-                  "vvu_show_deform", "shared_library_dir"):
+                  "vvu_show_deform", "shared_library_dir", "last_dir"):
             if k in d:
                 setattr(s, k, d[k])
         return s

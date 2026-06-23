@@ -152,6 +152,7 @@ class ProjectState:
     additional_factor: float = 1.0   # dodatečný součinitel – násobí zatížení (ultimate síly)
     plasticity_enabled: bool = False  # využít součinitel plasticity v RF_ultimate
     plasticity_method: str = "analytic"  # "analytic" | "tabular"
+    rf_basis: str = "min"             # řídicí RF: "min" | "yield" (Re) | "ultimate" (Rm)
     theory: Theory = "euler-bernoulli"
     selected_active_combination_id: str = ""
 

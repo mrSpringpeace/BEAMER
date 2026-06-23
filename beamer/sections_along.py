@@ -54,6 +54,32 @@ def segment_at(state, x: float) -> SectionSegment:
     return segs[0] if x < segs[0].x1 else segs[-1]
 
 
+def segments_at(state, x: float, tol: float = 1e-3) -> list:
+    """Úsek(y) přiléhající k poloze x. Uvnitř úseku 1 úsek; přesně na rozhraní
+    dvou různých úseků vrátí oba (levý + pravý)."""
+    out = [s for s in normalized_segments(state) if s.x1 - tol <= x <= s.x2 + tol]
+    return out or [segment_at(state, x)]
+
+
+def def_for_segment(seg: SectionSegment, x: float) -> CrossSectionDef:
+    """Definice průřezu konkrétního úseku v poloze x (interpolace pro tapered)."""
+    if not seg.tapered:
+        return seg.sec1
+    span = seg.x2 - seg.x1
+    t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1) / span))
+    return interp_def(seg.sec1, seg.sec2, t)
+
+
+def material_for_segment(state, seg: SectionSegment):
+    """Materiál konkrétního úseku (dle material_id), jinak globální."""
+    mid = getattr(seg, "material_id", None)
+    if mid:
+        for m in state.materials:
+            if m.id == mid:
+                return m
+    return state.material()
+
+
 def def_at(state, x: float) -> CrossSectionDef:
     """Definice průřezu v poloze x (interpolovaná pro tapered)."""
     seg = segment_at(state, x)

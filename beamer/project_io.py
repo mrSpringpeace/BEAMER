@@ -26,6 +26,7 @@ def state_to_dict(state: ProjectState) -> dict:
         "additional_factor": state.additional_factor,
         "plasticity_enabled": state.plasticity_enabled,
         "plasticity_method": state.plasticity_method,
+        "rf_basis": getattr(state, "rf_basis", "min"),
         "theory": state.theory,
         "selected_active_combination_id": state.selected_active_combination_id,
     }
@@ -79,6 +80,7 @@ def dict_to_state(d: dict) -> ProjectState:
                                  d.get("fitting_factor", 1.0)),  # zpětná kompat.
         plasticity_enabled=d.get("plasticity_enabled", False),
         plasticity_method=d.get("plasticity_method", "analytic"),
+        rf_basis=d.get("rf_basis", "min"),
         theory=d.get("theory", "euler-bernoulli"),
         selected_active_combination_id=d.get("selected_active_combination_id", ""),
     )

@@ -78,6 +78,15 @@ class MainWindow(QMainWindow):
         self.vvu_deform_cb.setChecked(SETTINGS.vvu_show_deform)
         self.vvu_deform_cb.toggled.connect(self._on_vvu_deform)
         bar.addWidget(self.vvu_deform_cb)
+        bar.addWidget(QLabel(tr("RF k:")))
+        self.rf_basis_cb = QComboBox()
+        self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
+        self.rf_basis_cb.addItem("Re", "yield")
+        self.rf_basis_cb.addItem("Rm", "ultimate")
+        self.rf_basis_cb.setCurrentIndex(
+            max(0, self.rf_basis_cb.findData(getattr(self.state, "rf_basis", "min"))))
+        self.rf_basis_cb.currentIndexChanged.connect(self._on_rf_basis)
+        bar.addWidget(self.rf_basis_cb)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setRange(0, 100)
@@ -130,12 +139,25 @@ class MainWindow(QMainWindow):
         sv.addWidget(self.stress_canvas, 1)
         self.tabs.addTab(stress_tab, tr("Průřez a napjatost"))
 
-        # tab výsledky (souhrnný protokol) – uprostřed
+        # tab výsledky (souhrnný protokol) + ovládání velikosti fontu
         from PySide6.QtWidgets import QTextEdit
+        results_tab = QWidget()
+        rtv = QVBoxLayout(results_tab)
+        rtv.setContentsMargins(0, 0, 0, 0)
+        fbar = QHBoxLayout()
+        fbar.addWidget(QLabel(tr("Velikost písma:")))
+        b_minus = QPushButton("A−"); b_minus.setMaximumWidth(36)
+        b_plus = QPushButton("A+"); b_plus.setMaximumWidth(36)
+        b_minus.clicked.connect(lambda: self._results_font(-1))
+        b_plus.clicked.connect(lambda: self._results_font(+1))
+        fbar.addWidget(b_minus); fbar.addWidget(b_plus); fbar.addStretch(1)
+        rtv.addLayout(fbar)
+        self._results_font_pt = 11
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
-        self.results_text.setStyleSheet("font-family:'Consolas',monospace; font-size:11px;")
-        self.tabs.addTab(self.results_text, tr("Výsledky"))
+        self._apply_results_font()
+        rtv.addWidget(self.results_text, 1)
+        self.tabs.addTab(results_tab, tr("Výsledky"))
 
         # tab posouzení
         margin_tab = QWidget()
@@ -273,6 +295,24 @@ class MainWindow(QMainWindow):
         self.beam_canvas.show_deform = bool(on)
         self.beam_canvas.plot(self.state, self.result)
 
+    def _on_rf_basis(self, _):
+        """Změna řídicí báze RF (min / Re / Rm) – jen přepočet posouzení
+        z existujícího výsledku, bez re-solve."""
+        self.state.rf_basis = self.rf_basis_cb.currentData()
+        self._modified = True
+        if self.result and self.result.is_stable and self.result.points:
+            from ..analysis import reserves_along_beam
+            self.reserves = reserves_along_beam(self.result, self.state)
+            self._refresh_views()
+
+    def _apply_results_font(self):
+        self.results_text.setStyleSheet(
+            f"font-family:'Consolas',monospace; font-size:{self._results_font_pt}px;")
+
+    def _results_font(self, delta):
+        self._results_font_pt = max(7, min(28, self._results_font_pt + delta))
+        self._apply_results_font()
+
     def _retranslate(self):
         """Přestaví UI po změně jazyka."""
         self._update_title()
@@ -397,18 +437,41 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._refresh_results_text()
+        self._refresh_part_selector()   # nové kontrolní body i v selektoru karty Průřez
 
     def _refresh_part_selector(self):
         self.part_sel.blockSignals(True)
-        cur = self.part_sel.currentIndex()
+        cur_data = self.part_sel.currentData()
         self.part_sel.clear()
+        # úseky (kritický řez)
         for cp in self._parts_crit:
             rf = cp["crit"].RF if cp.get("crit") else float("nan")
             self.part_sel.addItem(
                 f"{tr('Úsek')} {cp['idx']+1}  ({cp['x1']:.0f}–{cp['x2']:.0f}) · "
-                f"{cp['material']} · RF={rf:.2f}", cp["idx"])
-        if 0 <= cur < self.part_sel.count():
-            self.part_sel.setCurrentIndex(cur)
+                f"{cp['material']} · RF={rf:.2f}", ("seg", cp["idx"]))
+        # kontrolní body (jsou-li definované); na rozhraní úseků dvě položky
+        cps = getattr(self.state, "control_points", None) or []
+        from ..sections_along import segments_at, normalized_segments
+        all_segs = normalized_segments(self.state)
+        for orig_idx, cpt in sorted(enumerate(cps), key=lambda t: t[1].x):
+            nm = (cpt.name.strip() if getattr(cpt, "name", "") else "") or f"K{orig_idx+1}"
+            segs = segments_at(self.state, float(cpt.x))
+            if len(segs) == 2:
+                ordered = sorted(segs, key=lambda s: s.x1)
+                for side, sg in zip((tr("vlevo"), tr("vpravo")), ordered):
+                    si = all_segs.index(sg)
+                    self.part_sel.addItem(
+                        f"{tr('Kontrolní bod')}: {nm} (x={cpt.x:.0f}, {tr('úsek')} {si+1} – {side})",
+                        ("cp", float(cpt.x), si))
+            else:
+                si = all_segs.index(segs[0]) if segs[0] in all_segs else None
+                self.part_sel.addItem(
+                    f"{tr('Kontrolní bod')}: {nm} (x={cpt.x:.0f})", ("cp", float(cpt.x), si))
+        # obnov výběr
+        if cur_data is not None:
+            i = self.part_sel.findData(cur_data)
+            if i >= 0:
+                self.part_sel.setCurrentIndex(i)
         self.part_sel.blockSignals(False)
 
     def _on_part_selected(self, _):
@@ -417,12 +480,36 @@ class MainWindow(QMainWindow):
     def _render_selected_part(self):
         sec = self.result.section if self.result else None
         resolver = getattr(self.result, "resolver", None) if self.result else None
+        data = self.part_sel.currentData()
         if (self.result and self.result.is_stable and self.result.points
-                and self._parts_crit and resolver is not None):
-            idx = max(0, self.part_sel.currentIndex())
-            cp = self._parts_crit[min(idx, len(self._parts_crit)-1)]
-            crit = cp.get("crit")
-            xq = crit.x if crit else (cp["x1"]+cp["x2"])/2
+                and resolver is not None and data is not None):
+            if data[0] == "cp":
+                xq = float(data[1])
+                seg_i = data[2] if len(data) > 2 else None
+                title = f"— {tr('Kontrolní bod')} x={xq:.0f} —"
+                if seg_i is not None:
+                    from ..sections_along import (normalized_segments,
+                                                  def_for_segment)
+                    from ..section import build_section
+                    all_segs = normalized_segments(self.state)
+                    if 0 <= seg_i < len(all_segs):
+                        sg = all_segs[seg_i]
+                        title = f"— {tr('Kontrolní bod')} x={xq:.0f} · {tr('Úsek')} {seg_i+1} —"
+                        try:
+                            sec_forced = build_section(def_for_segment(sg, xq))
+                            pcrit = min(self.result.points, key=lambda p: abs(p.x - xq))
+                            self.section_canvas.plot(sec_forced)
+                            self.stress_canvas.plot(sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+                            self.results_panel.set_section(sec_forced, title)
+                            return
+                        except Exception:
+                            pass
+            else:
+                cp = self._parts_crit[min(data[1], len(self._parts_crit)-1)] if self._parts_crit else None
+                crit = cp.get("crit") if cp else None
+                xq = crit.x if crit else (cp["x1"]+cp["x2"])/2 if cp else self.state.length/2
+                title = (f"— {tr('Úsek')} {cp['idx']+1} · {tr('kritický řez')} x={xq:.0f} —"
+                         if cp else "")
             pcrit = min(self.result.points, key=lambda p: abs(p.x - xq))
             try:
                 sec_crit = resolver.at(pcrit.x)
@@ -430,8 +517,7 @@ class MainWindow(QMainWindow):
                 sec_crit = sec
             self.section_canvas.plot(sec_crit)
             self.stress_canvas.plot(sec_crit, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
-            self.results_panel.set_section(
-                sec_crit, f"— {tr('Úsek')} {cp['idx']+1} · {tr('kritický řez')} x={pcrit.x:.0f} —")
+            self.results_panel.set_section(sec_crit, title)
         else:
             self.section_canvas.plot(sec)
             self.stress_canvas.plot(sec, 0, 0, 0, 0)
@@ -465,6 +551,20 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
+    # ── pomocné: zapamatování posledního adresáře dialogů ──
+    def _start(self, name=""):
+        d = SETTINGS.last_dir or ""
+        if name:
+            return os.path.join(d, name) if d else name
+        return d
+
+    def _remember(self, path):
+        try:
+            SETTINGS.last_dir = os.path.dirname(path)
+            SETTINGS.save()
+        except Exception:
+            pass
+
     # ── soubor ──
     def new_project(self):
         if not self._confirm_discard():
@@ -494,9 +594,10 @@ class MainWindow(QMainWindow):
     def open_project(self):
         if not self._confirm_discard():
             return
-        path, _ = QFileDialog.getOpenFileName(self, tr("Otevřít projekt"), "", "BEAMER (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Otevřít projekt"), self._start(), "BEAMER (*.json)")
         if not path:
             return
+        self._remember(path)
         try:
             state = project_io.load_project(path)
         except Exception as e:
@@ -508,9 +609,10 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(self, tr("Importovat Ministatik (*.nos)…"),
-                                              "", "Ministatik (*.nos)")
+                                              self._start(), "Ministatik (*.nos)")
         if not path:
             return
+        self._remember(path)
         from .. import nos_io
         try:
             state = nos_io.load_nos(path)
@@ -523,9 +625,10 @@ class MainWindow(QMainWindow):
     def save_project(self) -> bool:
         """Uloží projekt. Vrací True při úspěšném uložení, jinak False
         (zrušený dialog nebo chyba) – využívá `_confirm_discard`."""
-        path, _ = QFileDialog.getSaveFileName(self, tr("Uložit projekt"), "projekt.json", "BEAMER (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("Uložit projekt"), self._start("projekt.json"), "BEAMER (*.json)")
         if not path:
             return False
+        self._remember(path)
         try:
             project_io.save_project(self.state, path)
             self._modified = False
@@ -536,9 +639,10 @@ class MainWindow(QMainWindow):
             return False
 
     def export_report(self):
-        path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu"), "protokol.txt", "Text (*.txt)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu"), self._start("protokol.txt"), "Text (*.txt)")
         if not path:
             return
+        self._remember(path)
         from ..report import build_report
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -548,9 +652,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat: ") + str(e))
 
     def export_png(self):
-        path, _ = QFileDialog.getSaveFileName(self, tr("Export VVÚ"), "vvu.png", "PNG (*.png)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("Export VVÚ"), self._start("vvu.png"), "PNG (*.png)")
         if not path:
             return
+        self._remember(path)
         self.beam_canvas.fig.savefig(path, dpi=150)
         self.statusBar().showMessage(tr("Obrázek uložen: ") + path)
 
@@ -560,9 +665,10 @@ class MainWindow(QMainWindow):
                                     tr("Nejsou k dispozici výsledky."))
             return
         path, _ = QFileDialog.getSaveFileName(self, tr("Export křivek (CSV)…"),
-                                              "beamer_curves.csv", "CSV (*.csv)")
+                                              self._start("beamer_curves.csv"), "CSV (*.csv)")
         if not path:
             return
+        self._remember(path)
         # volitelné rozlišení (default = plné rozlišení solveru)
         from PySide6.QtWidgets import QInputDialog
         total = len(self.result.points)

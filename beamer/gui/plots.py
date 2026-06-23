@@ -33,11 +33,19 @@ def _draw_schema(ax, state, result=None):
     """Schéma nosníku: nosník, číslované podpory, klouby, zatížení (+popisky)
     a – je-li `result` – grafické reakce."""
     L = state.length
-    ax.plot([0, L], [0, 0], color="#333", lw=3, solid_capstyle="round")
     ax.set_title(tr("Schéma nosníku"), fontsize=9, loc="left")
 
-    # dělicí čáry úseků; textové popisky jen při malém počtu úseků (jinak nečitelné)
+    # nosník po úsecích – střídavě černá / tmavě šedá, ať jdou úseky rozeznat
     segs = getattr(state, "section_segments", None) or []
+    seg_colors = ("#1a1a1a", "#777777")
+    if segs:
+        for j, seg in enumerate(segs):
+            ax.plot([seg.x1, seg.x2], [0, 0], color=seg_colors[j % 2],
+                    lw=3, solid_capstyle="butt")
+    else:
+        ax.plot([0, L], [0, 0], color="#1a1a1a", lw=3, solid_capstyle="round")
+
+    # dělicí čáry úseků; textové popisky jen při malém počtu úseků (jinak nečitelné)
     show_seg_labels = len(segs) <= 8
     for j, seg in enumerate(segs):
         if j > 0:
@@ -210,7 +218,7 @@ def _annotate_extremes(ax, x, arr, color):
     for idx, va in ((int(np.nanargmax(arr)), "bottom"), (int(np.nanargmin(arr)), "top")):
         xv, yv = x[idx], arr[idx]
         ax.plot(xv, yv, "o", color=color, ms=4)
-        ax.annotate(fmt(yv), xy=(xv, yv), textcoords="offset points",
+        ax.annotate(f"{fmt(yv)}\n@ x={xv:.0f}", xy=(xv, yv), textcoords="offset points",
                     xytext=(0, 6 if va == "bottom" else -6), ha="center", va=va,
                     fontsize=7, color=color,
                     bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=color, alpha=0.85, lw=0.6))
@@ -526,6 +534,14 @@ class StressCanvas(MplCanvas):
             ax.set_title(title, fontsize=8)
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=7)
+            # legenda min/max přímo v grafu
+            fin = arr[np.isfinite(arr)]
+            if fin.size:
+                ax.text(0.03, 0.98, f"max {fmt(float(fin.max()))}\nmin {fmt(float(fin.min()))}",
+                        transform=ax.transAxes, va="top", ha="left", fontsize=6.5,
+                        color=color,
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=color,
+                                  alpha=0.85, lw=0.6))
         axes[0].set_ylabel(tr("z [mm od těžiště]"), fontsize=8)
         self.fig.suptitle(f"{tr('Napjatost')}  (M={M:.0f} N·mm, V={V:.0f} N)", fontsize=9)
         self.draw()
@@ -573,17 +589,18 @@ class MarginCanvas(MplCanvas):
                         fontsize=7, color=color,
                         bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=color, alpha=0.9, lw=0.6))
 
-        # adaptivní strop osy: když RF místy vychází obrovské (σ→0 u podpor/konců),
-        # oříznem pohled tak, aby byl dobře vidět nízký (řídicí) RF podél nosníku
+        # adaptivní strop osy: RF u podpor/konců vystřeluje (σ→0 → RF→∞).
+        # Strop volíme z PERCENTILU řídicí křivky (ne z poměru k minimu), takže
+        # je robustní i když jsou minima i maxima velká. Spodek vždy 0.
         finite = rf_min[np.isfinite(rf_min)]
         clipped = False
         if finite.size:
             rfmin = float(np.min(finite))
-            cap = max(1.5, 3.0 * rfmin)            # ~3× minimum, min. 1,5
-            true_top = float(np.nanmax(np.concatenate([ry[~np.isnan(ry)] if np.any(~np.isnan(ry)) else [0],
-                                                       ru[~np.isnan(ru)] if np.any(~np.isnan(ru)) else [0]])))
-            if true_top > cap * 1.2:
-                ax.set_ylim(0, cap)
+            p90 = float(np.percentile(finite, 90))   # typický „vysoký" řídicí RF
+            cap = max(1.5, 1.25 * rfmin, 1.15 * p90)
+            true_top = float(np.nanmax(np.where(np.isfinite(rf_min), rf_min, 0.0)))
+            if true_top > cap * 1.15:
+                ax.set_ylim(0, cap * 1.12)           # +12 % headroom na popisky
                 clipped = True
         if not clipped:
             ax.set_ylim(bottom=0)

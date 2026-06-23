@@ -124,8 +124,8 @@ class InputPanel(QScrollArea):
         self._build_supports()
         self._build_hinges()
         self._build_loads()
-        self._build_factors()
         self._build_control_points()
+        self._build_factors()
         self.layout.addStretch(1)
 
     def _emit(self, *_):
@@ -162,8 +162,8 @@ class InputPanel(QScrollArea):
 
     # ── materiál ──
     def _build_material(self):
-        g = QGroupBox(tr("Materiály (knihovna)"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Materiály (knihovna)"), expanded=True)
+        v = box.content_layout
         row = QHBoxLayout()
         self.mat_cb = QComboBox()
         self._reload_mat_combo()
@@ -184,18 +184,13 @@ class InputPanel(QScrollArea):
         librow.addWidget(from_lib)
         v.addLayout(librow)
 
-        # needitovatelný popis (pro knihovní materiály)
-        self.mat_info = QLabel()
-        self.mat_info.setStyleSheet("color:#555; font-size:11px;")
-        v.addWidget(self.mat_info)
-
-        # editovatelný formulář (pro vlastní materiály)
+        # editovatelný formulář – vždy předvyplněný hodnotami zvoleného materiálu
         self.mat_edit_host = QWidget()
         self.mat_edit_form = QFormLayout(self.mat_edit_host)
         self.mat_edit_form.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.mat_edit_host)
 
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
         self._refresh_material_view()
 
     def _reload_mat_combo(self):
@@ -220,40 +215,40 @@ class InputPanel(QScrollArea):
         self.state.selected_material_id = m.id
         self._reload_mat_combo()
         self._refresh_material_view()
+        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
         self._emit()
 
     def _refresh_material_view(self):
+        """Vždy zobrazí editovatelný formulář předvyplněný hodnotami zvoleného
+        materiálu – uživatel může vyjít z knihovního a jen upravit hodnoty.
+        Úprava knihovního materiálu mění jen kopii v projektu."""
         m = self.state.material()
-        # vyčisti editor
         while self.mat_edit_form.rowCount():
             self.mat_edit_form.removeRow(0)
-        if getattr(m, "is_custom", False):
-            self.mat_info.setVisible(False)
-            self.mat_edit_host.setVisible(True)
-            name = QLineEdit(m.name)
-            name.textChanged.connect(lambda s, mm=m: (setattr(mm, "name", s), self._mat_renamed()))
-            self.mat_edit_form.addRow(tr("Název:"), name)
-            for attr, label, suf, dec in [
-                ("E", "E", " MPa", 0), ("G", "G", " MPa", 0), ("nu", "ν", "", 3),
-                ("Re", "Re (mez kluzu)", " MPa", 0), ("Rm", "Rm (pevnost)", " MPa", 0),
-                ("rho", "ρ", " g/cm³", 3),
-            ]:
-                sp = _spin(getattr(m, attr), 0, 1e6, 1.0, dec, suf)
-                sp.valueChanged.connect(lambda val, a=attr, mm=m: (setattr(mm, a, val), self._emit()))
-                self.mat_edit_form.addRow(tr(label) + ":", sp)
+        name = QLineEdit(m.name)
+        name.textChanged.connect(lambda s, mm=m: (setattr(mm, "name", s), self._mat_renamed()))
+        self.mat_edit_form.addRow(tr("Název:"), name)
+        for attr, label, suf, dec in [
+            ("E", "E", " MPa", 0), ("G", "G", " MPa", 0), ("nu", "ν", "", 3),
+            ("Re", "Re (mez kluzu)", " MPa", 0), ("Rm", "Rm (pevnost)", " MPa", 0),
+            ("rho", "ρ", " g/cm³", 3),
+        ]:
+            sp = _spin(getattr(m, attr), 0, 1e6, 1.0, dec, suf)
+            sp.valueChanged.connect(
+                lambda val, a=attr, mm=m: (setattr(mm, a, val),
+                                           setattr(mm, "is_custom", True), self._emit()))
+            self.mat_edit_form.addRow(tr(label) + ":", sp)
+        if len(self.state.materials) > 1:
             db = QPushButton(tr("Smazat tento materiál"))
             db.clicked.connect(lambda _, mm=m: self._del_material(mm))
             self.mat_edit_form.addRow(db)
-        else:
-            self.mat_edit_host.setVisible(False)
-            self.mat_info.setVisible(True)
-            self.mat_info.setText(
-                f"E={m.E:.0f} MPa  G={m.G:.0f} MPa\nRe={m.Re:.0f} MPa  Rm={m.Rm:.0f} MPa  ρ={m.rho} g/cm³")
 
     def _mat_renamed(self):
         idx = self.mat_cb.currentIndex()
         m = self.state.material()
-        self.mat_cb.setItemText(idx, m.name + tr(" (vlastní)"))
+        m.is_custom = True
+        if idx >= 0:
+            self.mat_cb.setItemText(idx, m.name + tr(" (vlastní)"))
         self._emit()
 
     def _material_save_menu(self):
@@ -325,6 +320,7 @@ class InputPanel(QScrollArea):
         self.state.selected_material_id = m.id
         self._reload_mat_combo()
         self._refresh_material_view()
+        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
         self._emit()
 
     def _del_material(self, m):
@@ -334,6 +330,7 @@ class InputPanel(QScrollArea):
         self.state.selected_material_id = self.state.materials[0].id
         self._reload_mat_combo()
         self._refresh_material_view()
+        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
         self._emit()
 
     def _clear_layout(self, lay):
@@ -973,9 +970,14 @@ class ResultsPanel(QWidget):
             crit = min(margins, key=lambda m: m.RF)
             rows += [
                 (tr("— Posouzení —"), ""),
-                ("σ_red max [MPa]", fmt(max(m.mises_max for m in margins))),
-                ("RF_min", f"{fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f}"),
-                ("RF_yield / RF_ult", f"{fmt(crit.RF_yield)} / {fmt(crit.RF_ultimate)}"),
+                ("σ max (normál.) [MPa]", fmt(max(m.sigma_max for m in margins))),
+                ("τ max (smyk) [MPa]", fmt(max(m.tau_max for m in margins))),
+                ("σ_red max (von Mises) [MPa]", fmt(max(m.mises_max for m in margins))),
+                (tr("v kritickém řezu (RF_min):"), ""),
+                ("  σ / τ / σ_red [MPa]",
+                 f"{fmt(crit.sigma_max)} / {fmt(crit.tau_max)} / {fmt(crit.mises_max)}"),
+                ("  RF_min", f"{fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f}"),
+                ("  RF_yield / RF_ult", f"{fmt(crit.RF_yield)} / {fmt(crit.RF_ultimate)}"),
             ]
         self._analysis_rows = rows
         self._render()
@@ -998,6 +1000,9 @@ class ReportPanel(QWidget):
         self._result = None
         self._state = None
         self._reserves = None
+        self._peaks_attr = None     # cyklování špiček: aktivní veličina
+        self._peaks = []            # seznam x špiček (sestupně dle velikosti)
+        self._peak_i = 0
 
         v = QVBoxLayout(self)
 
@@ -1021,13 +1026,16 @@ class ReportPanel(QWidget):
         self.btn_m = QPushButton(tr("Max |M|"))
         self.btn_mk = QPushButton(tr("Max |Mk|"))
         self.btn_crit = QPushButton(tr("Kritický (min RF)"))
-        self.btn_v.clicked.connect(lambda: self._jump_extremum("V"))
-        self.btn_m.clicked.connect(lambda: self._jump_extremum("M"))
-        self.btn_mk.clicked.connect(lambda: self._jump_extremum("Mk"))
+        self.btn_v.clicked.connect(lambda: self._cycle_peak("V"))
+        self.btn_m.clicked.connect(lambda: self._cycle_peak("M"))
+        self.btn_mk.clicked.connect(lambda: self._cycle_peak("Mk"))
         self.btn_crit.clicked.connect(self._jump_critical)
         for b in (self.btn_v, self.btn_m, self.btn_mk, self.btn_crit):
             grid.addWidget(b)
         v.addLayout(grid)
+        hint = QLabel(tr("Tip: opakovaný klik na Max cykluje mezi špičkami veličiny."))
+        hint.setStyleSheet("color:#666; font-size:11px;")
+        v.addWidget(hint)
 
         # ── výstupní tabulka ──
         self.table = QTableWidget(0, 2)
@@ -1044,6 +1052,7 @@ class ReportPanel(QWidget):
         self._result = result
         self._state = state
         self._reserves = reserves
+        self._peaks_attr = None      # nový výsledek → reset cyklu špiček
         ok = bool(result and getattr(result, "is_stable", False) and result.points)
         self._set_enabled(ok)
         if not ok:
@@ -1069,74 +1078,88 @@ class ReportPanel(QWidget):
         self.table.setItem(0, 1, QTableWidgetItem(""))
 
     def _on_show(self):
+        self._peaks_attr = None      # ruční zadání x ukončí cyklus špiček
         self._show_at(self.x_spin.value())
 
-    def _jump_extremum(self, attr):
-        from ..analysis import extremum_x
-        x = extremum_x(self._result, attr)
-        if x is None:
+    def _cycle_peak(self, attr):
+        """Cykluje špičky veličiny: 1. klik → největší špička, další klik →
+        další v pořadí (sestupně dle velikosti)."""
+        from ..analysis import peaks_x, extremum_x
+        if attr != self._peaks_attr:
+            self._peaks = peaks_x(self._result, attr)
+            self._peaks_attr = attr
+            self._peak_i = 0
+        elif self._peaks:
+            self._peak_i = (self._peak_i + 1) % len(self._peaks)
+        if not self._peaks:
+            x = extremum_x(self._result, attr)
+            if x is not None:
+                self._set_x(x)
             return
-        self._set_x(x)
+        note = tr("špička %d/%d |%s|") % (self._peak_i + 1, len(self._peaks), attr)
+        self._set_x(self._peaks[self._peak_i], note=note)
 
     def _jump_critical(self):
         from ..analysis import critical_x
         x = critical_x(self._reserves)
         if x is None:
             return
+        self._peaks_attr = None
         self._set_x(x)
 
-    def _set_x(self, x):
+    def _set_x(self, x, note=None):
         self.x_spin.blockSignals(True)
         self.x_spin.setValue(float(x))
         self.x_spin.blockSignals(False)
-        self._show_at(float(x))
+        self._show_at(float(x), note=note)
 
-    def _show_at(self, x):
-        from ..analysis import values_at_x
+    def _show_at(self, x, note=None):
+        from ..analysis import values_at_x_multi
         import math
-        d = values_at_x(self._result, self._state, x)
-        if d is None:
+        ds = values_at_x_multi(self._result, self._state, x)
+        if not ds:
             self._info(tr("Výsledek není k dispozici."))
             return
-        sec = d["section"]
-        mat = d["material"]
+        d0 = ds[0]
         deg = 180.0 / math.pi
+        head = f"— {tr('Řez')} x = {fmt(d0['x'])} mm —"
+        if note:
+            head += f"   ({note})"
         rows = [
-            (f"— {tr('Řez')} x = {fmt(d['x'])} mm —", ""),
+            (head, ""),
             (tr("— Vnitřní účinky —"), ""),
-            ("N [N]", fmt(d["N"])),
-            ("V [N]", fmt(d["V"])),
-            ("M [N·mm]", fmt(d["M"])),
-            ("Mk [N·mm]", fmt(d["Mk"])),
-            ("w (průhyb) [mm]", fmt(d["w"])),
-            ("φ (ohyb. pootočení) [°]", fmt(d["phi"] * deg)),
-            ("θ (torzní pootočení) [°]", fmt(d["theta"] * deg)),
+            ("N [N]", fmt(d0["N"])),
+            ("V [N]", fmt(d0["V"])),
+            ("M [N·mm]", fmt(d0["M"])),
+            ("Mk [N·mm]", fmt(d0["Mk"])),
+            ("w (průhyb) [mm]", fmt(d0["w"])),
+            ("φ (ohyb. pootočení) [°]", fmt(d0["phi"] * deg)),
+            ("θ (torzní pootočení) [°]", fmt(d0["theta"] * deg)),
         ]
-        if sec is not None and getattr(sec, "valid", False):
+        # na rozhraní úseků: blok průřez/napětí/RF pro každý přiléhající úsek
+        for d in ds:
+            sec = d["section"]; mat = d["material"]
+            if d.get("seg_side"):
+                seg_hdr = (f"— {tr('Úsek')} {d['seg_index']+1} – {tr(d['seg_side'])} —")
+            else:
+                seg_hdr = tr("— Průřez v řezu —")
+            rows.append((seg_hdr, ""))
+            if sec is not None and getattr(sec, "valid", False):
+                rows += [
+                    (tr("typ"), str(getattr(sec, "section_type", "?"))),
+                    ("A [mm²]", fmt(sec.A)),
+                    ("Iy [mm⁴]", fmt(sec.Iy)),
+                    ("IT [mm⁴]", fmt(sec.IT)),
+                ]
+            if mat is not None:
+                rows.append((tr("materiál"), getattr(mat, "name", "?")))
             rows += [
-                (tr("— Průřez v řezu —"), ""),
-                (tr("typ"), str(getattr(sec, "section_type", "?"))),
-                ("A [mm²]", fmt(sec.A)),
-                ("Iy [mm⁴]", fmt(sec.Iy)),
-                ("IT [mm⁴]", fmt(sec.IT)),
+                ("σ max [MPa]", fmt(d["sigma_max"])),
+                ("τ max [MPa]", fmt(d["tau_max"])),
+                ("σ_red (von Mises) [MPa]", fmt(d["mises_max"])),
+                ("RF_yield / RF_ult", f"{fmt(d['RF_yield'])} / {fmt(d['RF_ultimate'])}"),
+                ("RF", f"{fmt(d['RF'])}  ({d['critical']})"),
             ]
-        rows += [
-            (tr("— Napětí —"), ""),
-            ("σ max [MPa]", fmt(d["sigma_max"])),
-            ("τ max [MPa]", fmt(d["tau_max"])),
-            ("σ_red (von Mises) [MPa]", fmt(d["mises_max"])),
-        ]
-        if mat is not None:
-            rows += [
-                (tr("— Materiál / posouzení —"), ""),
-                (tr("materiál"), getattr(mat, "name", "?")),
-                ("Re / Rm [MPa]", f"{fmt(getattr(mat,'Re',0))} / {fmt(getattr(mat,'Rm',0))}"),
-            ]
-        rows += [
-            ("RF_yield", fmt(d["RF_yield"])),
-            ("RF_ultimate", fmt(d["RF_ultimate"])),
-            ("RF (min)", f"{fmt(d['RF'])}  ({d['critical']})"),
-        ]
         self.table.setRowCount(0)
         for name, val in rows:
             r = self.table.rowCount()

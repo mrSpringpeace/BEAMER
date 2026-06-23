@@ -93,21 +93,29 @@ def build_report(state, result, margins) -> str:
     # ── kontrolní body (volitelné řezy) ──
     cps = getattr(state, "control_points", None) or []
     if cps and result and result.is_stable and result.points:
-        from .analysis import values_at_x
+        from .analysis import values_at_x_multi
         L.append(tr("KONTROLNÍ BODY"))
         items = sorted(enumerate(cps), key=lambda t: t[1].x)
         for orig_idx, cp in items:
-            d = values_at_x(result, state, cp.x)
-            if d is None:
+            ds = values_at_x_multi(result, state, cp.x)
+            if not ds:
                 continue
             nm = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{orig_idx+1}"
-            L.append(f"  ── {nm}  (x = {d['x']:.0f} mm)")
-            L.append(f"     N={fmt(d['N'])} N  V={fmt(d['V'])} N  "
-                     f"M={fmt(d['M'])} N·mm  Mk={fmt(d['Mk'])} N·mm")
-            L.append(f"     w={fmt(d['w'])} mm  σ={fmt(d['sigma_max'])}  "
-                     f"τ={fmt(d['tau_max'])}  σ_red={fmt(d['mises_max'])} MPa")
-            L.append(f"     RF={fmt(d['RF'])} ({d['critical']})  "
-                     f"[RF_yield={fmt(d['RF_yield'])}  RF_ult={fmt(d['RF_ultimate'])}]")
+            L.append(f"  ── {nm}  (x = {ds[0]['x']:.0f} mm)")
+            d0 = ds[0]
+            L.append(f"     N={fmt(d0['N'])} N  V={fmt(d0['V'])} N  "
+                     f"M={fmt(d0['M'])} N·mm  Mk={fmt(d0['Mk'])} N·mm  w={fmt(d0['w'])} mm")
+            for d in ds:
+                tag = ""
+                if d.get("seg_side"):
+                    tag = f" [{tr('úsek')} {d['seg_index']+1} – {tr(d['seg_side'])}]"
+                mat = d["material"]; sec = d["section"]
+                st = getattr(sec, "section_type", "?") if sec else "?"
+                mn = getattr(mat, "name", "?") if mat else "?"
+                L.append(f"     ·{tag} {st} / {mn}: "
+                         f"σ={fmt(d['sigma_max'])} τ={fmt(d['tau_max'])} "
+                         f"σ_red={fmt(d['mises_max'])} MPa  "
+                         f"RF={fmt(d['RF'])} ({d['critical']})")
         L.append("")
 
     L.append("=" * 60)

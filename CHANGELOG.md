@@ -2,6 +2,33 @@
 
 Version format: **X.XX**
 
+## 1.15
+
+- VVÚ diagram peak labels now also show the x-coordinate (value @ x).
+- Top bar switch for the governing RF basis: min(Re,Rm) / Re / Rm (saved in the
+  project, recomputed without re-solving).
+- A material added to the project (custom or from the library) appears
+  immediately in the per-segment material dropdowns (no restart needed).
+- Materials selected from the library now show editable, pre-filled values — you
+  can start from a default and just tweak it. The Materials group is collapsible.
+- Beam scheme draws segments in alternating black / dark grey for readability.
+- Results tab: A− / A+ buttons to change the font size.
+- Assessment (RF) tab: more robust axis clipping (percentile of the governing
+  curve + headroom) when minima/maxima are large.
+- Report tab: the Max |V| / |M| / |Mk| buttons now cycle through the peaks of
+  the quantity (repeated clicks) — easy to step from the support moment to the
+  in-span maximum.
+- Cross-section & stress tab: the assessment table now also lists the component
+  stresses (normal σ, shear τ) next to σ_red; the small stress diagrams show a
+  min/max legend.
+- A control point exactly at a segment boundary now reports results for BOTH
+  segments (same internal forces, but different section/material → different
+  stress and RF, left and right) — in the Report and in the Cross-section tab
+  selector.
+- File Open/Save/Export dialogs remember the last used directory.
+- Left panel: swapped the order of Control points and Factors.
+- Build: clean `beamer.spec` (one-file BEAMER.exe) + `BUILD_EXE.bat`.
+
 ## 1.14
 
 Results of an internal mathematics audit — corrections and refinements:

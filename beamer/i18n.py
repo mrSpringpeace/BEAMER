@@ -200,6 +200,16 @@ EN = {
     "Publikovat profil": "Publish profile",
     "Publikovat profil „%s“ do SDÍLENÉ knihovny pro všechny uživatele?":
         "Publish profile “%s” to the SHARED library for all users?",
+    "RF k:": "RF to:",
+    "Kontrolní bod": "Control point",
+    "vlevo": "left",
+    "vpravo": "right",
+    "v kritickém řezu (RF_min):": "at the critical section (RF_min):",
+    "min(Re,Rm)": "min(Re,Rm)",
+    "Velikost písma:": "Font size:",
+    "Tip: opakovaný klik na Max cykluje mezi špičkami veličiny.":
+        "Tip: repeated clicks on Max cycle through the peaks of the quantity.",
+    "špička %d/%d |%s|": "peak %d/%d |%s|",
     "Profil uložen do uživatelské knihovny: ": "Profile saved to user library: ",
     "Profil publikován do sdílené knihovny: ": "Profile published to shared library: ",
     # kontrolní body

@@ -136,6 +136,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     section = result.section
     if section is None or not result.points:
         return []
+    basis = getattr(state, "rf_basis", "min")
     g_mat = state.material()
     resolver = getattr(result, "resolver", None)
 
@@ -199,8 +200,13 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
         RF_u = (alpha*Rm/mz) if mz > 1e-9 else float("inf")
-        RF = min(RF_y, RF_u)
-        crit = "yield" if RF_y <= RF_u else "ultimate"
+        if basis == "yield":
+            RF, crit = RF_y, "yield"
+        elif basis == "ultimate":
+            RF, crit = RF_u, "ultimate"
+        else:
+            RF = min(RF_y, RF_u)
+            crit = "yield" if RF_y <= RF_u else "ultimate"
         out.append(ReserveResult(p.x, sg, tu, mz, RF_y, RF_u, RF, crit))
         if progress and i % 10 == 0:
             progress(0.5 + 0.5*i/n_stations)
@@ -209,36 +215,14 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     return out
 
 
-def values_at_x(result, state, x):
-    """Kompletní hodnoty v libovolném řezu x: VVÚ (lineárně interpolované),
-    průřez a materiál v řezu, napětí (σ/τ/σ_red) a rezervní faktory.
-    Vrací dict, nebo None pokud výsledek není stabilní."""
-    if result is None or not getattr(result, "is_stable", False) or not result.points:
-        return None
-    pts = result.points
-    xs = [p.x for p in pts]
-    x = max(xs[0], min(xs[-1], float(x)))      # clamp do rozsahu nosníku
-
-    def interp(attr):
-        return float(np.interp(x, xs, [getattr(p, attr) for p in pts]))
-
-    N = interp("N"); V = interp("V"); M = interp("M"); Mk = interp("Mk")
-    w = interp("w"); phi = interp("phi"); theta = interp("theta")
-
-    resolver = getattr(result, "resolver", None)
-    if resolver is not None:
-        section = resolver.at(x)
-        mat = resolver.material_at(x)
-    else:
-        section = result.section
-        mat = state.material()
-
+def _assess(section, mat, state, N, V, M, Mk):
+    """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
+    Vrací dílčí dict (bez x/VVÚ)."""
     sg = tu = mz = 0.0
     if section is not None and getattr(section, "valid", False):
         infl = build_influence(section, n=80)
         sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk)
 
-    # součinitel plasticity (jen do RF_ultimate, dle nastavení)
     from .section import ALPHA_PL_TABLE
     alpha = 1.0
     if getattr(state, "plasticity_enabled", False) and section is not None:
@@ -251,17 +235,88 @@ def values_at_x(result, state, x):
     Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
     RF_y = (Re / mz) if mz > 1e-9 else float("inf")
     RF_u = (alpha * Rm / mz) if mz > 1e-9 else float("inf")
-    RF = min(RF_y, RF_u)
-    crit = "yield" if RF_y <= RF_u else "ultimate"
-
+    basis = getattr(state, "rf_basis", "min")
+    if basis == "yield":
+        RF, crit = RF_y, "yield"
+    elif basis == "ultimate":
+        RF, crit = RF_u, "ultimate"
+    else:
+        RF = min(RF_y, RF_u)
+        crit = "yield" if RF_y <= RF_u else "ultimate"
     return {
-        "x": x, "N": N, "V": V, "M": M, "Mk": Mk,
-        "w": w, "phi": phi, "theta": theta,
         "section": section, "material": mat,
         "sigma_max": sg, "tau_max": tu, "mises_max": mz,
         "RF_yield": RF_y, "RF_ultimate": RF_u, "RF": RF,
         "critical": crit, "alpha_pl": alpha,
     }
+
+
+def _interp_forces(result, x):
+    """(x_clamp, N, V, M, Mk, w, phi, theta) lineárně interpolované v poloze x."""
+    pts = result.points
+    xs = [p.x for p in pts]
+    x = max(xs[0], min(xs[-1], float(x)))
+
+    def interp(attr):
+        return float(np.interp(x, xs, [getattr(p, attr) for p in pts]))
+
+    return (x, interp("N"), interp("V"), interp("M"), interp("Mk"),
+            interp("w"), interp("phi"), interp("theta"))
+
+
+def values_at_x(result, state, x):
+    """Kompletní hodnoty v libovolném řezu x: VVÚ (lineárně interpolované),
+    průřez a materiál v řezu, napětí (σ/τ/σ_red) a rezervní faktory.
+    Vrací dict, nebo None pokud výsledek není stabilní."""
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return None
+    x, N, V, M, Mk, w, phi, theta = _interp_forces(result, x)
+    resolver = getattr(result, "resolver", None)
+    if resolver is not None:
+        section = resolver.at(x)
+        mat = resolver.material_at(x)
+    else:
+        section = result.section
+        mat = state.material()
+    d = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
+    d.update(_assess(section, mat, state, N, V, M, Mk))
+    return d
+
+
+def values_at_x_multi(result, state, x, tol=1e-3):
+    """Jako values_at_x, ale na rozhraní dvou úseků vrátí výsledky z OBOU
+    (stejné VVÚ, různý průřez/materiál → různé napětí a RF). Vrací list dictů;
+    každý navíc obsahuje 'seg_index' a 'seg_side' ("" | "vlevo" | "vpravo")."""
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return []
+    from .sections_along import (segments_at, def_for_segment,
+                                 material_for_segment, normalized_segments)
+    from .section import build_section
+    x, N, V, M, Mk, w, phi, theta = _interp_forces(result, x)
+    base = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
+
+    all_segs = normalized_segments(state)
+    segs = segments_at(state, x, tol)
+    out = []
+    for seg in segs:
+        try:
+            section = build_section(def_for_segment(seg, x))
+        except Exception:
+            section = None
+        mat = material_for_segment(state, seg)
+        d = dict(base)
+        d.update(_assess(section, mat, state, N, V, M, Mk))
+        try:
+            d["seg_index"] = all_segs.index(seg)
+        except ValueError:
+            d["seg_index"] = 0
+        d["seg_side"] = ""
+        out.append(d)
+    if len(out) == 2:                       # rozhraní: označ vlevo/vpravo dle x1
+        order = sorted(range(2), key=lambda k: segs[k].x1)
+        out[order[0]]["seg_side"] = "vlevo"
+        out[order[1]]["seg_side"] = "vpravo"
+    return out
 
 
 def extremum_x(result, attr):
@@ -277,6 +332,34 @@ def critical_x(reserves):
     if not reserves:
         return None
     return min(reserves, key=lambda r: r.RF).x
+
+
+def peaks_x(result, attr):
+    """Lokální špičky |attr| (V/M/Mk/…) podél nosníku, seřazené sestupně dle
+    velikosti. Vrací list x [mm]. Pro cyklování špiček v kartě Report –
+    např. u vetknutého nosníku: 1. špička = moment ve vetknutí, 2. = max na poli."""
+    if result is None or not result.points:
+        return []
+    pts = result.points
+    xs = [p.x for p in pts]
+    av = [abs(getattr(p, attr)) for p in pts]
+    n = len(av)
+    if n == 0 or max(av) < 1e-9:
+        return []
+    span = (xs[-1] - xs[0]) or 1.0
+    cand = []
+    for i in range(n):
+        left = av[i-1] if i > 0 else -1.0
+        right = av[i+1] if i < n-1 else -1.0
+        # lokální max; vnitřní body plata vynech (musí být ostře větší aspoň 1×)
+        if av[i] >= left and av[i] >= right and (av[i] > left or av[i] > right):
+            cand.append(i)
+    cand.sort(key=lambda i: -av[i])
+    chosen = []
+    for i in cand:
+        if all(abs(xs[i] - xs[j]) > 0.01 * span for j in chosen):
+            chosen.append(i)
+    return [xs[i] for i in chosen]
 
 
 def critical_per_part(state, reserves):
