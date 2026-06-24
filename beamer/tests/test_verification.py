@@ -23,6 +23,18 @@ from beamer.solver import solve_beam
 from beamer.section import build_section
 from beamer.analysis import forces_from_beam
 
+
+def _skip_without_shapely():
+    """Konstrukční (boolean) tvar vyžaduje shapely; bez něj test přeskoč."""
+    try:
+        import shapely  # noqa: F401
+    except ImportError:
+        try:
+            import pytest
+            pytest.skip("shapely není nainstalováno")
+        except ImportError:
+            raise SystemExit(0)
+
 # ── pevný materiál a průřez pro reprodukovatelnost ──
 MAT = Material("m_steel", "Steel", E=200000.0, G=77000.0, nu=0.3,
                rho=7.85, Re=235.0, Rm=360.0)
@@ -199,6 +211,7 @@ def test_von_mises_sign_invariant():
 def test_construction_boolean_rect_minus_circle():
     """Konstrukční tvar: obdélník 100×200 mínus středový kruh ⌀50.
     A musí odpovídat b·h − π·r² (kruh polygonálně aproximován, tolerance 0,5 %)."""
+    _skip_without_shapely()
     sdef = CrossSectionDef(type="construction", shapes=[
         {"kind": "rect", "op": "add", "x": 0, "z": 0, "w": 100, "h": 200},
         {"kind": "circle", "op": "sub", "x": 0, "z": 0, "d": 50},
@@ -213,6 +226,7 @@ def test_construction_boolean_rect_minus_circle():
 
 def test_construction_two_separate_bodies():
     """Dva nepřekrývající se obdélníky → kompozit ze dvou těles."""
+    _skip_without_shapely()
     sdef = CrossSectionDef(type="construction", shapes=[
         {"kind": "rect", "op": "add", "x": -100, "z": 0, "w": 50, "h": 50},
         {"kind": "rect", "op": "add", "x": 100, "z": 0, "w": 50, "h": 50},

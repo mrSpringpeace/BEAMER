@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # core: only what the verification suite needs (no Qt/GUI required)
-          pip install numpy scipy
+          pip install numpy scipy shapely
           pip install -r requirements-dev.txt
 
       - name: Run verification tests
