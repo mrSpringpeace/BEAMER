@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 from .model import (
     Material, Support, Hinge, Load, LoadCase, LoadCombination,
-    CrossSectionDef, SectionSegment, ProjectState, Body, ControlPoint,
+    CrossSectionDef, SectionSegment, ProjectState, Body, ControlPoint, Property,
 )
 
 
@@ -22,11 +22,14 @@ def state_to_dict(state: ProjectState) -> dict:
         "materials": [asdict(m) for m in state.materials],
         "selected_material_id": state.selected_material_id,
         "cross_section": asdict(state.cross_section),
+        "sections": [asdict(s) for s in getattr(state, "sections", [])],
         "section_segments": [asdict(s) for s in state.section_segments],
+        "properties": [asdict(p) for p in getattr(state, "properties", [])],
         "additional_factor": state.additional_factor,
         "plasticity_enabled": state.plasticity_enabled,
         "plasticity_method": state.plasticity_method,
         "rf_basis": getattr(state, "rf_basis", "min"),
+        "sigma_red_mode": getattr(state, "sigma_red_mode", "exact"),
         "theory": state.theory,
         "selected_active_combination_id": state.selected_active_combination_id,
     }
@@ -53,6 +56,9 @@ def _csdef(d):
         polygon_thickness=d.get("polygon_thickness"),
         polygon_closed=d.get("polygon_closed", False),
         bodies=bodies,
+        shapes=d.get("shapes"),
+        id=d.get("id"),
+        name=d.get("name", ""),
     )
 
 
@@ -69,18 +75,30 @@ def dict_to_state(d: dict) -> ProjectState:
         materials=[Material(**m) for m in d.get("materials", [])],
         selected_material_id=d.get("selected_material_id", ""),
         cross_section=_csdef(cs),
+        sections=[_csdef(s) for s in d.get("sections", [])],
         section_segments=[
             SectionSegment(
                 x1=s.get("x1", 0), x2=s.get("x2", 0),
                 sec1=_csdef(s.get("sec1")), sec2=_csdef(s.get("sec2")),
+                sec1_id=s.get("sec1_id"), sec2_id=s.get("sec2_id"),
                 E=s.get("E"), material_id=s.get("material_id"),
+                property_id=s.get("property_id"),
             ) for s in d.get("section_segments", [])
+        ],
+        properties=[
+            Property(
+                id=p.get("id"), pid=p.get("pid", 0), name=p.get("name", ""),
+                material_id=p.get("material_id"),
+                sec1=_csdef(p.get("sec1")), sec2=_csdef(p.get("sec2")),
+                sec1_id=p.get("sec1_id"), sec2_id=p.get("sec2_id"),
+            ) for p in d.get("properties", [])
         ],
         additional_factor=d.get("additional_factor",
                                  d.get("fitting_factor", 1.0)),  # zpětná kompat.
         plasticity_enabled=d.get("plasticity_enabled", False),
         plasticity_method=d.get("plasticity_method", "analytic"),
         rf_basis=d.get("rf_basis", "min"),
+        sigma_red_mode=d.get("sigma_red_mode", "exact"),
         theory=d.get("theory", "euler-bernoulli"),
         selected_active_combination_id=d.get("selected_active_combination_id", ""),
     )

@@ -218,7 +218,7 @@ def _annotate_extremes(ax, x, arr, color):
     for idx, va in ((int(np.nanargmax(arr)), "bottom"), (int(np.nanargmin(arr)), "top")):
         xv, yv = x[idx], arr[idx]
         ax.plot(xv, yv, "o", color=color, ms=4)
-        ax.annotate(f"{fmt(yv)}\n@ x={xv:.0f}", xy=(xv, yv), textcoords="offset points",
+        ax.annotate(f"{fmt(yv)}\n@ x={xv:.1f}", xy=(xv, yv), textcoords="offset points",
                     xytext=(0, 6 if va == "bottom" else -6), ha="center", va=va,
                     fontsize=7, color=color,
                     bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=color, alpha=0.85, lw=0.6))

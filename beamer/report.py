@@ -34,20 +34,27 @@ def build_report(state, result, margins) -> str:
     from .sections_along import normalized_segments
     from .section import build_section
     from .analysis import critical_per_part
+    from .sections_along import eff_defs, material_for_segment
     segs = normalized_segments(state)
     parts_crit = critical_per_part(state, margins) if margins else [None]*len(segs)
     L.append(tr("ÚSEKY NOSNÍKU"))
     for i, seg in enumerate(segs):
-        mid = getattr(seg, "material_id", None)
-        mat = next((m for m in state.materials if m.id == mid), None) or state.material()
+        sec1, sec2 = eff_defs(state, seg)
+        mat = material_for_segment(state, seg)
+        pid = getattr(seg, "property_id", None)
+        pid_tag = ""
+        if pid:
+            p = next((pp for pp in (getattr(state, "properties", None) or []) if pp.id == pid), None)
+            if p:
+                pid_tag = f"  [PID {p.pid}: {p.name}]"
         L.append(f"  ── {tr('Úsek')} {i+1}:  x = {seg.x1:.0f} … {seg.x2:.0f} mm  "
-                 f"({tr('délka')} {seg.length:.0f} mm)")
+                 f"({tr('délka')} {seg.length:.0f} mm){pid_tag}")
         L.append(f"     {tr('Materiál:')} {mat.name}  E={fmt(mat.E)} MPa  G={fmt(mat.G)} MPa  "
                  f"Re={fmt(mat.Re)} MPa  Rm={fmt(mat.Rm)} MPa")
-        tap = "" if not seg.tapered else f" → {seg.sec2.type}"
-        L.append(f"     {tr('Průřez:')} {seg.sec1.type}{tap}")
+        tap = "" if sec2 is None else f" → {sec2.type}"
+        L.append(f"     {tr('Průřez:')} {sec1.type}{tap}")
         try:
-            sc = build_section(seg.sec1)
+            sc = build_section(sec1)
             L.append(f"     A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
                      f"IT={fmt(sc.IT)} mm⁴  Iω={fmt(sc.Iw)} mm⁶")
             L.append(f"     Wb,y={fmt(getattr(sc,'Wb_y',0))} Wb,z={fmt(getattr(sc,'Wb_z',0))} "

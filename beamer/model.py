@@ -13,7 +13,7 @@ LoadType = Literal["point_force", "moment", "torsion", "distributed"]
 SectionType = Literal[
     "rectangle", "box", "circle", "tube",
     "i_section", "c_section", "t_section", "l_section", "u_section",
-    "polygon", "direct",
+    "polygon", "direct", "construction",
 ]
 Theory = Literal["euler-bernoulli", "timoshenko"]
 
@@ -109,6 +109,9 @@ class CrossSectionDef:
     polygon_thickness: Optional[float] = None
     polygon_closed: bool = False
     bodies: Optional[list] = None                      # list[Body] pro kompozit; None = legacy single
+    shapes: Optional[list] = None                      # konstrukční tvar: list[dict] primitiv + bool. operací
+    id: Optional[str] = None                           # identita v knihovně průřezů (None = zapečený inline)
+    name: str = ""                                     # název v knihovně
 
 
 @dataclass
@@ -124,8 +127,11 @@ class SectionSegment:
     x2: float
     sec1: CrossSectionDef = field(default_factory=CrossSectionDef)
     sec2: Optional[CrossSectionDef] = None
+    sec1_id: Optional[str] = None      # odkaz na průřez v knihovně; None = zapečený sec1 (inline)
+    sec2_id: Optional[str] = None      # odkaz na 2. průřez (náběh); None = zapečený sec2
     E: Optional[float] = None          # přímý modul E (MPa) – override (.nos); None = z materiálu
     material_id: Optional[str] = None  # odkaz na materiál v knihovně; None = globální
+    property_id: Optional[str] = None  # odkaz na Property (PID); None = inline (sec1/material_id)
 
     @property
     def tapered(self) -> bool:
@@ -134,6 +140,25 @@ class SectionSegment:
     @property
     def length(self) -> float:
         return self.x2 - self.x1
+
+
+@dataclass
+class Property:
+    """Vlastnost pod číslem (PID) jako v FEM preprocesoru: pojmenovaná dvojice
+    {materiál + průřez (+ náběh)}. Úsek na ni odkazuje přes property_id a sdílí
+    ji s ostatními úseky – změna PID se propíše všude."""
+    id: str
+    pid: int                            # uživatelské číslo
+    name: str = ""
+    material_id: Optional[str] = None
+    sec1: CrossSectionDef = field(default_factory=CrossSectionDef)
+    sec2: Optional[CrossSectionDef] = None
+    sec1_id: Optional[str] = None       # odkaz na průřez v knihovně; None = zapečený sec1
+    sec2_id: Optional[str] = None       # odkaz na 2. průřez (náběh); None = zapečený sec2
+
+    @property
+    def tapered(self) -> bool:
+        return self.sec2 is not None
 
 
 @dataclass
@@ -149,10 +174,14 @@ class ProjectState:
     selected_material_id: str = ""
     cross_section: CrossSectionDef = field(default_factory=CrossSectionDef)
     section_segments: list = field(default_factory=list)   # prázdné = jeden průřez na celý nosník
+    sections: list = field(default_factory=list)           # knihovna pojmenovaných průřezů (CrossSectionDef s id)
+    properties: list = field(default_factory=list)         # knihovna PID (Property); úseky na ně mohou odkazovat
     additional_factor: float = 1.0   # dodatečný součinitel – násobí zatížení (ultimate síly)
     plasticity_enabled: bool = False  # využít součinitel plasticity v RF_ultimate
     plasticity_method: str = "analytic"  # "analytic" | "tabular"
     rf_basis: str = "min"             # řídicí RF: "min" | "yield" (Re) | "ultimate" (Rm)
+    sigma_red_mode: str = "exact"     # σ_red: "exact" (skutečné max von Mises po řezu)
+                                      #        | "combined" (konzervativní √(σ_max²+3τ_max²))
     theory: Theory = "euler-bernoulli"
     selected_active_combination_id: str = ""
 

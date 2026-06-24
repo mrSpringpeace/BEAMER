@@ -46,6 +46,9 @@ class SectionEditorDialog(QDialog):
         self.cb = QComboBox()
         for key, label in self._LABELS.items():
             self.cb.addItem(tr(label), key)
+        # ukázat všechny typy najednou, bez skrolování v rozbaleném seznamu
+        self.cb.setMaxVisibleItems(len(self._LABELS) + 1)
+        self.cb.setStyleSheet("QComboBox{combobox-popup:0;}")
         i = self.cb.findData(self.sdef.type)
         self.cb.setCurrentIndex(max(0, i))
         self.cb.currentIndexChanged.connect(self._on_type)
@@ -97,6 +100,10 @@ class SectionEditorDialog(QDialog):
         if t == "polygon":
             if not self.sdef.polygon_points:
                 self.sdef.polygon_points = [dict(p) for p in self._DEFAULT_POLY]
+        elif t == "construction":
+            if not self.sdef.shapes:
+                from .shapes_editor import default_shape
+                self.sdef.shapes = [default_shape("rect")]
         else:
             self.sdef.params = {k: d for k, _, d in self._PARAMS.get(t, [])}
         self._rebuild_form()
@@ -146,6 +153,12 @@ class SectionEditorDialog(QDialog):
             ed.changed.connect(self._changed)
             self.form.addRow(ed)
             return
+        if t == "construction":
+            from .shapes_editor import ShapesEditor
+            ed = ShapesEditor(self.sdef)
+            ed.changed.connect(self._changed)
+            self.form.addRow(ed)
+            return
         for key, label, default in self._PARAMS.get(t, []):
             val = float(self.sdef.params.get(key, default))
             sp = NoWheelDoubleSpinBox()
@@ -166,8 +179,8 @@ class SectionEditorDialog(QDialog):
         self._changed()
 
     def _changed(self):
-        # při živé editaci polygonu přeskočíme drahý FEM (jen scanline)
-        if self.sdef.type == "polygon":
+        # při živé editaci polygonu/konstr. tvaru přeskočíme drahý FEM (jen scanline)
+        if self.sdef.type in ("polygon", "construction"):
             self._fem_dirty = True
         self._refresh_preview(fem=False)
         self.changed.emit()
@@ -177,7 +190,7 @@ class SectionEditorDialog(QDialog):
         self._fem_dirty = False
 
     def accept(self):
-        if self.sdef.type == "polygon" and self._fem_dirty:
+        if self.sdef.type in ("polygon", "construction") and self._fem_dirty:
             try:
                 self._refresh_preview(fem=True)
                 self._fem_dirty = False
@@ -193,8 +206,8 @@ class SectionEditorDialog(QDialog):
             self.canvas.plot(None)
             self.props.setText(f"{tr('Neplatný průřez:')}\n{e}")
             return
-        # status FEM (jen relevantní pro polygon)
-        if self.sdef.type == "polygon":
+        # status FEM (relevantní pro polygon a konstrukční tvar)
+        if self.sdef.type in ("polygon", "construction"):
             self.fem_btn.setEnabled(self._fem_dirty or not fem)
             if fem and getattr(sec, "fem_used", False):
                 self.fem_lbl.setText(tr("FEM přepočteno (přesné IT, Iω, střed smyku)."))

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 _CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".beamer")
 _CONFIG_PATH = os.path.join(_CONFIG_DIR, "settings.json")
@@ -23,6 +23,7 @@ class Settings:
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
     last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
+    panel_expanded: dict = field(default_factory=dict)  # stav rozbalení sekcí levého panelu {klíč: bool}
 
     def save(self):
         try:
@@ -39,7 +40,8 @@ def _load() -> Settings:
             d = json.load(f)
         s = Settings()
         for k in ("language", "number_format", "decimals", "vvu_combined",
-                  "vvu_show_deform", "shared_library_dir", "last_dir"):
+                  "vvu_show_deform", "shared_library_dir", "last_dir",
+                  "panel_expanded"):
             if k in d:
                 setattr(s, k, d[k])
         return s

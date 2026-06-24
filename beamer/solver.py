@@ -50,15 +50,18 @@ class SolverResult:
     resolver: object = None      # SectionResolver (proměnný průřez)
 
 
-def _load_multiplier(state, load_case_id):
-    comb = state.active_combination()
-    factors = comb.factors if comb else {}
+def _load_multiplier(state, load_case_id, factors=None):
+    if factors is None:
+        comb = state.active_combination()
+        factors = comb.factors if comb else {}
     comb_f = factors.get(load_case_id, 0.0)
     # zatížení = početní (ultimate) síly × volitelný dodatečný součinitel
     return comb_f * getattr(state, "additional_factor", 1.0)
 
 
-def solve_beam(state) -> SolverResult:
+def solve_beam(state, factors=None) -> SolverResult:
+    """`factors` (dict lc_id→faktor) přepíše aktivní kombinaci – umožní spočítat
+    libovolnou kombinaci/stav bez mutace state (pro Load Case Builder)."""
     material = state.material()
     E, G = material.E, material.G
 
@@ -124,11 +127,13 @@ def solve_beam(state) -> SolverResult:
     # průhyb pod spojitým zatížením s málo prvky → bez zhuštění se w podceňuje.
     # (VVÚ M/V jsou přesné vždy – rekonstruují se statikou.) Tapered úseky
     # dělíme jemněji kvůli stepwise-konstantnímu průřezu.
+    from .sections_along import eff_defs
     def in_tapered(xa, xb):
         xm = (xa+xb)/2
         for sg in segs:
-            if sg.tapered and sg.x1 - 1e-6 <= xm <= sg.x2 + 1e-6:
-                return sg
+            if sg.x1 - 1e-6 <= xm <= sg.x2 + 1e-6:
+                if eff_defs(state, sg)[1] is not None:   # náběh (PID i inline)
+                    return sg
         return None
     step_global = max(length/40.0, 1e-3)      # ~40 prvků na celý nosník
     densified = [filtered[0]]
@@ -225,7 +230,7 @@ def solve_beam(state) -> SolverResult:
 
     # ── zatížení ──
     for ld in state.loads:
-        mult = _load_multiplier(state, ld.load_case_id)
+        mult = _load_multiplier(state, ld.load_case_id, factors)
         if mult == 0:
             continue
         if ld.type == "point_force":
@@ -346,7 +351,7 @@ def solve_beam(state) -> SolverResult:
             if ld.type != "distributed":
                 continue
             if ld.x1 - 1e-9 <= sg <= ld.x2 + 1e-9:
-                lm = _load_multiplier(state, ld.load_case_id)
+                lm = _load_multiplier(state, ld.load_case_id, factors)
                 if lm == 0:
                     continue
                 dlen = ld.x2 - ld.x1
@@ -380,7 +385,7 @@ def solve_beam(state) -> SolverResult:
         # ekvivalentní uzlové síly od spojitého zatížení na CELÉM prvku
         feq = np.zeros(4)
         for ld in state.loads:
-            lm = _load_multiplier(state, ld.load_case_id)
+            lm = _load_multiplier(state, ld.load_case_id, factors)
             if lm == 0 or ld.type != "distributed":
                 continue
             dlen = ld.x2 - ld.x1

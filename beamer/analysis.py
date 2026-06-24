@@ -70,17 +70,44 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
     return StressInfluence(z, c_sN, c_sM, c_tV, c_tT)
 
 
-def max_stresses_fast(infl: StressInfluence, N, V, M, Mk):
-    """Max |σ|, |τ|, σ_red [MPa] z předpočítaných koeficientů. Vektorizováno."""
+def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, combine=False):
+    """Max |σ|, |τ|, σ_red [MPa] z předpočítaných koeficientů. Vektorizováno.
+
+    combine=False → σ_red = skutečné maximum von Mises po řezu (špička σ a špička
+    τ jsou obecně v RŮZNÝCH bodech, proto σ_red může = max(|σ|), když ohyb vyhrává).
+    combine=True  → konzervativní σ_red = √(σ_max²+3·τ_max²) (špičky sečteny na
+    povrchu; vhodné pro čepy/šrouby, kde nosníková teorie τ=0 na okraji je sporná).
+    """
     My = M/1e3      # N·mm → N·m
     Mk_nm = Mk/1e3
     sigma = N*infl.c_sN + My*infl.c_sM            # Pa
     tau = V*infl.c_tV + Mk_nm*infl.c_tT           # Pa
-    mises = np.sqrt(sigma**2 + 3*tau**2)
     def _maxabs(a):
         a = a[~np.isnan(a)]
         return float(np.max(np.abs(a)))/1e6 if a.size else 0.0
-    return _maxabs(sigma), _maxabs(tau), _maxabs(mises)
+    sg, tu = _maxabs(sigma), _maxabs(tau)
+    if combine:
+        mz = math.sqrt(sg**2 + 3*tu**2)
+    else:
+        mz = _maxabs(np.sqrt(sigma**2 + 3*tau**2))
+    return sg, tu, mz
+
+
+def peak_locations(infl: StressInfluence, N, V, M, Mk):
+    """Poloha (z [mm] od těžiště) maxima |σ| a maxima |τ| v řezu – pro popisky,
+    aby bylo zřejmé, že obě špičky obecně vznikají v různých vláknech."""
+    My = M/1e3
+    Mk_nm = Mk/1e3
+    sigma = N*infl.c_sN + My*infl.c_sM
+    tau = V*infl.c_tV + Mk_nm*infl.c_tT
+    z = np.asarray(infl.z_mm)
+
+    def _argabs(a):
+        a = np.where(np.isnan(a), 0.0, np.abs(a))
+        if a.size == 0 or not np.any(a):
+            return 0.0
+        return float(z[int(np.argmax(a))])
+    return _argabs(sigma), _argabs(tau)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -137,6 +164,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     if section is None or not result.points:
         return []
     basis = getattr(state, "rf_basis", "min")
+    combine = getattr(state, "sigma_red_mode", "exact") == "combined"
     g_mat = state.material()
     resolver = getattr(result, "resolver", None)
 
@@ -196,7 +224,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         idx = int(np.argmin(np.abs(xs - xq)))
         p = pts[idx]
         infl, alpha, Re, Rm = data_at(p.x)
-        sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk)
+        sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk, combine=combine)
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
         RF_u = (alpha*Rm/mz) if mz > 1e-9 else float("inf")
@@ -219,9 +247,12 @@ def _assess(section, mat, state, N, V, M, Mk):
     """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
     Vrací dílčí dict (bez x/VVÚ)."""
     sg = tu = mz = 0.0
+    z_sg = z_tu = 0.0
+    combine = getattr(state, "sigma_red_mode", "exact") == "combined"
     if section is not None and getattr(section, "valid", False):
         infl = build_influence(section, n=80)
-        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk)
+        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk, combine=combine)
+        z_sg, z_tu = peak_locations(infl, N, V, M, Mk)
 
     from .section import ALPHA_PL_TABLE
     alpha = 1.0
@@ -246,6 +277,7 @@ def _assess(section, mat, state, N, V, M, Mk):
     return {
         "section": section, "material": mat,
         "sigma_max": sg, "tau_max": tu, "mises_max": mz,
+        "sigma_z": z_sg, "tau_z": z_tu, "sigma_red_combined": combine,
         "RF_yield": RF_y, "RF_ultimate": RF_u, "RF": RF,
         "critical": crit, "alpha_pl": alpha,
     }
@@ -300,7 +332,7 @@ def values_at_x_multi(result, state, x, tol=1e-3):
     out = []
     for seg in segs:
         try:
-            section = build_section(def_for_segment(seg, x))
+            section = build_section(def_for_segment(state, seg, x))
         except Exception:
             section = None
         mat = material_for_segment(state, seg)
@@ -317,6 +349,51 @@ def values_at_x_multi(result, state, x, tol=1e-3):
         out[order[0]]["seg_side"] = "vlevo"
         out[order[1]]["seg_side"] = "vpravo"
     return out
+
+
+def load_case_summary(state, factors, label=""):
+    """Souhrnný řádek pro jednu kombinaci (faktory lc_id→faktor) pro Load Case
+    Builder. Vrací (cols, result), kde cols = [(název_sloupce, hodnota), …]
+    v pevném pořadí (ploché, pro tabulku/CSV/schránku)."""
+    from .solver import solve_beam
+    res = solve_beam(state, factors=factors)
+    cols = [("Kombinace", label)]
+    if not res.is_stable or not res.points:
+        cols.append((tr_("stav"), tr_("NESTABILNÍ")))
+        return cols, res
+    P = res.points
+
+    def mm(attr):
+        vals = [getattr(p, attr) for p in P]
+        return max(vals), min(vals)
+
+    for a, unit in [("N", "N"), ("V", "N"), ("M", "N·mm"), ("Mk", "N·mm"), ("w", "mm")]:
+        mx, mn = mm(a)
+        cols.append((f"{a} max [{unit}]", mx))
+        cols.append((f"{a} min [{unit}]", mn))
+    rsv = reserves_along_beam(res, state)
+    if rsv:
+        crit = min(rsv, key=lambda r: r.RF)
+        cols.append(("σ_red max [MPa]", max(r.mises_max for r in rsv)))
+        cols.append(("RF min", crit.RF))
+        cols.append(("x(RFmin) [mm]", crit.x))
+    for i, rc in enumerate(res.reactions):
+        cols.append((f"R{i+1} Rz [N]", rc.Rz))
+        cols.append((f"R{i+1} My [N·mm]", rc.Ry))
+    cps = getattr(state, "control_points", None) or []
+    for oi, cp in sorted(enumerate(cps), key=lambda t: t[1].x):
+        nm = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{oi+1}"
+        d = values_at_x(res, state, cp.x)
+        if d:
+            cols.append((f"{nm} M [N·mm]", d["M"]))
+            cols.append((f"{nm} σ_red [MPa]", d["mises_max"]))
+            cols.append((f"{nm} RF", d["RF"]))
+    return cols, res
+
+
+def tr_(s):
+    from .i18n import tr
+    return tr(s)
 
 
 def extremum_x(result, attr):

@@ -1262,6 +1262,27 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
             cs.fem_used = False
         cs.section_type = "polygon"
         return cs
+    elif t == "construction":
+        # konstrukční tvar: primitiva + booleovské operace → bodies
+        from .geometry import shapes_to_bodies
+        bodies_pts = shapes_to_bodies(sdef.shapes or [])
+        if not bodies_pts:
+            raise ValueError("Konstrukční tvar je prázdný nebo neplatný.")
+        if len(bodies_pts) == 1:
+            outer, holes = bodies_pts[0]
+            cs = CrossSection(bodies=bodies_pts)
+            if fem:
+                _apply_fem_properties(cs, outer, holes)
+            else:
+                cs.fem_used = False
+        else:
+            cs = CrossSection(bodies=bodies_pts)
+            if fem:
+                _apply_fem_composite(cs, bodies_pts)
+            else:
+                cs.fem_used = False
+        cs.section_type = "construction"
+        return cs
     else:
         raise ValueError(f"Neznámý typ průřezu: {t}")
 

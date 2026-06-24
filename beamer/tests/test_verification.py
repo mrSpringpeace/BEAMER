@@ -196,6 +196,97 @@ def test_von_mises_sign_invariant():
     assert abs(mises - abs(s["sigma"])) < 1e-6 * mises   # čistý ohyb: σ_red=|σ|
 
 
+def test_construction_boolean_rect_minus_circle():
+    """Konstrukční tvar: obdélník 100×200 mínus středový kruh ⌀50.
+    A musí odpovídat b·h − π·r² (kruh polygonálně aproximován, tolerance 0,5 %)."""
+    sdef = CrossSectionDef(type="construction", shapes=[
+        {"kind": "rect", "op": "add", "x": 0, "z": 0, "w": 100, "h": 200},
+        {"kind": "circle", "op": "sub", "x": 0, "z": 0, "d": 50},
+    ])
+    sec = build_section(sdef, fem=False)
+    A_exact = 100.0 * 200.0 - math.pi * 25.0 ** 2
+    assert abs(sec.A - A_exact) < 0.005 * A_exact
+    assert sec.section_type == "construction"
+    # symetrie → produkty setrvačnosti a střed smyku v ose
+    assert abs(sec.Iyz) < 1e-3 * sec.Iy
+
+
+def test_construction_two_separate_bodies():
+    """Dva nepřekrývající se obdélníky → kompozit ze dvou těles."""
+    sdef = CrossSectionDef(type="construction", shapes=[
+        {"kind": "rect", "op": "add", "x": -100, "z": 0, "w": 50, "h": 50},
+        {"kind": "rect", "op": "add", "x": 100, "z": 0, "w": 50, "h": 50},
+    ])
+    sec = build_section(sdef, fem=False)
+    assert abs(sec.A - 2 * 50 * 50) < 1e-6
+    assert sec.bodies_c is not None and len(sec.bodies_c) == 2
+
+
+def test_loadgen_trapezoid_preserves_resultant_and_moment():
+    """Lichoběžník zachovává výslednici i těžiště pro libovolnou polohu –
+    včetně síly u kraje, kde jeden konec vyjde záporný (houpačka)."""
+    from beamer.loadgen import generate_q
+    # síla u levého kraje, c = L/6
+    r = generate_q(0.0, 600.0, -600.0, 100.0, "trapezoid")
+    assert abs(r.R - (-600.0)) < 1e-6
+    assert abs(r.x_centroid - 100.0) < 1e-6
+    assert r.moment_ok
+    assert r.q1 < 0 < r.q2            # opačná znaménka konců
+    # síla v 1/3 → pravoúhlý trojúhelník (jeden konec nulový)
+    r3 = generate_q(0.0, 900.0, -900.0, 300.0, "trapezoid")
+    assert abs(r3.q2) < 1e-9 and r3.moment_ok
+
+
+def test_loadgen_static_equivalence_reactions():
+    """Bodová síla a z ní vygenerovaný lichoběžník dají identické reakce."""
+    from beamer.loadgen import generate_q
+    L = 1000.0
+    sup = [Support("s1", 0.0, "pin", 0), Support("s2", L, "roller", 0)]
+    fF = Load("l", "point_force", "", "lc"); fF.x = 200.0; fF.Fz = -3000.0
+    sa = make_state(L, sup, [fF])
+    ra = solve_beam(sa)
+    r = generate_q(0.0, L, -3000.0, 200.0, "trapezoid")
+    fq = Load("l2", "distributed", "", "lc"); fq.x1 = 0.0; fq.x2 = L; fq.q1 = r.q1; fq.q2 = r.q2
+    sb = make_state(L, sup, [fq])
+    rb = solve_beam(sb)
+    for rea, reb in zip(ra.reactions, rb.reactions):
+        assert abs(rea.Rz - reb.Rz) < 1e-3
+
+
+def test_section_library_reference_resolves():
+    """Úsek odkazující do knihovny průřezů (sec1_id) se vyhodnotí podle knihovny;
+    bez odkazu padá na zapečený inline (zpětná kompatibilita)."""
+    from beamer.sections_along import eff_defs, section_by_id
+    lib = CrossSectionDef(type="circle", params={"D": 30.0}, id="sec_lib", name="D30")
+    inline = CrossSectionDef(type="rectangle", params={"b": 10.0, "h": 20.0})
+    seg = SectionSegment(0.0, 100.0, sec1=inline, sec2=None)
+    st = ProjectState(length=100.0, sections=[lib], section_segments=[seg])
+    # bez odkazu → inline
+    s1, _ = eff_defs(st, seg)
+    assert s1.type == "rectangle"
+    # s odkazem → knihovna
+    seg.sec1_id = "sec_lib"
+    s1, _ = eff_defs(st, seg)
+    assert s1.type == "circle" and s1.params["D"] == 30.0
+    assert section_by_id(st, "sec_lib") is lib
+    # neexistující odkaz → fallback na inline
+    seg.sec1_id = "sec_missing"
+    s1, _ = eff_defs(st, seg)
+    assert s1.type == "rectangle"
+
+
+def test_section_library_roundtrip():
+    """Knihovna průřezů a odkazy přežijí uložení/načtení projektu."""
+    from beamer.project_io import state_to_dict, dict_to_state
+    lib = CrossSectionDef(type="circle", params={"D": 18.0}, id="sec_a", name="Čep")
+    seg = SectionSegment(0.0, 50.0, sec1=CrossSectionDef(), sec1_id="sec_a")
+    st = ProjectState(length=50.0, sections=[lib], section_segments=[seg])
+    st2 = dict_to_state(state_to_dict(st))
+    assert len(st2.sections) == 1 and st2.sections[0].id == "sec_a"
+    assert st2.sections[0].name == "Čep"
+    assert st2.section_segments[0].sec1_id == "sec_a"
+
+
 # ── manuální runner (bez pytestu) ──
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

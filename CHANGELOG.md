@@ -2,6 +2,52 @@
 
 Version format: **X.XX**
 
+## 1.17
+
+- Cross-section library: a new "Cross-sections (library)" group under Materials
+  holds named sections reused across segments and PID properties (like the
+  material library). Segments and PIDs pick a section from a dropdown (library +
+  "(inline – custom)"); "Edit…" edits the effective section (a library section
+  propagates everywhere), "→ library" promotes an inline section into the
+  library. Deleting a referenced section is blocked. Fully backwards compatible
+  (older projects keep their inline sections; no migration).
+- PID properties (FEM pre-processor style): a named {material + section} under a
+  number; a segment just selects a PID. Inline definitions remain for quick
+  one-off segments.
+- Boolean construction section: a new section type built from primitives
+  (rectangle, circle) combined with union / difference / intersection. Requires
+  the Shapely library.
+- Distributed-load generator: replace a transverse force by a statically
+  equivalent linear distributed load (trapezoid keeps resultant and moment –
+  including the negative-end "see-saw" for an edge force; constant; triangle).
+  Axial force and torque are kept as separate point loads. Separate window with
+  a live q(x) preview.
+- σ_red (von Mises) mode switch in the top bar: "exact max" (the true maximum
+  over the section – the σ and τ peaks lie at different fibres and are not added)
+  vs "conservative (σ⊕τ)" = √(σ_max²+3·τ_max²) for pins/bolts. The Cross-section
+  tab now shows the fibre z at which σ and τ peak.
+- Left panel: all groups are collapsible panels with a grey header; the
+  expanded/collapsed state is remembered across projects and restarts. The total
+  length was removed from the Beam group (it is derived from the segment
+  lengths). The section-type dropdown shows all types without scrolling.
+- Cross-section tab: the results table is split into collapsible sections
+  (Cross-section properties, Stress at the section, Internal-force extremes,
+  Whole-beam assessment); the diagrams and the section drawing are unchanged.
+
+## 1.16
+
+- Load Case Builder (a separate, non-modal window; the "Load Cases" button in
+  the top bar): manage load cases and combinations (Σ factor × case) and read a
+  summary table — one row per combination with columns for N/V/M/Mk/w extremes,
+  σ_red max, RF min + x, reactions and control-point values. Export to CSV, copy
+  to the clipboard (TSV for spreadsheets), "Show selected combination in the main
+  window". Every load belongs to a case; "+ Cases ×1 (auto)" builds a unit
+  combination per case. The solver evaluates any combination without mutating the
+  state (`solve_beam(state, factors=…)`).
+- Diagram peak x-coordinates shown to one decimal place (previously integer).
+- Cross-section tab: smaller section drawing and diagrams, more room for the
+  table.
+
 ## 1.15
 
 - VVÚ diagram peak labels now also show the x-coordinate (value @ x).

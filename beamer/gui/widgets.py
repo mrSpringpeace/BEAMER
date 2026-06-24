@@ -6,15 +6,22 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel,
     QDoubleSpinBox, QComboBox, QPushButton, QScrollArea, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QLineEdit,
-    QCheckBox, QToolButton,
+    QCheckBox, QToolButton, QMessageBox,
 )
 from PySide6.QtCore import Qt as _Qt
 
 
 class CollapsibleBox(QWidget):
-    """Sbalitelný panel – hlavička (QToolButton se šipkou) + skrývatelný obsah."""
-    def __init__(self, title="", expanded=False):
+    """Sbalitelný panel – hlavička (QToolButton se šipkou) + skrývatelný obsah.
+
+    Pokud je zadán `persist_key`, stav rozbalení se ukládá do SETTINGS a obnoví
+    se napříč projekty i restarty."""
+    def __init__(self, title="", expanded=False, persist_key=None):
         super().__init__()
+        self._persist_key = persist_key
+        if persist_key is not None:
+            from ..settings import SETTINGS
+            expanded = bool(SETTINGS.panel_expanded.get(persist_key, expanded))
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -22,7 +29,13 @@ class CollapsibleBox(QWidget):
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setChecked(expanded)
-        self.toggle.setStyleSheet("QToolButton{border:none; font-weight:bold; text-align:left;}")
+        self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.toggle.setStyleSheet(
+            "QToolButton{background:#e9e9e9; border:1px solid #cfcfcf;"
+            " border-radius:3px; font-weight:bold; text-align:left;"
+            " padding:4px 6px; margin-top:3px;}"
+            "QToolButton:hover{background:#dedede;}"
+            "QToolButton:checked{background:#e0e4ea; border-color:#b9c2cf;}")
         self.toggle.setToolButtonStyle(_Qt.ToolButtonTextBesideIcon)
         self.toggle.setArrowType(_Qt.DownArrow if expanded else _Qt.RightArrow)
         self.toggle.toggled.connect(self._on_toggle)
@@ -36,13 +49,17 @@ class CollapsibleBox(QWidget):
     def _on_toggle(self, on):
         self.content.setVisible(on)
         self.toggle.setArrowType(_Qt.DownArrow if on else _Qt.RightArrow)
+        if self._persist_key is not None:
+            from ..settings import SETTINGS
+            SETTINGS.panel_expanded[self._persist_key] = bool(on)
+            SETTINGS.save()
 
     def setTitle(self, t):
         self.toggle.setText(t)
 
 from ..model import (
     Material, Support, Hinge, ControlPoint, Load, LoadCase, LoadCombination,
-    CrossSectionDef, SectionSegment, new_id,
+    CrossSectionDef, SectionSegment, Property, new_id,
 )
 from ..i18n import tr
 from ..settings import fmt
@@ -68,6 +85,7 @@ SECTION_LABELS = {
     "tube": "Trubka (CHS)", "i_section": "I-profil", "t_section": "T-profil",
     "l_section": "L-profil", "c_section": "U/C-profil",
     "polygon": "Vlastní (polygon)", "direct": "Přímé Iy (EI model)",
+    "construction": "Konstrukční tvar (boolean)",
 }
 
 # výchozí polygon při přepnutí na vlastní průřez (obdélník 100×200)
@@ -120,6 +138,8 @@ class InputPanel(QScrollArea):
 
         self._build_general()
         self._build_material()
+        self._build_section_library()
+        self._build_properties()
         self._build_section()
         self._build_supports()
         self._build_hinges()
@@ -133,11 +153,10 @@ class InputPanel(QScrollArea):
 
     # ── obecné ──
     def _build_general(self):
-        g = QGroupBox(tr("Nosník"))
-        f = QFormLayout(g)
-        self.len_lbl = QLabel()
-        f.addRow(tr("Celková délka L:"), self.len_lbl)
-
+        box = CollapsibleBox(tr("Nosník"), expanded=True, persist_key="general")
+        f = QFormLayout()
+        box.content_layout.addLayout(f)
+        # celková délka L se odvozuje z délek úseků – v menu se nezobrazuje
         self.theory_cb = QComboBox()
         self.theory_cb.addItem("Euler–Bernoulli", "euler-bernoulli")
         self.theory_cb.addItem("Timoshenko", "timoshenko")
@@ -145,8 +164,7 @@ class InputPanel(QScrollArea):
         self.theory_cb.setCurrentIndex(max(0, idx))
         self.theory_cb.currentIndexChanged.connect(self._on_theory)
         f.addRow(tr("Teorie:"), self.theory_cb)
-        self.layout.addWidget(g)
-        self._update_len_label()
+        self.layout.addWidget(box)
 
     def _update_len_label(self):
         if hasattr(self, "len_lbl"):
@@ -162,7 +180,7 @@ class InputPanel(QScrollArea):
 
     # ── materiál ──
     def _build_material(self):
-        box = CollapsibleBox(tr("Materiály (knihovna)"), expanded=True)
+        box = CollapsibleBox(tr("Materiály (knihovna)"), expanded=True, persist_key="material")
         v = box.content_layout
         row = QHBoxLayout()
         self.mat_cb = QComboBox()
@@ -342,12 +360,264 @@ class InputPanel(QScrollArea):
             elif it.layout():
                 self._clear_layout(it.layout())
 
+    # ── knihovna pojmenovaných průřezů ──
+    def _build_section_library(self):
+        box = CollapsibleBox(tr("Průřezy (knihovna)"), expanded=False, persist_key="sections")
+        v = box.content_layout
+        hint = QLabel(tr("Pojmenované průřezy k opakovanému použití. Úsek i PID "
+                         "je vybírají; úprava se propíše všude."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#666; font-size:11px;")
+        v.addWidget(hint)
+        self.seclib_host = QWidget()
+        self.seclib_layout = QVBoxLayout(self.seclib_host)
+        self.seclib_layout.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.seclib_host)
+        addb = QPushButton(tr("+ Přidat průřez"))
+        addb.clicked.connect(self._add_library_section)
+        v.addWidget(addb)
+        self.layout.addWidget(box)
+        self._refresh_section_library()
+
+    def _refresh_section_library(self):
+        if not hasattr(self, "seclib_layout"):
+            return
+        self._clear_layout(self.seclib_layout)
+        if not self.state.sections:
+            empty = QLabel(tr("(zatím prázdné – přidej průřez, nebo použij → knihovna u úseku)"))
+            empty.setStyleSheet("color:#999; font-size:11px;")
+            self.seclib_layout.addWidget(empty)
+        for s in self.state.sections:
+            self.seclib_layout.addWidget(self._library_section_row(s))
+
+    def _library_section_row(self, s):
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        nm = QLineEdit(s.name)
+        nm.setPlaceholderText(tr("název průřezu"))
+        nm.textChanged.connect(lambda t, sec=s: (setattr(sec, "name", t),
+                                                 self._on_library_renamed()))
+        h.addWidget(nm, 1)
+        tlbl = QLabel(tr(SECTION_LABELS.get(s.type, s.type)))
+        tlbl.setStyleSheet("color:#666; font-size:11px;")
+        h.addWidget(tlbl)
+        edit = QPushButton(tr("Upravit…"))
+        edit.clicked.connect(lambda _, sec=s: self._edit_library_section(sec))
+        h.addWidget(edit)
+        dele = QPushButton("✕")
+        dele.setMaximumWidth(28)
+        dele.clicked.connect(lambda _, sec=s: self._del_library_section(sec))
+        h.addWidget(dele)
+        return w
+
+    def _add_library_section(self):
+        n = len(self.state.sections) + 1
+        sec = CrossSectionDef(type="rectangle", params={"b": 100.0, "h": 200.0},
+                              id=new_id("sec"), name=tr("Průřez") + f" {n}")
+        self.state.sections.append(sec)
+        self._refresh_section_library()
+        self._edit_library_section(sec)      # rovnou otevři editor
+        self._emit()
+
+    def _edit_library_section(self, sec):
+        from .section_dialog import SectionEditorDialog
+        dlg = SectionEditorDialog.for_def(sec, self)
+        dlg.changed.connect(self._emit)
+        dlg.exec()
+        self._refresh_section_library()
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
+    def _del_library_section(self, sec):
+        if self._section_in_use(sec.id):
+            QMessageBox.warning(self, tr("Nelze smazat"),
+                                tr("Tento průřez používá některý úsek nebo PID."))
+            return
+        self.state.sections.remove(sec)
+        self._refresh_section_library()
+        self._emit()
+
+    def _section_in_use(self, sid):
+        for seg in self.state.section_segments:
+            if getattr(seg, "sec1_id", None) == sid or getattr(seg, "sec2_id", None) == sid:
+                return True
+        for p in self.state.properties:
+            if getattr(p, "sec1_id", None) == sid or getattr(p, "sec2_id", None) == sid:
+                return True
+        return False
+
+    def _on_library_renamed(self):
+        self._refresh_parts()
+        self._refresh_properties()
+        self._emit()
+
+    # ── sdílený výběr průřezu (knihovna + vlastní inline) ──
+    def _section_picker(self, obj, which, after):
+        """Widget: rozbalovátko (vlastní inline / knihovna) + Upravit + → knihovna.
+        `obj` má atributy `which` (zapečený def) a `which`+'_id' (odkaz). `after`
+        se zavolá po změně (typicky _refresh_parts / _refresh_properties)."""
+        id_attr = which + "_id"
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        cb = QComboBox()
+        cb.addItem(tr("(vlastní – inline)"), None)
+        for s in self.state.sections:
+            cb.addItem(f"{s.name or tr('Průřez')} ({tr(SECTION_LABELS.get(s.type, s.type))})", s.id)
+        cb.setCurrentIndex(max(0, cb.findData(getattr(obj, id_attr, None))))
+        cb.currentIndexChanged.connect(
+            lambda _, c=cb: (setattr(obj, id_attr, c.currentData()), after(), self._emit()))
+        h.addWidget(cb, 1)
+        edit = QPushButton(tr("Upravit…"))
+        edit.clicked.connect(lambda: self._edit_effective_section(obj, which, after))
+        h.addWidget(edit)
+        if getattr(obj, id_attr, None) is None:
+            promote = QPushButton(tr("→ knihovna"))
+            promote.setToolTip(tr("Přidat tento průřez do knihovny a odkázat na něj"))
+            promote.clicked.connect(lambda: self._promote_section(obj, which, after))
+            h.addWidget(promote)
+        return w
+
+    def _edit_effective_section(self, obj, which, after):
+        from .section_dialog import SectionEditorDialog
+        from ..sections_along import section_by_id
+        sid = getattr(obj, which + "_id", None)
+        target = section_by_id(self.state, sid) if sid else getattr(obj, which)
+        if target is None:
+            return
+        dlg = SectionEditorDialog.for_def(target, self)
+        dlg.changed.connect(self._emit)
+        dlg.exec()
+        self._refresh_section_library()
+        after()
+        self._emit()
+
+    def _promote_section(self, obj, which, after):
+        import copy as _c
+        emb = getattr(obj, which)
+        if emb is None:
+            return
+        sec = _c.deepcopy(emb)
+        sec.id = new_id("sec")
+        if not sec.name:
+            sec.name = tr("Průřez") + f" {len(self.state.sections) + 1}"
+        self.state.sections.append(sec)
+        setattr(obj, which + "_id", sec.id)
+        self._refresh_section_library()
+        after()
+        self._emit()
+
+    # ── vlastnosti pod číslem (PID) ──
+    def _build_properties(self):
+        box = CollapsibleBox(tr("Vlastnosti (PID)"), expanded=False, persist_key="properties")
+        v = box.content_layout
+        hint = QLabel(tr("Pojmenované {materiál + průřez} pod číslem; úsek si pak "
+                         "jen vybere PID. Změna PID se propíše do všech úseků."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#666; font-size:11px;")
+        v.addWidget(hint)
+        self.props_host = QWidget()
+        self.props_layout = QVBoxLayout(self.props_host)
+        self.props_layout.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.props_host)
+        addb = QPushButton(tr("+ Přidat PID"))
+        addb.clicked.connect(self._add_property)
+        v.addWidget(addb)
+        self.layout.addWidget(box)
+        self._refresh_properties()
+
+    def _refresh_properties(self):
+        self._clear_layout(self.props_layout)
+        for p in self.state.properties:
+            self.props_layout.addWidget(self._property_box(p))
+
+    def _property_box(self, p):
+        box = CollapsibleBox(f"PID {p.pid}: {p.name or '—'}",
+                             expanded=(len(self.state.properties) <= 2))
+        cl = box.content_layout
+        f = QFormLayout()
+        cl.addLayout(f)
+        nm = QLineEdit(p.name)
+        nm.setPlaceholderText(tr("název vlastnosti"))
+        nm.textChanged.connect(lambda s, pp=p, b=box: (setattr(pp, "name", s),
+                               b.setTitle(f"PID {pp.pid}: {pp.name or '—'}"),
+                               self._refresh_parts(), self._emit()))
+        f.addRow(tr("Název:"), nm)
+        mcb = QComboBox()
+        for m in self.state.materials:
+            mcb.addItem(m.name, m.id)
+        mcb.setCurrentIndex(max(0, mcb.findData(p.material_id)))
+        mcb.currentIndexChanged.connect(
+            lambda _, pp=p, c=mcb: (setattr(pp, "material_id", c.currentData()),
+                                    self._emit()))
+        f.addRow(tr("Materiál:"), mcb)
+        f.addRow(tr("Průřez:"), self._section_picker(p, "sec1", self._refresh_properties))
+        taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
+        taper.setChecked(p.tapered)
+        taper.toggled.connect(lambda on, pp=p: self._toggle_prop_taper(pp, on))
+        cl.addWidget(taper)
+        if p.tapered:
+            cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
+            cl.addWidget(self._section_picker(p, "sec2", self._refresh_properties))
+        db = QPushButton(tr("Smazat PID"))
+        db.clicked.connect(lambda _, pp=p: self._del_property(pp))
+        cl.addWidget(db)
+        return box
+
+    def _add_property(self):
+        import copy as _c
+        next_pid = (max((p.pid for p in self.state.properties), default=0) + 1)
+        base = self.state.section_segments[0] if self.state.section_segments else None
+        sec = _c.deepcopy(base.sec1) if base else CrossSectionDef()
+        self.state.properties.append(Property(
+            new_id("prop"), next_pid, tr("Vlastnost") + f" {next_pid}",
+            material_id=self.state.selected_material_id, sec1=sec))
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
+    def _del_property(self, p):
+        # úseky odkazující na mazaný PID přepni na inline
+        for seg in self.state.section_segments:
+            if getattr(seg, "property_id", None) == p.id:
+                seg.property_id = None
+        self.state.properties.remove(p)
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
+    def _toggle_prop_taper(self, p, on):
+        import copy as _c
+        from ..sections_along import _resolve_secref
+        if on and p.sec2 is None and not getattr(p, "sec2_id", None):
+            base = _resolve_secref(self.state, getattr(p, "sec1_id", None), p.sec1)
+            p.sec2 = _c.deepcopy(base)
+            p.sec2.id = None
+            p.sec2.name = ""
+        elif not on:
+            p.sec2 = None
+            p.sec2_id = None
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
+    def _edit_prop_section(self, p, which):
+        from .section_dialog import SectionEditorDialog
+        dlg = SectionEditorDialog.for_def(getattr(p, which), self)
+        dlg.changed.connect(self._emit)
+        dlg.exec()
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
     # ── úseky nosníku (každý: délka + materiál + průřez) ──
     def _build_section(self):
         from .. import defaults
         defaults.ensure_parts(self.state)
-        g = QGroupBox(tr("Úseky nosníku"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Úseky nosníku"), expanded=True, persist_key="section")
+        v = box.content_layout
         info = QLabel(tr("Každý úsek má délku, materiál a průřez (vč. náběhu)."))
         info.setWordWrap(True)
         info.setStyleSheet("color:#555; font-size:11px;")
@@ -359,14 +629,21 @@ class InputPanel(QScrollArea):
         addb = QPushButton(tr("+ Přidat úsek"))
         addb.clicked.connect(self._add_part)
         v.addWidget(addb)
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
         self._refresh_parts()
 
     def _part_title(self, i, seg):
-        mat = next((m for m in self.state.materials if m.id == seg.material_id), None)
-        mname = mat.name if mat else "?"
-        tp = tr(SECTION_LABELS.get(seg.sec1.type, seg.sec1.type))
-        return f"{tr('Úsek')} {i+1}:  L={seg.length:.0f} mm · {mname} · {tp}"
+        from ..sections_along import eff_defs, material_for_segment
+        sec1, _ = eff_defs(self.state, seg)
+        mat = material_for_segment(self.state, seg)
+        tp = tr(SECTION_LABELS.get(sec1.type, sec1.type))
+        tag = ""
+        pid = getattr(seg, "property_id", None)
+        if pid:
+            p = next((pp for pp in self.state.properties if pp.id == pid), None)
+            if p:
+                tag = f" · PID{p.pid}"
+        return f"{tr('Úsek')} {i+1}:  L={seg.length:.0f} mm · {mat.name} · {tp}{tag}"
 
     def _refresh_parts(self):
         self._clear_layout(self.parts_layout)
@@ -386,37 +663,47 @@ class InputPanel(QScrollArea):
         lsp = _spin(seg.length, 0.01, 1e6, 50, 1, " mm")
         lsp.valueChanged.connect(lambda val, s=seg, b=box: self._set_part_length(s, val, b))
         f.addRow(tr("Délka:"), lsp)
-        # materiál (odkaz do knihovny)
-        mcb = QComboBox()
-        for m in self.state.materials:
-            mcb.addItem(m.name, m.id)
-        mcb.setCurrentIndex(max(0, mcb.findData(seg.material_id)))
-        mcb.currentIndexChanged.connect(lambda _, s=seg, c=mcb, b=box, idx=i:
-                                        self._on_part_material(s, c.currentData(), b, idx))
-        f.addRow(tr("Materiál:"), mcb)
-        # průřez A
-        ea = QPushButton(f"{tr('Průřez')}: {tr(SECTION_LABELS.get(seg.sec1.type, seg.sec1.type))} …")
-        ea.clicked.connect(lambda _, s=seg: self._edit_seg_section(s, "sec1"))
-        cl.addWidget(ea)
-        # profily knihovna / import / export (pro sec1)
-        prow = QHBoxLayout()
-        for txt, fn in ((tr("💾 Uložit profil ▾"), self._profile_save_menu),
-                        (tr("📂 Z knihovny"), self._profile_from_lib),
-                        (tr("⤓ Import"), self._import_profile),
-                        (tr("⤒ Export"), self._export_profile)):
-            b = QPushButton(txt)
-            b.clicked.connect(lambda _, s=seg, fn=fn: fn(s))
-            prow.addWidget(b)
-        cl.addLayout(prow)
-        # náběh
-        taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
-        taper.setChecked(seg.tapered)
-        taper.toggled.connect(lambda on, s=seg: self._toggle_taper(s, on))
-        cl.addWidget(taper)
-        if seg.tapered:
-            eb = QPushButton(f"{tr('Průřez B')}: {tr(SECTION_LABELS.get(seg.sec2.type, seg.sec2.type))} …")
-            eb.clicked.connect(lambda _, s=seg: self._edit_seg_section(s, "sec2"))
-            cl.addWidget(eb)
+        # PID volba: (inline) nebo některá vlastnost
+        pidcb = QComboBox()
+        pidcb.addItem(tr("(inline – vlastní)"), None)
+        for p in self.state.properties:
+            pidcb.addItem(f"PID {p.pid}: {p.name}", p.id)
+        pidcb.setCurrentIndex(max(0, pidcb.findData(getattr(seg, "property_id", None))))
+        pidcb.currentIndexChanged.connect(lambda _, s=seg, c=pidcb, b=box, idx=i:
+                                          self._on_part_pid(s, c.currentData(), b, idx))
+        f.addRow(tr("PID:"), pidcb)
+
+        if getattr(seg, "property_id", None):
+            # řízeno PID – inline ovládání skryto
+            note = QLabel(tr("Materiál i průřez řídí zvolený PID (uprav v sekci Vlastnosti)."))
+            note.setWordWrap(True); note.setStyleSheet("color:#666; font-size:11px;")
+            cl.addWidget(note)
+        else:
+            # inline materiál
+            mcb = QComboBox()
+            for m in self.state.materials:
+                mcb.addItem(m.name, m.id)
+            mcb.setCurrentIndex(max(0, mcb.findData(seg.material_id)))
+            mcb.currentIndexChanged.connect(lambda _, s=seg, c=mcb, b=box, idx=i:
+                                            self._on_part_material(s, c.currentData(), b, idx))
+            f.addRow(tr("Materiál:"), mcb)
+            f.addRow(tr("Průřez:"), self._section_picker(seg, "sec1", self._refresh_parts))
+            prow = QHBoxLayout()
+            for txt, fn in ((tr("💾 Uložit profil ▾"), self._profile_save_menu),
+                            (tr("📂 Z knihovny"), self._profile_from_lib),
+                            (tr("⤓ Import"), self._import_profile),
+                            (tr("⤒ Export"), self._export_profile)):
+                b = QPushButton(txt)
+                b.clicked.connect(lambda _, s=seg, fn=fn: fn(s))
+                prow.addWidget(b)
+            cl.addLayout(prow)
+            taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
+            taper.setChecked(seg.tapered)
+            taper.toggled.connect(lambda on, s=seg: self._toggle_taper(s, on))
+            cl.addWidget(taper)
+            if seg.tapered:
+                cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
+                cl.addWidget(self._section_picker(seg, "sec2", self._refresh_parts))
         # smazat úsek
         if len(self.state.section_segments) > 1:
             db = QPushButton(tr("Smazat úsek"))
@@ -442,6 +729,13 @@ class InputPanel(QScrollArea):
         seg.material_id = mid
         seg.E = None        # zvolený materiál řídí E/G (zruší přímý E override z .nos)
         box.setTitle(self._part_title(idx, seg))
+        self._emit()
+
+    def _on_part_pid(self, seg, pid, box, idx):
+        seg.property_id = pid
+        if pid:
+            seg.E = None    # PID řídí materiál/E
+        self._refresh_parts()    # přebuduj řádek (skryje/odkryje inline ovládání)
         self._emit()
 
     def _add_part(self):
@@ -472,10 +766,15 @@ class InputPanel(QScrollArea):
 
     def _toggle_taper(self, seg, on):
         import copy as _c
-        if on and seg.sec2 is None:
-            seg.sec2 = _c.deepcopy(seg.sec1)
+        from ..sections_along import _resolve_secref
+        if on and seg.sec2 is None and not getattr(seg, "sec2_id", None):
+            base = _resolve_secref(self.state, getattr(seg, "sec1_id", None), seg.sec1)
+            seg.sec2 = _c.deepcopy(base)
+            seg.sec2.id = None
+            seg.sec2.name = ""
         if not on:
             seg.sec2 = None
+            seg.sec2_id = None
         self._refresh_parts()
         self._emit()
 
@@ -491,6 +790,7 @@ class InputPanel(QScrollArea):
     def _apply_profile(self, seg, sdef):
         import copy as _c
         seg.sec1 = _c.deepcopy(sdef)
+        seg.sec1_id = None        # načtený profil = inline (zruš případný odkaz do knihovny)
         self._refresh_parts()
         self._emit()
 
@@ -580,15 +880,17 @@ class InputPanel(QScrollArea):
                                                "BEAMER profil (*.json)")
         if not path:
             return
+        from ..sections_along import _resolve_secref
+        eff = _resolve_secref(self.state, getattr(seg, "sec1_id", None), seg.sec1)
         try:
-            library.export_profile(seg.sec1, seg.sec1.type, path)
+            library.export_profile(eff, eff.type, path)
         except Exception as e:
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat: ") + str(e))
 
     # ── podpory ──
     def _build_supports(self):
-        g = QGroupBox(tr("Podpory"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Podpory"), expanded=True, persist_key="supports")
+        v = box.content_layout
         self.sup_table = QTableWidget(0, 5)
         self.sup_table.setHorizontalHeaderLabels(["#", "x [mm]", tr("typ"), tr("úhel [°]"), ""])
         self.sup_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -599,7 +901,7 @@ class InputPanel(QScrollArea):
         btn = QPushButton(tr("+ Přidat podporu"))
         btn.clicked.connect(self._add_support)
         v.addWidget(btn)
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
         self._refresh_supports()
 
     def _refresh_supports(self):
@@ -641,8 +943,8 @@ class InputPanel(QScrollArea):
 
     # ── klouby ──
     def _build_hinges(self):
-        g = QGroupBox(tr("Klouby"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Klouby"), expanded=False, persist_key="hinges")
+        v = box.content_layout
         self.hinge_table = QTableWidget(0, 2)
         self.hinge_table.setHorizontalHeaderLabels(["x [mm]", ""])
         self.hinge_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -652,7 +954,7 @@ class InputPanel(QScrollArea):
         btn = QPushButton(tr("+ Přidat kloub"))
         btn.clicked.connect(self._add_hinge)
         v.addWidget(btn)
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
         self._refresh_hinges()
 
     def _refresh_hinges(self):
@@ -681,8 +983,8 @@ class InputPanel(QScrollArea):
 
     # ── kontrolní body (report, neovlivní výpočet) ──
     def _build_control_points(self):
-        g = QGroupBox(tr("Kontrolní body"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Kontrolní body"), expanded=False, persist_key="control_points")
+        v = box.content_layout
         hint = QLabel(tr("Volitelné řezy, ve kterých se vypíšou výsledky "
                          "(karta Výsledky + export). Nemění výpočet."))
         hint.setStyleSheet("color:#666; font-size:11px;")
@@ -697,7 +999,7 @@ class InputPanel(QScrollArea):
         btn = QPushButton(tr("+ Přidat bod"))
         btn.clicked.connect(self._add_control_point)
         v.addWidget(btn)
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
         self._refresh_control_points()
 
     def _refresh_control_points(self):
@@ -738,8 +1040,8 @@ class InputPanel(QScrollArea):
 
     # ── zatížení ──
     def _build_loads(self):
-        g = QGroupBox(tr("Zatížení"))
-        v = QVBoxLayout(g)
+        box = CollapsibleBox(tr("Zatížení"), expanded=True, persist_key="loads")
+        v = box.content_layout
         self.loads_host = QWidget()
         self.loads_layout = QVBoxLayout(self.loads_host)
         self.loads_layout.setContentsMargins(0, 0, 0, 0)
@@ -751,7 +1053,10 @@ class InputPanel(QScrollArea):
             b.clicked.connect(lambda _, t=tp: self._add_load(t))
             row.addWidget(b)
         v.addLayout(row)
-        self.layout.addWidget(g)
+        gen = QPushButton(tr("↦ Generovat spojité ze síly…"))
+        gen.clicked.connect(lambda: self._open_loadgen(None))
+        v.addWidget(gen)
+        self.layout.addWidget(box)
         self._refresh_loads()
 
     def _refresh_loads(self):
@@ -791,6 +1096,16 @@ class InputPanel(QScrollArea):
                                                          b.setTitle(self._load_title(l)), self._emit()))
         f.addRow(tr("Název:"), name)
 
+        # zatěžovací stav (LC) – kvůli kombinacím v Load Case Builderu
+        if len(self.state.load_cases) > 1:
+            lccb = QComboBox()
+            for lc in self.state.load_cases:
+                lccb.addItem(lc.name, lc.id)
+            lccb.setCurrentIndex(max(0, lccb.findData(ld.load_case_id)))
+            lccb.currentIndexChanged.connect(
+                lambda _, l=ld, c=lccb: (setattr(l, "load_case_id", c.currentData()), self._emit()))
+            f.addRow(tr("Stav (LC):"), lccb)
+
         def bind(attr, suffix, dec=2, step=1.0):
             sp = _spin(getattr(ld, attr), -1e9, 1e9, step, dec, suffix)
             sp.valueChanged.connect(lambda v, a=attr, b=box: (setattr(ld, a, v),
@@ -802,6 +1117,9 @@ class InputPanel(QScrollArea):
             f.addRow("Fx:", bind("Fx", " N"))
             f.addRow(tr("Fz (+nahoru):"), bind("Fz", " N"))
             f.addRow(tr("excentricita:"), bind("eccentricity", " mm"))
+            repl = QPushButton(tr("↦ Nahradit spojitým…"))
+            repl.clicked.connect(lambda _, l=ld: self._open_loadgen(l))
+            cl.addWidget(repl)
         elif ld.type == "distributed":
             f.addRow("x1:", bind("x1", " mm", 1, 50))
             f.addRow("x2:", bind("x2", " mm", 1, 50))
@@ -844,10 +1162,28 @@ class InputPanel(QScrollArea):
         self._refresh_loads()
         self._emit()
 
+    def _open_loadgen(self, preset=None):
+        from .loadgen_dialog import LoadGenDialog
+        dlg = getattr(self, "_loadgen_dialog", None)
+        if dlg is None:
+            dlg = LoadGenDialog(self.state, self)
+            dlg.generated.connect(lambda: (self._refresh_loads(), self._emit()))
+            self._loadgen_dialog = dlg
+        else:
+            dlg.set_state(self.state)
+        if preset is not None:
+            i = dlg.src_cb.findData(preset.id)
+            if i >= 0:
+                dlg.src_cb.setCurrentIndex(i)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     # ── součinitel + plasticita ──
     def _build_factors(self):
-        g = QGroupBox(tr("Součinitel"))
-        f = QFormLayout(g)
+        box = CollapsibleBox(tr("Součinitel"), expanded=False, persist_key="factors")
+        f = QFormLayout()
+        box.content_layout.addLayout(f)
         self.af_sp = _spin(self.state.additional_factor, 0.0, 100.0, 0.05, 3)
         self.af_sp.valueChanged.connect(lambda v: (setattr(self.state, "additional_factor", v), self._emit()))
         f.addRow(tr("Dodatečný součinitel:"), self.af_sp)
@@ -868,7 +1204,7 @@ class InputPanel(QScrollArea):
         self.plast_method_cb.currentIndexChanged.connect(self._on_plast_method)
         self.plast_method_cb.setEnabled(self.state.plasticity_enabled)
         f.addRow(tr("Metoda α_pl:"), self.plast_method_cb)
-        self.layout.addWidget(g)
+        self.layout.addWidget(box)
 
     def _on_plast_toggle(self, on):
         self.state.plasticity_enabled = bool(on)
@@ -888,40 +1224,97 @@ class InputPanel(QScrollArea):
 
 
 class ResultsPanel(QWidget):
-    """Tabulka průřezových charakteristik (živě) + extrémů VVÚ a MS (na výpočet).
+    """Sbalitelné sekce s výsledky (karta Průřez): vlastnosti průřezu, napětí
+    v řezu, VVÚ (extrémy), posouzení celého nosníku.
 
-    Sekce „Průřez" se aktualizuje ihned při změně dimenzí/typu;
-    sekce „VVÚ" a „Posouzení" až po stisku Spočítat.
-    """
+    Vlastnosti a napětí se aktualizují ihned (živě); VVÚ a posouzení po výpočtu.
+    Stav rozbalení každé sekce se pamatuje (persist_key)."""
 
     def __init__(self):
         super().__init__()
-        v = QVBoxLayout(self)
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels([tr("Veličina"), tr("Hodnota")])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        v.addWidget(self.table)
-        self._section_rows = []
-        self._analysis_rows = []
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        host = QWidget()
+        self._v = QVBoxLayout(host)
+        self._v.setContentsMargins(0, 0, 0, 0)
+        self._v.setSpacing(4)
+        scroll.setWidget(host)
+        outer.addWidget(scroll)
 
-    def _render(self):
-        rows = self._section_rows + self._analysis_rows
-        self.table.setRowCount(0)
+        self.box_props = CollapsibleBox(tr("Vlastnosti průřezu"), expanded=True, persist_key="res_props")
+        self.box_stress = CollapsibleBox(tr("Napětí v řezu"), expanded=True, persist_key="res_stress")
+        self.box_vvu = CollapsibleBox(tr("VVÚ (extrémy)"), expanded=False, persist_key="res_vvu")
+        self.box_assess = CollapsibleBox(tr("Posouzení (celý nosník)"), expanded=True, persist_key="res_assess")
+        self.tbl_props = self._mk_table(self.box_props)
+        self.tbl_stress = self._mk_table(self.box_stress)
+        self.tbl_vvu = self._mk_table(self.box_vvu)
+        self.tbl_assess = self._mk_table(self.box_assess)
+        for b in (self.box_props, self.box_stress, self.box_vvu, self.box_assess):
+            self._v.addWidget(b)
+        self._v.addStretch(1)
+        self.clear_analysis()
+
+    def _mk_table(self, box):
+        t = QTableWidget(0, 2)
+        t.horizontalHeader().setVisible(False)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        box.content_layout.addWidget(t)
+        return t
+
+    def _fill(self, table, rows):
+        table.setRowCount(0)
         for name, val in rows:
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(name))
-            self.table.setItem(r, 1, QTableWidgetItem(val))
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, 0, QTableWidgetItem(name))
+            table.setItem(r, 1, QTableWidgetItem(val))
+        _fit_table(table)
 
-    def set_section(self, sec, title=None):
-        """Živá aktualizace charakteristik průřezu (bez VVÚ/MS)."""
+    def set_section(self, sec, title=None, assess=None):
+        """Živá aktualizace charakteristik průřezu. `assess` (dict z analysis._assess
+        / values_at_x) = posouzení PRO TENTO řez (σ/τ/σ_red/RF) – zobrazí se hned
+        pod charakteristikami, aby sedělo s vybraným úsekem i s grafem."""
         if title is None:
             title = tr("— Průřez —")
+        # posouzení vybraného řezu
+        prows = []
+        if assess is not None:
+            z_sg = assess.get("sigma_z")
+            z_tu = assess.get("tau_z")
+            sig_lbl = "σ (normál.) [MPa]"
+            tau_lbl = "τ (smyk) [MPa]"
+            if z_sg is not None:
+                sig_lbl = f"σ (normál.) @ z={z_sg:.1f} [MPa]"
+            if z_tu is not None:
+                tau_lbl = f"τ (smyk) @ z={z_tu:.1f} [MPa]"
+            combined = assess.get("sigma_red_combined", False)
+            red_lbl = ("σ_red = √(σ_max²+3τ_max²) [MPa]" if combined
+                       else "σ_red (max von Mises v řezu) [MPa]")
+            prows = [
+                (sig_lbl, fmt(assess.get("sigma_max", 0))),
+                (tau_lbl, fmt(assess.get("tau_max", 0))),
+                (red_lbl, fmt(assess.get("mises_max", 0))),
+            ]
+            if z_sg is not None and z_tu is not None and not combined \
+                    and abs(z_sg - z_tu) > 1e-6:
+                prows.append((tr("  σ a τ jsou špičky v různých vláknech"), ""))
+            prows += [
+                ("RF_yield / RF_ult",
+                 f"{fmt(assess.get('RF_yield', 0))} / {fmt(assess.get('RF_ultimate', 0))}"),
+                ("RF", f"{fmt(assess.get('RF', 0))} ({assess.get('critical','')})"),
+            ]
+        # nadpis řezu (který úsek / kde) → do hlavičky boxu vlastností
+        cap = (title or "").strip(" —")
+        self.box_props.setTitle(tr("Vlastnosti průřezu") + (f" · {cap}" if cap else ""))
         rows = []
         if sec and sec.valid:
             rows += [
-                (title, ""),
                 ("A [mm²]", fmt(sec.A)),
                 ("Iy [mm⁴]", fmt(sec.Iy)),
                 ("Iz [mm⁴]", fmt(sec.Iz)),
@@ -943,21 +1336,20 @@ class ResultsPanel(QWidget):
                 ("A_sz [mm²]", fmt(sec.Asz)),
             ]
         else:
-            rows += [(title, ""), (tr("neplatný průřez"), "")]
-        self._section_rows = rows
-        self._render()
+            rows = [(tr("neplatný průřez"), "")]
+        self._fill(self.tbl_props, rows)
+        self._fill(self.tbl_stress, prows or [(tr("(stiskněte Spočítat)"), "")])
 
     def set_analysis(self, result, state, margins):
         """VVÚ extrémy + MS – po výpočtu."""
-        rows = []
+        vrows = []
         if result and result.is_stable and result.points:
             N = [p.N for p in result.points]
             V = [p.V for p in result.points]
             M = [p.M for p in result.points]
             Mk = [p.Mk for p in result.points]
             w = [p.w for p in result.points]
-            rows += [
-                (tr("— VVÚ (extrémy) —"), ""),
+            vrows += [
                 ("N max/min [N]", f"{fmt(max(N))} / {fmt(min(N))}"),
                 ("V max/min [N]", f"{fmt(max(V))} / {fmt(min(V))}"),
                 ("M max/min [N·mm]", f"{fmt(max(M))} / {fmt(min(M))}"),
@@ -965,11 +1357,11 @@ class ResultsPanel(QWidget):
                 ("w max/min [mm]", f"{fmt(max(w))} / {fmt(min(w))}"),
             ]
             for i, rc in enumerate(result.reactions):
-                rows.append((f"{tr('Reakce')} {i+1} (x={rc.x:.0f}) Rz [N]", fmt(rc.Rz)))
+                vrows.append((f"{tr('Reakce')} {i+1} (x={rc.x:.0f}) Rz [N]", fmt(rc.Rz)))
+        arows = []
         if margins:
             crit = min(margins, key=lambda m: m.RF)
-            rows += [
-                (tr("— Posouzení —"), ""),
+            arows += [
                 ("σ max (normál.) [MPa]", fmt(max(m.sigma_max for m in margins))),
                 ("τ max (smyk) [MPa]", fmt(max(m.tau_max for m in margins))),
                 ("σ_red max (von Mises) [MPa]", fmt(max(m.mises_max for m in margins))),
@@ -979,12 +1371,12 @@ class ResultsPanel(QWidget):
                 ("  RF_min", f"{fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f}"),
                 ("  RF_yield / RF_ult", f"{fmt(crit.RF_yield)} / {fmt(crit.RF_ultimate)}"),
             ]
-        self._analysis_rows = rows
-        self._render()
+        self._fill(self.tbl_vvu, vrows or [(tr("(stiskněte Spočítat)"), "")])
+        self._fill(self.tbl_assess, arows or [(tr("(stiskněte Spočítat)"), "")])
 
     def clear_analysis(self):
-        self._analysis_rows = [(tr("— VVÚ / posouzení —"), tr("stiskněte Spočítat"))]
-        self._render()
+        self._fill(self.tbl_vvu, [(tr("(stiskněte Spočítat)"), "")])
+        self._fill(self.tbl_assess, [(tr("(stiskněte Spočítat)"), "")])
 
 
 class ReportPanel(QWidget):

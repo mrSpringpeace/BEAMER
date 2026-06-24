@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._dirty = True            # výsledky je třeba přepočítat
         self._modified = False        # dokument má neuložené změny (ochrana práce)
+        self._lc_dialog = None        # Load Case Builder (nemodální, persistentní)
         self._sec_sig = None
 
         self._build_ui()
@@ -87,6 +88,21 @@ class MainWindow(QMainWindow):
             max(0, self.rf_basis_cb.findData(getattr(self.state, "rf_basis", "min"))))
         self.rf_basis_cb.currentIndexChanged.connect(self._on_rf_basis)
         bar.addWidget(self.rf_basis_cb)
+        bar.addWidget(QLabel(tr("σ_red:")))
+        self.sigred_cb = QComboBox()
+        self.sigred_cb.addItem(tr("přesné max"), "exact")
+        self.sigred_cb.addItem(tr("konzervativní (σ⊕τ)"), "combined")
+        self.sigred_cb.setToolTip(tr(
+            "přesné max = skutečné maximum von Mises po řezu (špička σ a τ obecně "
+            "v různých vláknech)\nkonzervativní = √(σ_max²+3·τ_max²), špičky sečteny "
+            "na povrchu – pro čepy/šrouby"))
+        self.sigred_cb.setCurrentIndex(
+            max(0, self.sigred_cb.findData(getattr(self.state, "sigma_red_mode", "exact"))))
+        self.sigred_cb.currentIndexChanged.connect(self._on_sigred_mode)
+        bar.addWidget(self.sigred_cb)
+        self.lc_btn = QPushButton(tr("⊞ Load Cases"))
+        self.lc_btn.clicked.connect(self.open_loadcase_builder)
+        bar.addWidget(self.lc_btn)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setRange(0, 100)
@@ -131,12 +147,13 @@ class MainWindow(QMainWindow):
         sv.addLayout(psel)
         top = QHBoxLayout()
         self.section_canvas = SectionCanvas()
-        top.addWidget(self.section_canvas, 1)
+        self.section_canvas.setMaximumWidth(300)   # menší obrázek průřezu
+        top.addWidget(self.section_canvas, 2)
         self.results_panel = ResultsPanel()
-        top.addWidget(self.results_panel, 1)
-        sv.addLayout(top, 1)
+        top.addWidget(self.results_panel, 3)        # víc místa pro tabulku
+        sv.addLayout(top, 3)
         self.stress_canvas = StressCanvas()
-        sv.addWidget(self.stress_canvas, 1)
+        sv.addWidget(self.stress_canvas, 2)         # grafy o něco menší
         self.tabs.addTab(stress_tab, tr("Průřez a napjatost"))
 
         # tab výsledky (souhrnný protokol) + ovládání velikosti fontu
@@ -295,10 +312,45 @@ class MainWindow(QMainWindow):
         self.beam_canvas.show_deform = bool(on)
         self.beam_canvas.plot(self.state, self.result)
 
+    def open_loadcase_builder(self):
+        from .loadcase_dialog import LoadCaseBuilderDialog
+        if self._lc_dialog is None:
+            self._lc_dialog = LoadCaseBuilderDialog(self.state, self)
+            self._lc_dialog.show_combination.connect(self._on_show_combination)
+            self._lc_dialog.changed.connect(self._on_lc_changed)
+        else:
+            self._lc_dialog.set_state(self.state)
+        self._lc_dialog.show()
+        self._lc_dialog.raise_()
+        self._lc_dialog.activateWindow()
+
+    def _on_lc_changed(self):
+        self._modified = True
+        # nové/přejmenované stavy → obnov LC selektory u zatížení
+        try:
+            self.input_panel._refresh_loads()
+        except Exception:
+            pass
+
+    def _on_show_combination(self, combo_id):
+        self.state.selected_active_combination_id = combo_id
+        self._modified = True
+        self.compute()
+
     def _on_rf_basis(self, _):
         """Změna řídicí báze RF (min / Re / Rm) – jen přepočet posouzení
         z existujícího výsledku, bez re-solve."""
         self.state.rf_basis = self.rf_basis_cb.currentData()
+        self._modified = True
+        if self.result and self.result.is_stable and self.result.points:
+            from ..analysis import reserves_along_beam
+            self.reserves = reserves_along_beam(self.result, self.state)
+            self._refresh_views()
+
+    def _on_sigred_mode(self, _):
+        """Změna modelu σ_red (přesné max / konzervativní kombinace) – přepočet
+        posouzení z existujícího výsledku, bez re-solve."""
+        self.state.sigma_red_mode = self.sigred_cb.currentData()
         self._modified = True
         if self.result and self.result.is_stable and self.result.points:
             from ..analysis import reserves_along_beam
@@ -496,11 +548,16 @@ class MainWindow(QMainWindow):
                         sg = all_segs[seg_i]
                         title = f"— {tr('Kontrolní bod')} x={xq:.0f} · {tr('Úsek')} {seg_i+1} —"
                         try:
-                            sec_forced = build_section(def_for_segment(sg, xq))
+                            from ..sections_along import material_for_segment
+                            from ..analysis import _assess
+                            sec_forced = build_section(def_for_segment(self.state, sg, xq))
                             pcrit = min(self.result.points, key=lambda p: abs(p.x - xq))
+                            mat = material_for_segment(self.state, sg)
+                            assess = _assess(sec_forced, mat, self.state,
+                                             pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
                             self.section_canvas.plot(sec_forced)
                             self.stress_canvas.plot(sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
-                            self.results_panel.set_section(sec_forced, title)
+                            self.results_panel.set_section(sec_forced, title, assess)
                             return
                         except Exception:
                             pass
@@ -515,9 +572,18 @@ class MainWindow(QMainWindow):
                 sec_crit = resolver.at(pcrit.x)
             except Exception:
                 sec_crit = sec
+            # posouzení PRO TENTO řez (sedí s grafem i vybraným úsekem)
+            assess = None
+            try:
+                from ..analysis import _assess
+                mat = resolver.material_at(pcrit.x)
+                assess = _assess(sec_crit, mat, self.state,
+                                 pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+            except Exception:
+                pass
             self.section_canvas.plot(sec_crit)
             self.stress_canvas.plot(sec_crit, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
-            self.results_panel.set_section(sec_crit, title)
+            self.results_panel.set_section(sec_crit, title, assess)
         else:
             self.section_canvas.plot(sec)
             self.stress_canvas.plot(sec, 0, 0, 0, 0)
@@ -582,9 +648,17 @@ class MainWindow(QMainWindow):
         self.state = state
         self.input_panel.state = self.state
         self.input_panel.reload_from_state()
+        # synchronizace přepínačů v horní liště se stavem (bez vyvolání přepočtu)
+        for cb, attr, default in ((self.rf_basis_cb, "rf_basis", "min"),
+                                  (self.sigred_cb, "sigma_red_mode", "exact")):
+            cb.blockSignals(True)
+            cb.setCurrentIndex(max(0, cb.findData(getattr(self.state, attr, default))))
+            cb.blockSignals(False)
         # `changed` je signál InputPanelu (přežije reload_from_state),
         # spojení z __init__ zůstává – nepřipojovat znovu (duplikace).
         self._sec_sig = None
+        if self._lc_dialog is not None:
+            self._lc_dialog.set_state(self.state)
         self._live_update_section()
         self.compute()
         # čerstvě načtený dokument = bez neuložených změn (reload mohl emitovat

@@ -61,18 +61,75 @@ def segments_at(state, x: float, tol: float = 1e-3) -> list:
     return out or [segment_at(state, x)]
 
 
-def def_for_segment(seg: SectionSegment, x: float) -> CrossSectionDef:
-    """Definice průřezu konkrétního úseku v poloze x (interpolace pro tapered)."""
-    if not seg.tapered:
-        return seg.sec1
-    span = seg.x2 - seg.x1
-    t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1) / span))
-    return interp_def(seg.sec1, seg.sec2, t)
+def property_by_id(state, pid_id):
+    for p in getattr(state, "properties", None) or []:
+        if p.id == pid_id:
+            return p
+    return None
+
+
+def section_by_id(state, sec_id):
+    """Vrátí pojmenovaný průřez z knihovny state.sections podle id, nebo None."""
+    if not sec_id:
+        return None
+    for s in getattr(state, "sections", None) or []:
+        if getattr(s, "id", None) == sec_id:
+            return s
+    return None
+
+
+def _resolve_secref(state, ref_id, embedded):
+    """Odkaz do knihovny (ref_id) má přednost; když chybí/neexistuje, padá na
+    zapečený (inline) průřez `embedded`."""
+    lib = section_by_id(state, ref_id)
+    return lib if lib is not None else embedded
+
+
+def eff_defs(state, seg):
+    """Efektivní (sec1, sec2) úseku – z PID (property_id), jinak inline.
+    Oba zdroje mohou odkazovat do knihovny průřezů (sec1_id/sec2_id) – odkaz má
+    přednost, jinak se použije zapečený sec1/sec2 (zpětná kompatibilita)."""
+    pid = getattr(seg, "property_id", None)
+    if pid:
+        p = property_by_id(state, pid)
+        if p is not None:
+            s1 = _resolve_secref(state, getattr(p, "sec1_id", None), p.sec1)
+            s2 = _resolve_secref(state, getattr(p, "sec2_id", None), p.sec2)
+            return s1, s2
+    s1 = _resolve_secref(state, getattr(seg, "sec1_id", None), seg.sec1)
+    s2 = _resolve_secref(state, getattr(seg, "sec2_id", None), seg.sec2)
+    return s1, s2
+
+
+def eff_material_id(state, seg):
+    """Efektivní material_id úseku – z PID, jinak inline."""
+    pid = getattr(seg, "property_id", None)
+    if pid:
+        p = property_by_id(state, pid)
+        if p is not None:
+            return p.material_id
+    return getattr(seg, "material_id", None)
+
+
+def _def_in_span(sec1, sec2, x1, x2, x):
+    """Definice průřezu v x z dvojice (sec1, sec2) na rozsahu [x1,x2]."""
+    if sec2 is None:
+        return sec1
+    span = x2 - x1
+    t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - x1) / span))
+    return interp_def(sec1, sec2, t)
+
+
+def def_for_segment(state, seg: SectionSegment, x: float) -> CrossSectionDef:
+    """Definice průřezu konkrétního úseku v poloze x (PID/inline, interpolace pro
+    tapered)."""
+    sec1, sec2 = eff_defs(state, seg)
+    return _def_in_span(sec1, sec2, seg.x1, seg.x2, x)
 
 
 def material_for_segment(state, seg: SectionSegment):
-    """Materiál konkrétního úseku (dle material_id), jinak globální."""
-    mid = getattr(seg, "material_id", None)
+    """Materiál konkrétního úseku (PID/inline material_id), jinak globální."""
+    mid = eff_material_id(state, seg)
     if mid:
         for m in state.materials:
             if m.id == mid:
@@ -81,13 +138,8 @@ def material_for_segment(state, seg: SectionSegment):
 
 
 def def_at(state, x: float) -> CrossSectionDef:
-    """Definice průřezu v poloze x (interpolovaná pro tapered)."""
-    seg = segment_at(state, x)
-    if not seg.tapered:
-        return seg.sec1
-    span = seg.x2 - seg.x1
-    t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1)/span))
-    return interp_def(seg.sec1, seg.sec2, t)
+    """Definice průřezu v poloze x (PID/inline, interpolovaná pro tapered)."""
+    return def_for_segment(state, segment_at(state, x), x)
 
 
 class SectionResolver:
@@ -100,35 +152,31 @@ class SectionResolver:
 
     def at(self, x: float) -> CrossSection:
         seg = segment_at(self.state, x)
-        if not seg.tapered:
-            key = id(seg.sec1)
+        sec1, sec2 = eff_defs(self.state, seg)
+        if sec2 is None:
+            key = id(sec1)
             cs = self._cache.get(key)
             if cs is None:
-                cs = build_section(seg.sec1)
+                cs = build_section(sec1)
                 self._cache[key] = cs
             return cs
         # tapered – kvantizuj x na ~1 mm kvůli cache
         span = seg.x2 - seg.x1
         t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1)/span))
-        key = (id(seg), round(t, 3))
+        key = (id(seg), id(sec1), id(sec2), round(t, 3))
         cs = self._cache.get(key)
         if cs is None:
-            cs = build_section(interp_def(seg.sec1, seg.sec2, t))
+            cs = build_section(interp_def(sec1, sec2, t))
             self._cache[key] = cs
         return cs
 
     def is_tapered_region(self, x: float) -> bool:
-        return segment_at(self.state, x).tapered
+        _, sec2 = eff_defs(self.state, segment_at(self.state, x))
+        return sec2 is not None
 
     def material_at(self, x: float):
-        """Materiál úseku v poloze x (dle material_id), jinak globální materiál."""
-        seg = segment_at(self.state, x)
-        mid = getattr(seg, "material_id", None)
-        if mid:
-            for m in self.state.materials:
-                if m.id == mid:
-                    return m
-        return self.state.material()
+        """Materiál úseku v poloze x (PID/inline material_id), jinak globální."""
+        return material_for_segment(self.state, segment_at(self.state, x))
 
     def E_at(self, x: float):
         """Modul pružnosti E v poloze x. Priorita: přímý E (override) → materiál úseku."""
