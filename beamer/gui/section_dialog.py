@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QGroupBox,
     QDoubleSpinBox, QLabel, QDialogButtonBox, QWidget, QPushButton,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSplitter,
 )
 
 from ..section import build_section
@@ -38,9 +38,13 @@ class SectionEditorDialog(QDialog):
         self._fem_dirty = False    # pro polygon: zda je třeba spočítat FEM
 
         root = QHBoxLayout(self)
+        splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(splitter)
 
         # ── levý sloupec: typ + rozměry / polygon ──
-        left = QVBoxLayout()
+        left_w = QWidget()
+        left = QVBoxLayout(left_w)
+        left.setContentsMargins(0, 0, 0, 0)
         g = QGroupBox(tr("Typ a rozměry"))
         gv = QVBoxLayout(g)
         self.cb = QComboBox()
@@ -62,10 +66,12 @@ class SectionEditorDialog(QDialog):
         gv.addWidget(self.form_host)
         left.addWidget(g)
         left.addStretch(1)
-        root.addLayout(left, 0)
+        splitter.addWidget(left_w)
 
         # ── pravý sloupec: náhled + charakteristiky ──
-        right = QVBoxLayout()
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        right.setContentsMargins(0, 0, 0, 0)
         self.canvas = SectionCanvas()
         right.addWidget(self.canvas, 1)
         self.props = QLabel()
@@ -84,12 +90,15 @@ class SectionEditorDialog(QDialog):
         row.addWidget(self.fem_lbl, 1)
         right.addLayout(row)
 
-        root.addLayout(right, 1)
-
         bb = QDialogButtonBox(QDialogButtonBox.Close)
         bb.rejected.connect(self.accept)
         bb.accepted.connect(self.accept)
         right.addWidget(bb)
+
+        splitter.addWidget(right_w)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([380, 900])
 
         self._rebuild_form()
         self._refresh_preview()

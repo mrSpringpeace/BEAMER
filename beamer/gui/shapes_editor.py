@@ -20,8 +20,8 @@ _KINDS = [("rect", "Obdélník"), ("circle", "Kruh")]
 
 def default_shape(kind="rect"):
     if kind == "circle":
-        return {"kind": "circle", "op": "add", "x": 0.0, "z": 0.0, "d": 100.0}
-    return {"kind": "rect", "op": "add", "x": 0.0, "z": 0.0,
+        return {"kind": "circle", "op": "add", "y": 0.0, "z": 0.0, "d": 100.0}
+    return {"kind": "rect", "op": "add", "y": 0.0, "z": 0.0,
             "w": 100.0, "h": 200.0, "angle": 0.0}
 
 
@@ -37,7 +37,9 @@ class ShapesEditor(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
 
         info = QLabel(tr("Tvary se skládají shora dolů. První tvar přidává, "
-                         "další upravují (sjednocení/rozdíl/průnik). [mm]"))
+                         "další upravují (sjednocení/rozdíl/průnik). Poloha y,z je "
+                         "RELATIVNÍ mezi tvary [mm]; výsledek se v náhledu vztáhne "
+                         "k těžišti (posun jediného tvaru proto obrázek nezmění)."))
         info.setWordWrap(True)
         info.setStyleSheet("color:#888; font-size:11px;")
         lay.addWidget(info)
@@ -54,7 +56,7 @@ class ShapesEditor(QWidget):
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            [tr("Tvar"), tr("Operace"), "x", "z",
+            [tr("Tvar"), tr("Operace"), "y", "z",
              tr("š / ⌀"), tr("v"), tr("úhel°"), ""])
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -89,9 +91,10 @@ class ShapesEditor(QWidget):
         if s.get("kind") == kind:
             return
         op = s.get("op", "add")
-        x, z = s.get("x", 0.0), s.get("z", 0.0)
+        y = s.get("y", s.get("x", 0.0))
+        z = s.get("z", 0.0)
         ns = default_shape(kind)
-        ns.update({"op": op, "x": x, "z": z})
+        ns.update({"op": op, "y": y, "z": z})
         self.sdef.shapes[idx] = ns
         self._rebuild()
         self.changed.emit()
@@ -135,7 +138,7 @@ class ShapesEditor(QWidget):
                 lambda _, i=idx, c=cb_op: self._set_op(i, c.currentData()))
             self.table.setCellWidget(r, 1, cb_op)
 
-            self.table.setCellWidget(r, 2, self._spin(s.get("x", 0), idx, "x", -1e6, 1e6))
+            self.table.setCellWidget(r, 2, self._spin(s.get("y", s.get("x", 0)), idx, "y", -1e6, 1e6))
             self.table.setCellWidget(r, 3, self._spin(s.get("z", 0), idx, "z", -1e6, 1e6))
 
             if kind == "circle":

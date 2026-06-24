@@ -5,10 +5,15 @@ výsledek na `bodies` = [(outer_pts, [hole_pts, …]), …] v konvenci průřezu
 (y vodorovně, z svisle), který spotřebuje CrossSection.
 
 Tvar (dict):
-  {"kind": "rect", "op": "add"|"sub"|"int", "x":cx, "z":cz, "w":, "h":, "angle":deg}
-  {"kind": "circle", "op": ..., "x":cx, "z":cz, "d": průměr}
+  {"kind": "rect", "op": "add"|"sub"|"int", "y":cy, "z":cz, "w":, "h":, "angle":deg}
+  {"kind": "circle", "op": ..., "y":cy, "z":cz, "d": průměr}
+  (poloha y = vodorovná osa náhledu; klíč "x" je akceptován pro zpětnou kompat.)
 """
 from __future__ import annotations
+
+
+def _cy(s):
+    return float(s.get("y", s.get("x", 0)) or 0)
 
 
 def _primitive(s, n_circle=64):
@@ -16,21 +21,21 @@ def _primitive(s, n_circle=64):
     from shapely import affinity
     k = s.get("kind")
     if k == "rect":
-        x, z = float(s.get("x", 0)), float(s.get("z", 0))
+        y, z = _cy(s), float(s.get("z", 0) or 0)
         w, h = float(s.get("w", 0)), float(s.get("h", 0))
         if w <= 0 or h <= 0:
             return None
-        p = Polygon([(x - w/2, z - h/2), (x + w/2, z - h/2),
-                     (x + w/2, z + h/2), (x - w/2, z + h/2)])
+        p = Polygon([(y - w/2, z - h/2), (y + w/2, z - h/2),
+                     (y + w/2, z + h/2), (y - w/2, z + h/2)])
         ang = float(s.get("angle", 0) or 0)
         if abs(ang) > 1e-9:
-            p = affinity.rotate(p, ang, origin=(x, z))
+            p = affinity.rotate(p, ang, origin=(y, z))
         return p
     if k == "circle":
         r = float(s.get("d", 0)) / 2.0
         if r <= 0:
             return None
-        return Point(float(s.get("x", 0)), float(s.get("z", 0))).buffer(
+        return Point(_cy(s), float(s.get("z", 0) or 0)).buffer(
             r, quad_segs=max(8, n_circle // 4))
     return None
 

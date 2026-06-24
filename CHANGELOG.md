@@ -4,6 +4,12 @@ Version format: **X.XX**
 
 ## 1.17
 
+- Section editor – clearer boolean construction mode: the input panel and the
+  preview are separated by a draggable splitter. The shapes editor uses the y
+  axis (horizontal, previously "x") consistently with the preview axes (y, z),
+  and a note explains that the y,z position is relative between shapes and the
+  preview is centroid-referenced (so moving a single shape alone does not change
+  the picture). The data key "x" is still accepted for backwards compatibility.
 - Cross-section library: a new "Cross-sections (library)" group under Materials
   holds named sections reused across segments and PID properties (like the
   material library). Segments and PIDs pick a section from a dropdown (library +
