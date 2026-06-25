@@ -393,6 +393,13 @@ class MainWindow(QMainWindow):
             self.schema_canvas.plot(self.state)   # živý náhled zadání (bez reakcí)
         except Exception:
             pass
+        # Load Case Builder (pokud je otevřený): sloupce kombinací = zatížení,
+        # takže přidání/odebrání zatížení musí přerovnat jeho tabulku kombinací
+        if getattr(self, "_lc_dialog", None) is not None and self._lc_dialog.isVisible():
+            try:
+                self._lc_dialog._refresh_combos()
+            except Exception:
+                pass
         self._sec_timer.start()
 
     def _live_section(self):
@@ -411,14 +418,25 @@ class MainWindow(QMainWindow):
 
     def _section_signature(self):
         import json
-        cs = self.state.cross_section
-        segs = [(s.x1, s.x2, s.sec1.type, dict(s.sec1.params), s.sec1.polygon_points,
-                 (s.sec2.type if s.sec2 else None),
-                 (dict(s.sec2.params) if s.sec2 else None),
-                 (s.sec2.polygon_points if s.sec2 else None))
+
+        def sig_def(d):
+            if d is None:
+                return None
+            return (d.type, dict(d.params or {}), d.polygon_points, d.polygon_holes,
+                    d.shapes, getattr(d, "id", None))
+
+        segs = [(s.x1, s.x2, sig_def(s.sec1), sig_def(s.sec2),
+                 getattr(s, "sec1_id", None), getattr(s, "sec2_id", None),
+                 getattr(s, "property_id", None))
                 for s in self.state.section_segments]
-        return json.dumps([self.state.variable_section, self.state.length, cs.type,
-                           dict(cs.params), cs.polygon_points, segs], default=str, sort_keys=True)
+        # knihovní průřezy a PID (změna se propíše do náhledu)
+        lib = [sig_def(x) for x in getattr(self.state, "sections", [])]
+        props = [(getattr(p, "id", None), getattr(p, "sec1_id", None),
+                  getattr(p, "sec2_id", None), sig_def(p.sec1), sig_def(p.sec2))
+                 for p in getattr(self.state, "properties", [])]
+        return json.dumps([self.state.variable_section, self.state.length,
+                           sig_def(self.state.cross_section), segs, lib, props],
+                          default=str, sort_keys=True)
 
     def _live_update_section(self):
         """Aktualizuje náhled průřezu + charakteristiky, jen pokud se průřez

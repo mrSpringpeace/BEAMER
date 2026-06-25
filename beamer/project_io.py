@@ -7,6 +7,7 @@ from dataclasses import asdict
 from .model import (
     Material, Support, Hinge, Load, LoadCase, LoadCombination,
     CrossSectionDef, SectionSegment, ProjectState, Body, ControlPoint, Property,
+    migrate_combinations_to_loads,
 )
 
 
@@ -64,7 +65,7 @@ def _csdef(d):
 
 def dict_to_state(d: dict) -> ProjectState:
     cs = d.get("cross_section", {})
-    return ProjectState(
+    st = ProjectState(
         length=d.get("length", 2000),
         supports=[Support(**s) for s in d.get("supports", [])],
         hinges=[Hinge(**h) for h in d.get("hinges", [])],
@@ -102,6 +103,9 @@ def dict_to_state(d: dict) -> ProjectState:
         theory=d.get("theory", "euler-bernoulli"),
         selected_active_combination_id=d.get("selected_active_combination_id", ""),
     )
+    # starý model kombinací (faktor×stav) → nový (faktor×zatížení)
+    migrate_combinations_to_loads(st)
+    return st
 
 
 def save_project(state: ProjectState, path: str):

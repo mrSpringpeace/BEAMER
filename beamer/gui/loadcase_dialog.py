@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..i18n import tr
 from ..settings import fmt
-from ..model import LoadCase, LoadCombination, new_id
+from ..model import LoadCase, LoadCombination, new_id, migrate_combinations_to_loads
 from .spin import NoWheelDoubleSpinBox
 
 
@@ -62,9 +62,18 @@ class LoadCaseBuilderDialog(QDialog):
         self._reload_all()
 
     def _reload_all(self):
+        migrate_combinations_to_loads(self.state)   # starý faktor×stav → faktor×zatížení
         self._refresh_cases()
         self._refresh_combos()
         self._rebuild_table()
+
+    def _load_label(self, ld):
+        """Krátký popisek zatížení pro hlavičku sloupce kombinace."""
+        ab = {"point_force": "F", "distributed": "q", "moment": "M", "torsion": "Mk"}
+        base = ld.name or tr(ab.get(ld.type, "?"))
+        if ld.type == "distributed":
+            return f"{base} ({ld.x1:.0f}–{ld.x2:.0f})"
+        return f"{base} @{ld.x:.0f}"
 
     # ════════════════════════════════════════════════════════════
     #  ZATĚŽOVACÍ STAVY (LC)
@@ -119,21 +128,25 @@ class LoadCaseBuilderDialog(QDialog):
     #  KOMBINACE
     # ════════════════════════════════════════════════════════════
     def _build_combos_box(self):
-        g = QGroupBox(tr("Kombinace (Σ faktor × stav)"))
+        g = QGroupBox(tr("Kombinace (Σ faktor × zatížení)"))
         v = QVBoxLayout(g)
+        hint = QLabel(tr("Řádek = kombinace. U každého zatížení zadej faktor "
+                         "(0 = nepoužito, 1 = plně, např. 1.35 / 1.5)."))
+        hint.setWordWrap(True); hint.setStyleSheet("color:#666; font-size:11px;")
+        v.addWidget(hint)
         self.combos_tbl = QTableWidget(0, 0)
         self.combos_tbl.verticalHeader().setVisible(False)
         v.addWidget(self.combos_tbl)
         row = QHBoxLayout()
         b1 = QPushButton(tr("+ Kombinace")); b1.clicked.connect(self._add_combo)
-        b2 = QPushButton(tr("+ Stavy ×1 (auto)")); b2.clicked.connect(self._add_self_combos)
+        b2 = QPushButton(tr("+ Vše ×1")); b2.clicked.connect(self._add_all_combo)
         row.addWidget(b1); row.addWidget(b2)
         v.addLayout(row)
         return g
 
     def _refresh_combos(self):
-        cases = self.state.load_cases
-        headers = [tr("Název kombinace")] + [c.name for c in cases] + [""]
+        loads = self.state.loads
+        headers = [tr("Název kombinace")] + [self._load_label(l) for l in loads] + [""]
         self.combos_tbl.clear()
         self.combos_tbl.setColumnCount(len(headers))
         self.combos_tbl.setHorizontalHeaderLabels(headers)
@@ -144,14 +157,15 @@ class LoadCaseBuilderDialog(QDialog):
             nm = QLineEdit(comb.name)
             nm.textChanged.connect(lambda s, cb=comb: (setattr(cb, "name", s), self.changed.emit()))
             self.combos_tbl.setCellWidget(r, 0, nm)
-            for j, lc in enumerate(cases):
+            for j, ld in enumerate(loads):
                 sp = NoWheelDoubleSpinBox(); sp.setRange(-100, 100); sp.setDecimals(2); sp.setSingleStep(0.05)
-                sp.setValue(float(comb.factors.get(lc.id, 0.0)))
-                sp.valueChanged.connect(lambda val, cb=comb, lid=lc.id: cb.factors.__setitem__(lid, val) or self.changed.emit())
+                sp.setValue(float(comb.factors.get(ld.id, 0.0)))
+                sp.valueChanged.connect(
+                    lambda val, cb=comb, lid=ld.id: (cb.factors.__setitem__(lid, val), self.changed.emit()))
                 self.combos_tbl.setCellWidget(r, 1 + j, sp)
             db = QPushButton("✕"); db.setMaximumWidth(30)
             db.clicked.connect(lambda _, cb=comb: self._del_combo(cb))
-            self.combos_tbl.setCellWidget(r, len(cases) + 1, db)
+            self.combos_tbl.setCellWidget(r, len(loads) + 1, db)
 
     def _add_combo(self):
         n = len(self.state.load_combinations) + 1
@@ -159,17 +173,12 @@ class LoadCaseBuilderDialog(QDialog):
             LoadCombination(new_id("comb"), tr("Kombinace") + f" {n}", {}))
         self._refresh_combos(); self.changed.emit()
 
-    def _add_self_combos(self):
-        """Pro každý stav bez vlastní ×1 kombinace vytvoří „stav ×1"."""
-        existing = set()
-        for comb in self.state.load_combinations:
-            nz = {k: v for k, v in comb.factors.items() if abs(v) > 1e-9}
-            if len(nz) == 1 and abs(list(nz.values())[0] - 1.0) < 1e-9:
-                existing.add(list(nz.keys())[0])
-        for lc in self.state.load_cases:
-            if lc.id not in existing:
-                self.state.load_combinations.append(
-                    LoadCombination(new_id("comb"), lc.name + " ×1", {lc.id: 1.0}))
+    def _add_all_combo(self):
+        """Vytvoří kombinaci se VŠEMI zatíženími faktorem 1 (rychlá analýza vše)."""
+        n = len(self.state.load_combinations) + 1
+        factors = {l.id: 1.0 for l in self.state.loads}
+        self.state.load_combinations.append(
+            LoadCombination(new_id("comb"), tr("Vše ×1") + f" ({n})", factors))
         self._refresh_combos(); self._rebuild_table(); self.changed.emit()
 
     def _del_combo(self, comb):

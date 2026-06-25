@@ -50,11 +50,17 @@ class SolverResult:
     resolver: object = None      # SectionResolver (proměnný průřez)
 
 
-def _load_multiplier(state, load_case_id, factors=None):
+def _load_multiplier(state, ld, factors=None):
+    """Násobitel zatížení `ld` v dané kombinaci. Faktory jsou primárně klíčované
+    podle id zatížení (nový model „vyber zatížení do kombinace"); pokud klíč
+    chybí, zkusí se id zatěžovacího stavu (zpětná kompatibilita se starým
+    modelem faktor×stav)."""
     if factors is None:
         comb = state.active_combination()
         factors = comb.factors if comb else {}
-    comb_f = factors.get(load_case_id, 0.0)
+    comb_f = factors.get(getattr(ld, "id", None))
+    if comb_f is None:
+        comb_f = factors.get(getattr(ld, "load_case_id", None), 0.0)
     # zatížení = početní (ultimate) síly × volitelný dodatečný součinitel
     return comb_f * getattr(state, "additional_factor", 1.0)
 
@@ -230,7 +236,7 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     # ── zatížení ──
     for ld in state.loads:
-        mult = _load_multiplier(state, ld.load_case_id, factors)
+        mult = _load_multiplier(state, ld, factors)
         if mult == 0:
             continue
         if ld.type == "point_force":
@@ -351,7 +357,7 @@ def solve_beam(state, factors=None) -> SolverResult:
             if ld.type != "distributed":
                 continue
             if ld.x1 - 1e-9 <= sg <= ld.x2 + 1e-9:
-                lm = _load_multiplier(state, ld.load_case_id, factors)
+                lm = _load_multiplier(state, ld, factors)
                 if lm == 0:
                     continue
                 dlen = ld.x2 - ld.x1
@@ -385,7 +391,7 @@ def solve_beam(state, factors=None) -> SolverResult:
         # ekvivalentní uzlové síly od spojitého zatížení na CELÉM prvku
         feq = np.zeros(4)
         for ld in state.loads:
-            lm = _load_multiplier(state, ld.load_case_id, factors)
+            lm = _load_multiplier(state, ld, factors)
             if lm == 0 or ld.type != "distributed":
                 continue
             dlen = ld.x2 - ld.x1

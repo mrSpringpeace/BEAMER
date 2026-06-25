@@ -10,7 +10,7 @@ Výpočetní jádro pro průřez vychází z programu kolegy (section_analyzer),
 beam solver z původní webové verze (přímá metoda tuhosti).
 """
 
-__version__ = "1.17"
+__version__ = "1.18"
 
 import os as _os
 

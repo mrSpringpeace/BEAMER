@@ -1155,12 +1155,58 @@ ALPHA_PL_TABLE = {
 }
 
 
+_BUILD_CACHE = {}          # signatura -> CrossSection (LRU dle pořadí vložení)
+_BUILD_CACHE_MAX = 96
+
+
+def _sec_signature(sdef, fem):
+    """Hashovatelná signatura definice průřezu – pro cache postaveného řezu.
+    Zachytí vše, co ovlivní build (typ, parametry, polygon, bodies, shapes)."""
+    import json
+    bodies = None
+    if getattr(sdef, "bodies", None):
+        bodies = [((b.points if hasattr(b, "points") else b.get("points")),
+                   (b.holes if hasattr(b, "holes") else b.get("holes")))
+                  for b in sdef.bodies]
+    sig = (sdef.type, fem,
+           json.dumps([
+               sdef.params,
+               sdef.polygon_points, sdef.polygon_holes,
+               sdef.polygon_thickness, sdef.polygon_closed,
+               bodies, sdef.shapes,
+           ], sort_keys=True, default=str))
+    return sig
+
+
 def build_section(sdef, fem: bool = True) -> CrossSection:
     """Sestaví CrossSection z definice (model.CrossSectionDef).
+
+    Výsledek se cachuje podle obsahu definice – stejná geometrie (zejména drahý
+    FEM Saint-Venant u polygonu / konstrukčního tvaru) se nestaví opakovaně při
+    každém přepočtu či překreslení. CrossSection se po sestavení nemění (read-only).
 
     fem=False – pro polygon přeskočí FEM Saint-Venant solver (rychlý živý náhled).
                 IT, Iω, střed smyku zůstanou na scanline odhadech.
     """
+    try:
+        sig = _sec_signature(sdef, fem)
+    except Exception:
+        sig = None
+    if sig is not None:
+        cached = _BUILD_CACHE.get(sig)
+        if cached is not None:
+            _BUILD_CACHE[sig] = _BUILD_CACHE.pop(sig)   # LRU: posuň na konec
+            return cached
+    cs = _build_section_impl(sdef, fem)
+    if sig is not None:
+        _BUILD_CACHE[sig] = cs
+        if len(_BUILD_CACHE) > _BUILD_CACHE_MAX:
+            _BUILD_CACHE.pop(next(iter(_BUILD_CACHE)))   # vyhoď nejstarší
+    return cs
+
+
+def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
+    """Vlastní sestavení (bez cache) – viz build_section."""
     t = sdef.type
     p = sdef.params or {}
 

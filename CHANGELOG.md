@@ -2,6 +2,22 @@
 
 Version format: **X.XX**
 
+## 1.18
+
+- Load Case Builder – combinations reworked: a combination is now defined by
+  picking the individual loads that go into it (one table column per load, not
+  per load case). Each load gets a factor (0 = not used, 1 = full, e.g.
+  1.35/1.5). "+ All ×1" builds a combination with every load. Combination factors
+  are keyed by load id; the solver falls back to the load-case id for backwards
+  compatibility, and older projects are migrated automatically on load (a load
+  case's factor is copied onto its loads). Columns refresh when loads change.
+- Performance: `build_section` now has a content cache (definition signature +
+  FEM flag), so the same geometry is not rebuilt repeatedly. Boolean
+  (construction) and polygonal sections with the expensive FEM Saint-Venant
+  solver were recomputed on every analysis and redraw (control points, segment
+  selection), which made a boolean profile extremely slow. The FEM now runs once
+  per geometry and is reused.
+
 ## 1.17
 
 - Section editor – clearer boolean construction mode: the input panel and the

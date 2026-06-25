@@ -210,3 +210,26 @@ _counter = itertools.count(1)
 
 def new_id(prefix: str = "id") -> str:
     return f"{prefix}_{int(time.time()*1000)}_{next(_counter)}"
+
+
+def migrate_combinations_to_loads(state) -> None:
+    """Převede faktory kombinací ze starého modelu (klíč = id stavu) na nový
+    (klíč = id zatížení): faktor stavu se rozkopíruje na všechna jeho zatížení.
+    Idempotentní – klíče, které už odkazují na zatížení, ponechá; neznámé klíče
+    zahodí. Volá se při otevření projektu / Load Case Builderu."""
+    loads = getattr(state, "loads", []) or []
+    load_ids = {l.id for l in loads}
+    lc_ids = {c.id for c in (getattr(state, "load_cases", []) or [])}
+    loads_by_lc = {}
+    for l in loads:
+        loads_by_lc.setdefault(getattr(l, "load_case_id", None), []).append(l.id)
+    for comb in getattr(state, "load_combinations", []) or []:
+        new = {}
+        for key, f in (comb.factors or {}).items():
+            if key in load_ids:
+                new[key] = new.get(key, 0.0) + f
+            elif key in lc_ids:
+                for lid in loads_by_lc.get(key, []):
+                    new[lid] = new.get(lid, 0.0) + f
+            # neznámý klíč (smazané zatížení/stav) → zahodit
+        comb.factors = new
