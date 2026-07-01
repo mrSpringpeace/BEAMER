@@ -2,6 +2,17 @@
 
 Version format: **X.XX**
 
+## 1.20
+
+- Polygon editor: a new vertex can be inserted right after a chosen point (the
+  "＋" button in the coordinate-table row) — it lands on the midpoint of the edge
+  to the next point and can then be dragged. No more starting over when a point
+  was forgotten. "+ Add point at end" stays.
+- Ministatik (.rez) import is now offered at the section-type level — the type
+  dropdown (Circle / Rectangle / Polygon / …) has an "Import from Ministatik
+  (.rez)…" entry after the types, instead of a standalone button shown for every
+  type. (Groundwork in place for future imports: text file, IGS.)
+
 ## 1.19
 
 - Appearance: light / dark theme (Settings → Appearance: System / Light / Dark).

@@ -50,17 +50,16 @@ class SectionEditorDialog(QDialog):
         self.cb = QComboBox()
         for key, label in self._LABELS.items():
             self.cb.addItem(tr(label), key)
-        # ukázat všechny typy najednou, bez skrolování v rozbaleném seznamu
-        self.cb.setMaxVisibleItems(len(self._LABELS) + 1)
+        # importy jsou na úrovni výběru typu (ne tlačítko v každém typu)
+        self.cb.insertSeparator(self.cb.count())
+        self.cb.addItem(tr("Import z Ministatiku (.rez)…"), "__import_rez__")
+        # ukázat všechny položky najednou, bez skrolování v rozbaleném seznamu
+        self.cb.setMaxVisibleItems(len(self._LABELS) + 3)
         self.cb.setStyleSheet("QComboBox{combobox-popup:0;}")
         i = self.cb.findData(self.sdef.type)
         self.cb.setCurrentIndex(max(0, i))
         self.cb.currentIndexChanged.connect(self._on_type)
         gv.addWidget(self.cb)
-        # Import .rez (Ministatik) – pohodlný import průřezu ze souboru
-        self.btn_import_rez = QPushButton(tr("Import .rez (Ministatik)…"))
-        self.btn_import_rez.clicked.connect(self._on_import_rez)
-        gv.addWidget(self.btn_import_rez)
         self.form_host = QWidget()
         self.form = QFormLayout(self.form_host)
         gv.addWidget(self.form_host)
@@ -105,6 +104,13 @@ class SectionEditorDialog(QDialog):
 
     def _on_type(self, _):
         t = self.cb.currentData()
+        if t == "__import_rez__":
+            # vrať combo na předchozí typ; import si typ nastaví sám (nebo se zruší)
+            self.cb.blockSignals(True)
+            self.cb.setCurrentIndex(max(0, self.cb.findData(self.sdef.type)))
+            self.cb.blockSignals(False)
+            self._on_import_rez()
+            return
         self.sdef.type = t
         if t == "polygon":
             if not self.sdef.polygon_points:

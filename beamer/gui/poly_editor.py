@@ -327,12 +327,20 @@ class PolygonEditor(QWidget):
         v.addLayout(opts)
 
         # ── tabulka souřadnic ──
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["y [mm]", "z [mm]", ""])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["y [mm]", "z [mm]", tr("vložit"), ""])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setMaximumHeight(220)
         v.addWidget(self.table)
-        addb = QPushButton(tr("+ Přidat bod"))
+        hint = QLabel(tr("＋ vloží nový bod na hranu za daný bod (pak ho lze "
+                         "posunout), ✕ bod smaže."))
+        hint.setObjectName("hint"); hint.setWordWrap(True)
+        v.addWidget(hint)
+        addb = QPushButton(tr("+ Přidat bod na konec"))
         addb.clicked.connect(self._add_row)
         v.addWidget(addb)
 
@@ -467,9 +475,13 @@ class PolygonEditor(QWidget):
             zsp.setRange(-1e5, 1e5); zsp.setDecimals(2); zsp.setValue(p["z"])
             zsp.valueChanged.connect(lambda val, idx=i: self._edit(idx, 1, val))
             self.table.setCellWidget(r, 1, zsp)
+            ins = QPushButton("＋"); ins.setMaximumWidth(30)
+            ins.setToolTip(tr("Vložit bod za tento (na hranu k dalšímu)"))
+            ins.clicked.connect(lambda _, idx=i: self._insert_after(idx))
+            self.table.setCellWidget(r, 2, ins)
             db = QPushButton("✕"); db.setMaximumWidth(30)
             db.clicked.connect(lambda _, idx=i: self._del_row(idx))
-            self.table.setCellWidget(r, 2, db)
+            self.table.setCellWidget(r, 3, db)
         self.table.blockSignals(False)
 
     def _edit(self, idx, comp, val):
@@ -485,6 +497,21 @@ class PolygonEditor(QWidget):
         if pts is None:
             return
         pts.append({"y": 0.0, "z": 0.0})
+        self._sync_target()
+        self.changed.emit()
+
+    def _insert_after(self, idx):
+        """Vloží nový bod hned za bod `idx` – na střed hrany k následujícímu bodu
+        (u posledního bodu na hranu zpět k prvnímu), takže padne přesně na obrys
+        a lze ho pak posunout. Řeší editaci bez nutnosti začínat znovu."""
+        pts = self._target_pts()
+        if pts is None or not pts or idx >= len(pts):
+            return
+        cur = pts[idx]
+        nxt = pts[(idx + 1) % len(pts)]
+        mid = {"y": (float(cur["y"]) + float(nxt["y"])) / 2.0,
+               "z": (float(cur["z"]) + float(nxt["z"])) / 2.0}
+        pts.insert(idx + 1, mid)
         self._sync_target()
         self.changed.emit()
 
