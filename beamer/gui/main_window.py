@@ -22,6 +22,7 @@ from .worker import ComputeWorker
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._current_file = None     # cesta k aktuálnímu projektu (pro titulek)
         self._update_title()
         self._apply_icon()
         self.resize(1500, 950)
@@ -103,6 +104,9 @@ class MainWindow(QMainWindow):
         self.lc_btn = QPushButton(tr("⊞ Load Cases"))
         self.lc_btn.clicked.connect(self.open_loadcase_builder)
         bar.addWidget(self.lc_btn)
+        self.combo_lbl = QLabel("")     # indikátor aktivní kombinace
+        self.combo_lbl.setStyleSheet("font-weight:bold;")
+        bar.addWidget(self.combo_lbl)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setRange(0, 100)
@@ -112,14 +116,17 @@ class MainWindow(QMainWindow):
         root.addLayout(bar)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
         root.addWidget(splitter, 1)
 
         self.input_panel = InputPanel(self.state)
-        self.input_panel.setMinimumWidth(340)
-        self.input_panel.setMaximumWidth(440)
+        self.input_panel.setMinimumWidth(300)   # bez horní meze → volně tažitelné
         splitter.addWidget(self.input_panel)
 
         # střed: nahoře schéma nosníku (1/3), dole scrollovatelné VVÚ grafy (2/3)
+        # pozadí středu je ZÁMĚRNĚ vždy světlé (i v tmavém režimu) – grafy působí
+        # jako inženýrský výkres a zůstávají přehledné.
         center = QSplitter(Qt.Vertical)
         self.schema_canvas = SchemaCanvas()
         center.addWidget(self.schema_canvas)
@@ -127,6 +134,8 @@ class MainWindow(QMainWindow):
         beam_scroll = QScrollArea()
         beam_scroll.setWidgetResizable(True)
         beam_scroll.setWidget(self.beam_canvas)
+        beam_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
+                                  "{ background:#ffffff; }")
         center.addWidget(beam_scroll)
         center.setStretchFactor(0, 1)
         center.setStretchFactor(1, 2)
@@ -163,8 +172,8 @@ class MainWindow(QMainWindow):
         rtv.setContentsMargins(0, 0, 0, 0)
         fbar = QHBoxLayout()
         fbar.addWidget(QLabel(tr("Velikost písma:")))
-        b_minus = QPushButton("A−"); b_minus.setMaximumWidth(36)
-        b_plus = QPushButton("A+"); b_plus.setMaximumWidth(36)
+        b_minus = QPushButton("A−"); b_minus.setFixedWidth(48)
+        b_plus = QPushButton("A+"); b_plus.setFixedWidth(48)
         b_minus.clicked.connect(lambda: self._results_font(-1))
         b_plus.clicked.connect(lambda: self._results_font(+1))
         fbar.addWidget(b_minus); fbar.addWidget(b_plus); fbar.addStretch(1)
@@ -202,6 +211,8 @@ class MainWindow(QMainWindow):
         self._a_new = QAction(self); self._a_new.triggered.connect(self.new_project); m.addAction(self._a_new)
         self._a_open = QAction(self); self._a_open.setShortcut(QKeySequence.Open)
         self._a_open.triggered.connect(self.open_project); m.addAction(self._a_open)
+        self._recent_menu = m.addMenu("")
+        self._recent_menu.setToolTipsVisible(True)
         self._a_save = QAction(self); self._a_save.setShortcut(QKeySequence.Save)
         self._a_save.triggered.connect(self.save_project); m.addAction(self._a_save)
         m.addSeparator()
@@ -222,6 +233,7 @@ class MainWindow(QMainWindow):
         self._menu_file.setTitle(tr("&Soubor"))
         self._a_new.setText(tr("Nový"))
         self._a_open.setText(tr("Otevřít…"))
+        self._recent_menu.setTitle(tr("Naposledy otevřeno"))
         self._a_save.setText(tr("Uložit jako…"))
         self._a_nos.setText(tr("Importovat Ministatik (*.nos)…"))
         self._a_exp.setText(tr("Export protokolu (TXT)…"))
@@ -231,10 +243,62 @@ class MainWindow(QMainWindow):
         self._a_demo.setText(tr("Demo nosník"))
         self._a_set.setText(tr("Nastavení…"))
         self._a_about.setText(tr("O programu"))
+        self._refresh_recent_menu()
 
     def _update_title(self):
         from .. import __version__
-        self.setWindowTitle(f"{tr('BEAMER – statická analýza nosníku')}  v{__version__}")
+        import os
+        name = os.path.basename(self._current_file) if getattr(self, "_current_file", None) \
+            else tr("(neuložený projekt)")
+        dot = "● " if getattr(self, "_modified", False) else ""
+        self.setWindowTitle(f"{dot}{name} — BEAMER v{__version__}")
+
+    def _set_current_file(self, path):
+        """Zapamatuje aktuální soubor projektu (titulek + Naposledy otevřeno)."""
+        self._current_file = path
+        if path:
+            SETTINGS.add_recent(path)
+            self._refresh_recent_menu()
+        self._update_title()
+
+    def _refresh_recent_menu(self):
+        if not hasattr(self, "_recent_menu"):
+            return
+        import os
+        self._recent_menu.clear()
+        recents = [p for p in (SETTINGS.recent_files or []) if os.path.exists(p)]
+        if not recents:
+            a = self._recent_menu.addAction(tr("(žádné)"))
+            a.setEnabled(False)
+            return
+        for p in recents:
+            act = self._recent_menu.addAction(os.path.basename(p))
+            act.setToolTip(p)
+            act.triggered.connect(lambda _=False, path=p: self._open_recent(path))
+        self._recent_menu.addSeparator()
+        clr = self._recent_menu.addAction(tr("Vymazat seznam"))
+        clr.triggered.connect(self._clear_recent)
+
+    def _open_recent(self, path):
+        import os
+        if not os.path.exists(path):
+            QMessageBox.warning(self, tr("Soubor nenalezen"), path)
+            return
+        if not self._confirm_discard():
+            return
+        self._remember(path)
+        try:
+            state = project_io.load_project(path)
+        except Exception as e:
+            QMessageBox.critical(self, tr("Chyba"), tr("Nelze načíst: ") + str(e))
+            return
+        self._load_state(state)
+        self._set_current_file(path)
+
+    def _clear_recent(self):
+        SETTINGS.recent_files = []
+        SETTINGS.save()
+        self._refresh_recent_menu()
 
     def _apply_icon(self):
         from .. import icon_path
@@ -335,7 +399,28 @@ class MainWindow(QMainWindow):
     def _on_show_combination(self, combo_id):
         self.state.selected_active_combination_id = combo_id
         self._modified = True
+        self._update_combo_label()
         self.compute()
+
+    def _active_combo_name(self):
+        """Název aktuálně zobrazené kombinace, nebo None."""
+        try:
+            comb = self.state.active_combination()
+        except Exception:
+            comb = None
+        return comb.name if comb else None
+
+    def _update_combo_label(self):
+        name = self._active_combo_name()
+        n = len(getattr(self.state, "load_combinations", []) or [])
+        if name:
+            self.combo_lbl.setText("▶ " + name)
+            self.combo_lbl.setToolTip(tr("Zobrazená kombinace"))
+        elif n:
+            self.combo_lbl.setText(tr("▶ (žádná kombinace)"))
+            self.combo_lbl.setToolTip(tr("Vyber kombinaci v Load Cases → Zobrazit vybranou"))
+        else:
+            self.combo_lbl.setText("")
 
     def _on_rf_basis(self, _):
         """Změna řídicí báze RF (min / Re / Rm) – jen přepočet posouzení
@@ -386,7 +471,10 @@ class MainWindow(QMainWindow):
         """Vstup se změnil – real-time překreslí schéma a (debounced) náhled
         průřezu + charakteristiky; VVÚ a MS se počítají až tlačítkem."""
         self._dirty = True
+        was_mod = self._modified
         self._modified = True
+        if not was_mod:
+            self._update_title()      # tečka neuložených změn v titulku
         self.dirty_lbl.setText("● " + tr("změněno – stiskněte Spočítat"))
         self.results_panel.clear_analysis()
         try:
@@ -471,6 +559,7 @@ class MainWindow(QMainWindow):
         self._refresh_views()
 
     def _refresh_views(self):
+        self._update_combo_label()
         self.schema_canvas.plot(self.state, self.result)   # schéma + reakce
         self.beam_canvas.plot(self.state, self.result)
         # kritický řez/napětí na každém úseku → přepínač úseku
@@ -493,8 +582,12 @@ class MainWindow(QMainWindow):
         Volá se po výpočtu i při změně kontrolních bodů (bez přepočtu)."""
         try:
             from ..report import build_report
+            header = ""
+            name = self._active_combo_name()
+            if name:
+                header = tr("Zobrazená kombinace: ") + name + "\n" + ("─" * 40) + "\n"
             self.results_text.setPlainText(
-                build_report(self.state, self.result, self.reserves))
+                header + build_report(self.state, self.result, self.reserves))
         except Exception:
             pass
 
@@ -682,6 +775,8 @@ class MainWindow(QMainWindow):
         # čerstvě načtený dokument = bez neuložených změn (reload mohl emitovat
         # `changed`, proto reset až tady, na konci)
         self._modified = False
+        self._current_file = None      # open_project/_open_recent přepíšou skutečnou cestou
+        self._update_title()
 
     def open_project(self):
         if not self._confirm_discard():
@@ -696,6 +791,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze načíst: ") + str(e))
             return
         self._load_state(state)
+        self._set_current_file(path)
 
     def import_nos(self):
         if not self._confirm_discard():
@@ -724,6 +820,7 @@ class MainWindow(QMainWindow):
         try:
             project_io.save_project(self.state, path)
             self._modified = False
+            self._set_current_file(path)
             self.statusBar().showMessage(tr("Uloženo: ") + path)
             return True
         except Exception as e:

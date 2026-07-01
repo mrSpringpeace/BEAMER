@@ -132,7 +132,7 @@ class LoadCaseBuilderDialog(QDialog):
         v = QVBoxLayout(g)
         hint = QLabel(tr("Řádek = kombinace. U každého zatížení zadej faktor "
                          "(0 = nepoužito, 1 = plně, např. 1.35 / 1.5)."))
-        hint.setWordWrap(True); hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setWordWrap(True); hint.setObjectName("hint")
         v.addWidget(hint)
         self.combos_tbl = QTableWidget(0, 0)
         self.combos_tbl.verticalHeader().setVisible(False)

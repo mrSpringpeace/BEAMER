@@ -2,6 +2,39 @@
 
 Version format: **X.XX**
 
+## 1.19
+
+- Appearance: light / dark theme (Settings → Appearance: System / Light / Dark).
+  Fixes unreadable text for users whose OS is in dark mode. The theme is applied
+  via both QPalette and QSS (`beamer/gui/theme.py`, light/dark tokens), so even
+  unstyled surfaces (left-panel fields, card backgrounds) are coloured. Charts
+  are intentionally always light (even in dark mode) so they stay readable like
+  an engineering drawing; only the surrounding chrome (panels, the tables on the
+  Cross-section and Assessment tabs) darkens. The centre column (schema + force
+  diagrams) stays light.
+- The window title shows the current file name (Office-style): "file.json —
+  BEAMER v1.19", with a "●" marker for unsaved changes.
+- File menu → "Recent files" (last 8 projects) for quick reopening; stored in
+  settings.
+- The active displayed load combination is shown in the top bar (▶ name), in the
+  Results tab header, and now also in the beam-schema title (centre panel), which
+  is visible next to any right-hand tab — so the active combination is always in
+  view.
+- UI fixes: the splitter between the left panel and the centre is draggable again
+  (removed the max-width cap, 6 px handle, non-collapsible panels); the A− / A+
+  font-size buttons on the Results tab are wider so the text fits.
+- Left panel – icon rail: the inputs are grouped into cards (Beam; Materials;
+  Sections; PID properties; Segments; Supports & hinges; Loads; Control points &
+  factors) switched by a thin vertical icon rail on the left
+  (`beamer/gui/icons.py`). The collapsible boxes around top-level groups were
+  dropped (the rail replaces them) — a group now shows a bold title and its
+  content directly; per-item boxes (individual segments/loads/PIDs) and the
+  Results-tab sections stay collapsible.
+- Charts – engineering template: no top/right spines, inward ticks, a light
+  major+minor grid, consistent fonts and theme-aware colours (light/dark).
+  Annotation boxes and the beam schema follow the theme (legible on dark too).
+  `plots.apply_chart_theme`, `theme.chart_rc`.
+
 ## 1.18
 
 - Load Case Builder – combinations reworked: a combination is now defined by

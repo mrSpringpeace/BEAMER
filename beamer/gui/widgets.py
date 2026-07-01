@@ -6,9 +6,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel,
     QDoubleSpinBox, QComboBox, QPushButton, QScrollArea, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QLineEdit,
-    QCheckBox, QToolButton, QMessageBox,
+    QCheckBox, QToolButton, QMessageBox, QStackedWidget, QListWidget,
+    QListWidgetItem,
 )
-from PySide6.QtCore import Qt as _Qt
+from PySide6.QtCore import Qt as _Qt, QSize
 
 
 class CollapsibleBox(QWidget):
@@ -26,16 +27,11 @@ class CollapsibleBox(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         self.toggle = QToolButton()
+        self.toggle.setObjectName("collapsibleHeader")   # stylováno v theme.py (QSS)
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
         self.toggle.setChecked(expanded)
         self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.toggle.setStyleSheet(
-            "QToolButton{background:#e9e9e9; border:1px solid #cfcfcf;"
-            " border-radius:3px; font-weight:bold; text-align:left;"
-            " padding:4px 6px; margin-top:3px;}"
-            "QToolButton:hover{background:#dedede;}"
-            "QToolButton:checked{background:#e0e4ea; border-color:#b9c2cf;}")
         self.toggle.setToolButtonStyle(_Qt.ToolButtonTextBesideIcon)
         self.toggle.setArrowType(_Qt.DownArrow if expanded else _Qt.RightArrow)
         self.toggle.toggled.connect(self._on_toggle)
@@ -62,7 +58,7 @@ from ..model import (
     CrossSectionDef, SectionSegment, Property, new_id,
 )
 from ..i18n import tr
-from ..settings import fmt
+from ..settings import fmt, SETTINGS
 from .spin import NoWheelDoubleSpinBox
 
 # parametry pro každý typ průřezu: (klíč, popisek, výchozí)
@@ -118,42 +114,100 @@ def _spin(val, mn=-1e9, mx=1e9, step=1.0, dec=3, suffix=""):
     return sp
 
 
-class InputPanel(QScrollArea):
-    """Levý panel se vstupy. Při změně emituje `changed`;
-    změna kontrolních bodů (která nevyžaduje přepočet) emituje `control_changed`."""
+class InputPanel(QWidget):
+    """Levý panel se vstupy: tenká ikonová lišta vlevo přepíná karty vstupu
+    (QStackedWidget). Při změně emituje `changed`; změna kontrolních bodů
+    (nevyžaduje přepočet) emituje `control_changed`."""
     changed = Signal()
     control_changed = Signal()
+
+    # karty: (klíč ikony, popisek, [build metody skupin])
+    def _cards(self):
+        return [
+            ("model", tr("Nosník"), [self._build_general]),
+            ("material", tr("Materiály"), [self._build_material]),
+            ("section", tr("Průřezy"), [self._build_section_library]),
+            ("pid", tr("Vlastnosti (PID)"), [self._build_properties]),
+            ("segs", tr("Úseky nosníku"), [self._build_section]),
+            ("supports", tr("Podpory a klouby"), [self._build_supports, self._build_hinges]),
+            ("loads", tr("Zatížení"), [self._build_loads]),
+            ("eval", tr("Kontrolní body a součinitel"),
+             [self._build_control_points, self._build_factors]),
+        ]
 
     def __init__(self, state):
         super().__init__()
         self.state = state
-        self.setWidgetResizable(True)
+        self._outer = QHBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
+        self._host = None
         self._build()
 
     def _build(self):
-        container = QWidget()
-        self.layout = QVBoxLayout(container)
-        self.layout.setSpacing(8)
-        self.setWidget(container)
+        from .icons import card_icon
+        from .theme import tokens
+        host = QWidget()
+        root = QHBoxLayout(host)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._build_general()
-        self._build_material()
-        self._build_section_library()
-        self._build_properties()
-        self._build_section()
-        self._build_supports()
-        self._build_hinges()
-        self._build_loads()
-        self._build_control_points()
-        self._build_factors()
-        self.layout.addStretch(1)
+        self.rail = QListWidget()
+        self.rail.setObjectName("card_rail")
+        self.rail.setIconSize(QSize(22, 22))
+        self.rail.setFixedWidth(50)
+        self.rail.setHorizontalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
+        self.rail.setFocusPolicy(_Qt.NoFocus)
+        self.stack = QStackedWidget()
+        root.addWidget(self.rail)
+        root.addWidget(self.stack, 1)
+
+        ink = tokens(SETTINGS.theme)["text2"]
+        for key, label, builders in self._cards():
+            page = QScrollArea()
+            page.setWidgetResizable(True)
+            page.setFrameShape(QFrame.NoFrame)
+            inner = QWidget()
+            self.layout = QVBoxLayout(inner)     # skupiny se přidávají sem
+            self.layout.setSpacing(8)
+            page.setWidget(inner)
+            for b in builders:
+                b()
+            self.layout.addStretch(1)
+            self.stack.addWidget(page)
+            item = QListWidgetItem(card_icon(key, ink), "")
+            item.setToolTip(label)
+            item.setSizeHint(QSize(48, 46))
+            item.setTextAlignment(_Qt.AlignCenter)
+            self.rail.addItem(item)
+
+        self.rail.setCurrentRow(0)
+        self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self._outer.addWidget(host)
+        self._host = host
 
     def _emit(self, *_):
         self.changed.emit()
 
+    def _group(self, title, expanded=True, persist_key=None):
+        """Prostá skupina s tučným nadpisem (nahrazuje sbalitelný box u top-level
+        skupin – přepínání teď dělá ikonová lišta). Stejné API: `.content_layout`."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 6)
+        v.setSpacing(4)
+        lbl = QLabel(title)
+        lbl.setObjectName("groupTitle")
+        v.addWidget(lbl)
+        inner = QWidget()
+        w.content_layout = QVBoxLayout(inner)
+        w.content_layout.setContentsMargins(2, 0, 0, 0)
+        v.addWidget(inner)
+        return w
+
     # ── obecné ──
     def _build_general(self):
-        box = CollapsibleBox(tr("Nosník"), expanded=True, persist_key="general")
+        box = self._group(tr("Nosník"), expanded=True, persist_key="general")
         f = QFormLayout()
         box.content_layout.addLayout(f)
         # celková délka L se odvozuje z délek úseků – v menu se nezobrazuje
@@ -180,7 +234,7 @@ class InputPanel(QScrollArea):
 
     # ── materiál ──
     def _build_material(self):
-        box = CollapsibleBox(tr("Materiály (knihovna)"), expanded=True, persist_key="material")
+        box = self._group(tr("Materiály (knihovna)"), expanded=True, persist_key="material")
         v = box.content_layout
         row = QHBoxLayout()
         self.mat_cb = QComboBox()
@@ -362,12 +416,12 @@ class InputPanel(QScrollArea):
 
     # ── knihovna pojmenovaných průřezů ──
     def _build_section_library(self):
-        box = CollapsibleBox(tr("Průřezy (knihovna)"), expanded=False, persist_key="sections")
+        box = self._group(tr("Průřezy (knihovna)"), expanded=False, persist_key="sections")
         v = box.content_layout
         hint = QLabel(tr("Pojmenované průřezy k opakovanému použití. Úsek i PID "
                          "je vybírají; úprava se propíše všude."))
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setObjectName("hint")
         v.addWidget(hint)
         self.seclib_host = QWidget()
         self.seclib_layout = QVBoxLayout(self.seclib_host)
@@ -385,7 +439,7 @@ class InputPanel(QScrollArea):
         self._clear_layout(self.seclib_layout)
         if not self.state.sections:
             empty = QLabel(tr("(zatím prázdné – přidej průřez, nebo použij → knihovna u úseku)"))
-            empty.setStyleSheet("color:#999; font-size:11px;")
+            empty.setObjectName("hint")
             self.seclib_layout.addWidget(empty)
         for s in self.state.sections:
             self.seclib_layout.addWidget(self._library_section_row(s))
@@ -400,7 +454,7 @@ class InputPanel(QScrollArea):
                                                  self._on_library_renamed()))
         h.addWidget(nm, 1)
         tlbl = QLabel(tr(SECTION_LABELS.get(s.type, s.type)))
-        tlbl.setStyleSheet("color:#666; font-size:11px;")
+        tlbl.setObjectName("hint")
         h.addWidget(tlbl)
         edit = QPushButton(tr("Upravit…"))
         edit.clicked.connect(lambda _, sec=s: self._edit_library_section(sec))
@@ -511,12 +565,12 @@ class InputPanel(QScrollArea):
 
     # ── vlastnosti pod číslem (PID) ──
     def _build_properties(self):
-        box = CollapsibleBox(tr("Vlastnosti (PID)"), expanded=False, persist_key="properties")
+        box = self._group(tr("Vlastnosti (PID)"), expanded=False, persist_key="properties")
         v = box.content_layout
         hint = QLabel(tr("Pojmenované {materiál + průřez} pod číslem; úsek si pak "
                          "jen vybere PID. Změna PID se propíše do všech úseků."))
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setObjectName("hint")
         v.addWidget(hint)
         self.props_host = QWidget()
         self.props_layout = QVBoxLayout(self.props_host)
@@ -616,11 +670,11 @@ class InputPanel(QScrollArea):
     def _build_section(self):
         from .. import defaults
         defaults.ensure_parts(self.state)
-        box = CollapsibleBox(tr("Úseky nosníku"), expanded=True, persist_key="section")
+        box = self._group(tr("Úseky nosníku"), expanded=True, persist_key="section")
         v = box.content_layout
         info = QLabel(tr("Každý úsek má délku, materiál a průřez (vč. náběhu)."))
         info.setWordWrap(True)
-        info.setStyleSheet("color:#555; font-size:11px;")
+        info.setObjectName("hint")
         v.addWidget(info)
         self.parts_host = QWidget()
         self.parts_layout = QVBoxLayout(self.parts_host)
@@ -676,7 +730,7 @@ class InputPanel(QScrollArea):
         if getattr(seg, "property_id", None):
             # řízeno PID – inline ovládání skryto
             note = QLabel(tr("Materiál i průřez řídí zvolený PID (uprav v sekci Vlastnosti)."))
-            note.setWordWrap(True); note.setStyleSheet("color:#666; font-size:11px;")
+            note.setWordWrap(True); note.setObjectName("hint")
             cl.addWidget(note)
         else:
             # inline materiál
@@ -889,7 +943,7 @@ class InputPanel(QScrollArea):
 
     # ── podpory ──
     def _build_supports(self):
-        box = CollapsibleBox(tr("Podpory"), expanded=True, persist_key="supports")
+        box = self._group(tr("Podpory"), expanded=True, persist_key="supports")
         v = box.content_layout
         self.sup_table = QTableWidget(0, 5)
         self.sup_table.setHorizontalHeaderLabels(["#", "x [mm]", tr("typ"), tr("úhel [°]"), ""])
@@ -943,7 +997,7 @@ class InputPanel(QScrollArea):
 
     # ── klouby ──
     def _build_hinges(self):
-        box = CollapsibleBox(tr("Klouby"), expanded=False, persist_key="hinges")
+        box = self._group(tr("Klouby"), expanded=False, persist_key="hinges")
         v = box.content_layout
         self.hinge_table = QTableWidget(0, 2)
         self.hinge_table.setHorizontalHeaderLabels(["x [mm]", ""])
@@ -983,11 +1037,11 @@ class InputPanel(QScrollArea):
 
     # ── kontrolní body (report, neovlivní výpočet) ──
     def _build_control_points(self):
-        box = CollapsibleBox(tr("Kontrolní body"), expanded=False, persist_key="control_points")
+        box = self._group(tr("Kontrolní body"), expanded=False, persist_key="control_points")
         v = box.content_layout
         hint = QLabel(tr("Volitelné řezy, ve kterých se vypíšou výsledky "
                          "(karta Výsledky + export). Nemění výpočet."))
-        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setObjectName("hint")
         hint.setWordWrap(True)
         v.addWidget(hint)
         self.cp_table = QTableWidget(0, 3)
@@ -1040,7 +1094,7 @@ class InputPanel(QScrollArea):
 
     # ── zatížení ──
     def _build_loads(self):
-        box = CollapsibleBox(tr("Zatížení"), expanded=True, persist_key="loads")
+        box = self._group(tr("Zatížení"), expanded=True, persist_key="loads")
         v = box.content_layout
         self.loads_host = QWidget()
         self.loads_layout = QVBoxLayout(self.loads_host)
@@ -1181,7 +1235,7 @@ class InputPanel(QScrollArea):
 
     # ── součinitel + plasticita ──
     def _build_factors(self):
-        box = CollapsibleBox(tr("Součinitel"), expanded=False, persist_key="factors")
+        box = self._group(tr("Součinitel"), expanded=False, persist_key="factors")
         f = QFormLayout()
         box.content_layout.addLayout(f)
         self.af_sp = _spin(self.state.additional_factor, 0.0, 100.0, 0.05, 3)
@@ -1189,7 +1243,7 @@ class InputPanel(QScrollArea):
         f.addRow(tr("Dodatečný součinitel:"), self.af_sp)
         note = QLabel(tr("Zatížení se zadává jako početní (ultimate) síla."))
         note.setWordWrap(True)
-        note.setStyleSheet("color:#666; font-size:11px;")
+        note.setObjectName("hint")
         f.addRow(note)
 
         self.plast_cb = QCheckBox(tr("Využít součinitel plasticity (RF_ultimate)"))
@@ -1216,11 +1270,16 @@ class InputPanel(QScrollArea):
         self._emit()
 
     def reload_from_state(self):
-        """Přestaví celý panel podle aktuálního state (po načtení projektu)."""
-        old = self.takeWidget()
-        if old:
-            old.deleteLater()
+        """Přestaví celý panel podle aktuálního state (po načtení projektu).
+        Zachová aktivní kartu lišty, je-li to možné."""
+        cur = self.rail.currentRow() if getattr(self, "rail", None) else 0
+        if self._host is not None:
+            self._outer.removeWidget(self._host)
+            self._host.deleteLater()
+            self._host = None
         self._build()
+        if 0 <= cur < self.rail.count():
+            self.rail.setCurrentRow(cur)
 
 
 class ResultsPanel(QWidget):
@@ -1426,7 +1485,7 @@ class ReportPanel(QWidget):
             grid.addWidget(b)
         v.addLayout(grid)
         hint = QLabel(tr("Tip: opakovaný klik na Max cykluje mezi špičkami veličiny."))
-        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setObjectName("hint")
         v.addWidget(hint)
 
         # ── výstupní tabulka ──

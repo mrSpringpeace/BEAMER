@@ -23,6 +23,8 @@ class Settings:
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
     last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
+    theme: str = "system"           # vzhled: "system" | "light" | "dark"
+    recent_files: list = field(default_factory=list)  # naposledy otevřené projekty (nejnovější první)
     panel_expanded: dict = field(default_factory=dict)  # stav rozbalení sekcí levého panelu {klíč: bool}
 
     def save(self):
@@ -33,6 +35,16 @@ class Settings:
         except Exception:
             pass
 
+    def add_recent(self, path: str, limit: int = 8):
+        """Zařadí soubor na začátek seznamu naposledy otevřených (bez duplicit)."""
+        if not path:
+            return
+        path = os.path.abspath(path)
+        lst = [p for p in (self.recent_files or []) if os.path.abspath(p) != path]
+        lst.insert(0, path)
+        self.recent_files = lst[:limit]
+        self.save()
+
 
 def _load() -> Settings:
     try:
@@ -41,7 +53,7 @@ def _load() -> Settings:
         s = Settings()
         for k in ("language", "number_format", "decimals", "vvu_combined",
                   "vvu_show_deform", "shared_library_dir", "last_dir",
-                  "panel_expanded"):
+                  "theme", "recent_files", "panel_expanded"):
             if k in d:
                 setattr(s, k, d[k])
         return s

@@ -22,6 +22,36 @@ ALIGN_LEFT = 0.10     # levý okraj os (zlomek šířky figury) – místo pro p
 ALIGN_RIGHT = 0.975   # pravý okraj os
 X_PAD = 0.03          # přesah osy x za nosník (zlomek délky L)
 
+# ── barvy řízené motivem (nastaví apply_chart_theme) – strukturální prvky, které
+#    musí zůstat čitelné i na tmavém pozadí (nosník, nulové osy, popisky). ──
+_INK = "#1a1a1a"       # hlavní „inkoust" (nosník, obrysy)
+_INK2 = "#777777"      # sekundární (druhý úsek, jemné čáry)
+_ZERO = "#3070c8"      # nulová osa / referenční čára
+_PANEL = "#ffffff"     # pozadí grafu
+
+
+def apply_chart_theme(theme: str = "system"):
+    """Aplikuje „inženýrský" vzhled grafů (bez horní/pravé osy, ticky dovnitř,
+    major+minor grid). Plocha grafu je ZÁMĚRNĚ vždy světlá (i v tmavém režimu) –
+    grafy tak zůstávají přehledné jako inženýrský výkres; ztmavuje se jen chrome
+    okolo (panely, tabulky) přes QSS motiv."""
+    global _INK, _INK2, _ZERO, _PANEL
+    from .theme import chart_rc
+    matplotlib.rcParams.update(chart_rc("light"))   # graf vždy světlý
+    _INK, _INK2 = "#1a1a1a", "#777777"
+    _ZERO = "#3070c8"
+    _PANEL = "#ffffff"
+
+
+def style_axes(ax):
+    """Společný technický vzhled os: bez horní/pravé čáry, jemný major+minor grid."""
+    ax.minorticks_on()
+    ax.set_axisbelow(True)
+    ax.grid(True, which="major", alpha=0.35, linewidth=0.7)
+    ax.grid(True, which="minor", alpha=0.15, linewidth=0.4)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
 
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, nrows=1, ncols=1, figsize=(5, 4)):
@@ -33,17 +63,24 @@ def _draw_schema(ax, state, result=None):
     """Schéma nosníku: nosník, číslované podpory, klouby, zatížení (+popisky)
     a – je-li `result` – grafické reakce."""
     L = state.length
-    ax.set_title(tr("Schéma nosníku"), fontsize=9, loc="left")
+    _title = tr("Schéma nosníku")
+    try:
+        _comb = state.active_combination()
+    except Exception:
+        _comb = None
+    if _comb is not None:
+        _title += f"   —   ▶ {_comb.name}"
+    ax.set_title(_title, fontsize=9, loc="left")
 
-    # nosník po úsecích – střídavě černá / tmavě šedá, ať jdou úseky rozeznat
+    # nosník po úsecích – střídavě „inkoust" / tlumená, ať jdou úseky rozeznat
     segs = getattr(state, "section_segments", None) or []
-    seg_colors = ("#1a1a1a", "#777777")
+    seg_colors = (_INK, _INK2)
     if segs:
         for j, seg in enumerate(segs):
             ax.plot([seg.x1, seg.x2], [0, 0], color=seg_colors[j % 2],
                     lw=3, solid_capstyle="butt")
     else:
-        ax.plot([0, L], [0, 0], color="#1a1a1a", lw=3, solid_capstyle="round")
+        ax.plot([0, L], [0, 0], color=_INK, lw=3, solid_capstyle="round")
 
     # dělicí čáry úseků; textové popisky jen při malém počtu úseků (jinak nečitelné)
     show_seg_labels = len(segs) <= 8
@@ -72,21 +109,21 @@ def _draw_schema(ax, state, result=None):
         ax.annotate(str(i + 1), xy=(s.x, 0), textcoords="offset points",
                     xytext=(0, -16), ha="center", va="center",
                     fontsize=8, fontweight="bold", color="#1565c0",
-                    bbox=dict(boxstyle="circle,pad=0.2", fc="white", ec="#1565c0", lw=1.2))
+                    bbox=dict(boxstyle="circle,pad=0.2", fc=_PANEL, ec="#1565c0", lw=1.2))
     # klouby
     for h in state.hinges:
-        ax.plot(h.x, 0, "o", mfc="white", mec="#c62828", ms=8)
+        ax.plot(h.x, 0, "o", mfc=_PANEL, mec="#c62828", ms=8)
 
     # kontrolní body (report) – svislá čárkovaná značka + kosočtverec + popisek
     C_CP = "#455a64"
     for k, cp in enumerate(getattr(state, "control_points", None) or []):
         ax.axvline(cp.x, color=C_CP, lw=1.0, ls=(0, (4, 3)), alpha=0.7)
-        ax.plot(cp.x, 0, "D", mfc="white", mec=C_CP, ms=6)
+        ax.plot(cp.x, 0, "D", mfc=_PANEL, mec=C_CP, ms=6)
         lbl = cp.name.strip() if (cp.name and cp.name.strip()) else f"K{k+1}"
         ax.annotate(lbl, xy=(cp.x, 0), textcoords="offset points",
                     xytext=(0, -28), ha="center", va="top",
                     fontsize=7, color=C_CP,
-                    bbox=dict(boxstyle="round,pad=0.15", fc="white",
+                    bbox=dict(boxstyle="round,pad=0.15", fc=_PANEL,
                               ec=C_CP, alpha=0.9, lw=0.6))
 
     # měřítko spojitého zatížení: max |q| → pevná amplituda (společné pro všechny)
@@ -221,7 +258,7 @@ def _annotate_extremes(ax, x, arr, color):
         ax.annotate(f"{fmt(yv)}\n@ x={xv:.1f}", xy=(xv, yv), textcoords="offset points",
                     xytext=(0, 6 if va == "bottom" else -6), ha="center", va=va,
                     fontsize=7, color=color,
-                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=color, alpha=0.85, lw=0.6))
+                    bbox=dict(boxstyle="round,pad=0.15", fc=_PANEL, ec=color, alpha=0.85, lw=0.6))
 
 
 class SchemaCanvas(MplCanvas):
@@ -344,7 +381,7 @@ class BeamDiagramCanvas(MplCanvas):
             lines += ax.plot(x, d["N"], color=C_N, lw=1.4, label="N [N]")
         if self._nonzero(d["V"]):
             lines += ax.plot(x, d["V"], color=C_V, lw=1.4, label="V [N]")
-        ax.set_ylabel(tr("Síly [N]"), fontsize=8, color="#333")
+        ax.set_ylabel(tr("Síly [N]"), fontsize=8, color=C_N)
 
         off = 52
         # momenty
@@ -540,7 +577,7 @@ class StressCanvas(MplCanvas):
                 ax.text(0.03, 0.98, f"max {fmt(float(fin.max()))}\nmin {fmt(float(fin.min()))}",
                         transform=ax.transAxes, va="top", ha="left", fontsize=6.5,
                         color=color,
-                        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=color,
+                        bbox=dict(boxstyle="round,pad=0.2", fc=_PANEL, ec=color,
                                   alpha=0.85, lw=0.6))
         axes[0].set_ylabel(tr("z [mm od těžiště]"), fontsize=8)
         self.fig.suptitle(f"{tr('Napjatost')}  (M={M:.0f} N·mm, V={V:.0f} N)", fontsize=9)
@@ -587,7 +624,7 @@ class MarginCanvas(MplCanvas):
             ax.annotate(f"{lbl},min = {fmt(yv)}", xy=(x[j], yv),
                         textcoords="offset points", xytext=(0, 8), ha="center",
                         fontsize=7, color=color,
-                        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=color, alpha=0.9, lw=0.6))
+                        bbox=dict(boxstyle="round,pad=0.2", fc=_PANEL, ec=color, alpha=0.9, lw=0.6))
 
         # adaptivní strop osy: RF u podpor/konců vystřeluje (σ→0 → RF→∞).
         # Strop volíme z PERCENTILU řídicí křivky (ne z poměru k minimu), takže

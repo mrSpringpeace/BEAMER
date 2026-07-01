@@ -33,6 +33,14 @@ class SettingsDialog(QDialog):
         self.lang_cb.currentIndexChanged.connect(self._on_language)
         f.addRow(tr("Jazyk / Language"), self.lang_cb)
 
+        self.theme_cb = QComboBox()
+        self.theme_cb.addItem(tr("Podle systému"), "system")
+        self.theme_cb.addItem(tr("Světlý"), "light")
+        self.theme_cb.addItem(tr("Tmavý"), "dark")
+        self.theme_cb.setCurrentIndex(max(0, self.theme_cb.findData(SETTINGS.theme)))
+        self.theme_cb.currentIndexChanged.connect(self._on_theme)
+        f.addRow(tr("Vzhled"), self.theme_cb)
+
         self.fmt_cb = QComboBox()
         self.fmt_cb.addItem(tr("Fixed (pevný)"), "fixed")
         self.fmt_cb.addItem(tr("Scientific (vědecký)"), "scientific")
@@ -76,13 +84,13 @@ class SettingsDialog(QDialog):
         hint = QLabel(tr("Společná složka (např. síťový disk). Knihovny se pak "
                          "načítají ze sdílené i uživatelské; zápis jde do "
                          "uživatelské, do sdílené jen přes „Publikovat“."))
-        hint.setStyleSheet("color:#666; font-size:11px;")
+        hint.setObjectName("hint")
         hint.setWordWrap(True)
         fl.addWidget(hint)
         v.addWidget(gl)
 
         note = QLabel(tr("Změna jazyka se projeví v celém rozhraní."))
-        note.setStyleSheet("color:#666; font-size:11px;")
+        note.setObjectName("hint")
         note.setWordWrap(True)
         v.addWidget(note)
 
@@ -95,6 +103,16 @@ class SettingsDialog(QDialog):
         SETTINGS.language = self.lang_cb.currentData()
         SETTINGS.save()
         self.language_changed.emit()
+
+    def _on_theme(self, _):
+        SETTINGS.theme = self.theme_cb.currentData()
+        SETTINGS.save()
+        from .theme import apply_theme
+        from .plots import apply_chart_theme
+        from PySide6.QtWidgets import QApplication
+        apply_theme(QApplication.instance(), SETTINGS.theme)
+        apply_chart_theme(SETTINGS.theme)
+        self.display_changed.emit()
 
     def _on_format(self, _):
         SETTINGS.number_format = self.fmt_cb.currentData()

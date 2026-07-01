@@ -41,7 +41,7 @@ class ShapesEditor(QWidget):
                          "RELATIVNÍ mezi tvary [mm]; výsledek se v náhledu vztáhne "
                          "k těžišti (posun jediného tvaru proto obrázek nezmění)."))
         info.setWordWrap(True)
-        info.setStyleSheet("color:#888; font-size:11px;")
+        info.setObjectName("hint")
         lay.addWidget(info)
 
         btns = QHBoxLayout()

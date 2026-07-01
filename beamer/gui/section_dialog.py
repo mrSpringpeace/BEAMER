@@ -75,7 +75,7 @@ class SectionEditorDialog(QDialog):
         self.canvas = SectionCanvas()
         right.addWidget(self.canvas, 1)
         self.props = QLabel()
-        self.props.setStyleSheet("font-family:monospace; font-size:11px; color:#333;")
+        self.props.setStyleSheet("font-family:monospace; font-size:11px;")
         self.props.setAlignment(Qt.AlignTop)
         right.addWidget(self.props, 0)
 
@@ -86,7 +86,7 @@ class SectionEditorDialog(QDialog):
         self.fem_btn.clicked.connect(self._compute_fem)
         row.addWidget(self.fem_btn)
         self.fem_lbl = QLabel("")
-        self.fem_lbl.setStyleSheet("color:#888; font-size:11px;")
+        self.fem_lbl.setObjectName("hint")
         row.addWidget(self.fem_lbl, 1)
         right.addLayout(row)
 
