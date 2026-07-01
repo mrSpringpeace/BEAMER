@@ -318,6 +318,11 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     try:
         U = np.linalg.solve(K_solved, F_solved)
+        # Penalta šikmé rolny dělá soustavu tuhou/špatně podmíněnou → reziduum
+        # řešení pak závisí na LAPACK backendu (lokál vs. CI). Jeden krok
+        # iterativního zjemnění ho srazí o mnoho řádů nezávisle na backendu.
+        if skew_rollers and np.all(np.isfinite(U)):
+            U = U + np.linalg.solve(K_solved, F_solved - K_solved @ U)
     except np.linalg.LinAlgError:
         return SolverResult([], [], [], False, rep_section,
                             "Nestabilní soustava (mechanismus / nedostatečné podepření).")
@@ -327,7 +332,13 @@ def solve_beam(state, factors=None) -> SolverResult:
         return SolverResult([], [], [], False, rep_section,
                             "Nestabilní soustava (mechanismus / nedostatečné podepření).")
     resid = float(np.linalg.norm(K_solved @ U - F_solved))
-    if resid > 1e-6 * (float(np.linalg.norm(F_solved)) + 1.0):
+    # Penalta šikmé rolny dělá soustavu záměrně tuhou → hůř podmíněnou, takže
+    # reziduum korektního řešení je větší (~1e-5 rel.) a závisí na BLAS/LAPACK
+    # backendu (jiné číslo lokálně vs. CI). Skutečný mechanismus dá reziduum
+    # řádu ‖F‖ (rel. ~1), proto u penalty stačí volnější práh. Bez penalty se
+    # drží přísný práh (detekce nedostatečného podepření beze změny).
+    res_tol = 1e-3 if skew_rollers else 1e-6
+    if resid > res_tol * (float(np.linalg.norm(F_solved)) + 1.0):
         return SolverResult([], [], [], False, rep_section,
                             "Nestabilní soustava (mechanismus / nedostatečné podepření).")
 

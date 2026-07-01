@@ -4,6 +4,11 @@ Version format: **X.XX**
 
 ## 1.20
 
+- Fix: the skew-roller solver now does one step of iterative refinement. The
+  penalty system is ill-conditioned and its residual depended on the LAPACK
+  backend (the skew-roller test passed locally but failed on CI). Refinement
+  drops the residual by orders of magnitude independently of the backend; the
+  instability threshold for the penalty case was also loosened.
 - Polygon editor: a new vertex can be inserted right after a chosen point (the
   "＋" button in the coordinate-table row) — it lands on the midpoint of the edge
   to the next point and can then be dragged. No more starting over when a point
