@@ -198,31 +198,42 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         def data_at(x):
             return base_infl, base_alpha, g_mat.Re, g_mat.Rm
     else:
-        N_REP = 24
-        rep_x = np.linspace(xs[0], xs[-1], N_REP)
-        rep = []
+        # Vlivové koeficienty pro průřez SKUTEČNĚ v poloze x, cache dle identity
+        # průřezu. resolver.at vrací u prizmatického úseku stejný objekt (→ jen
+        # pár buildů), u tapered kvantizuje t (→ omezená množina). DŘÍVE se
+        # snapovalo na nejbližší bod globální mřížky 24 bodů, což u hranice úseků
+        # přiřadilo VEDLEJŠÍ (jiný) průřez → špatné napětí/RF (reserves scan
+        # křížil hranici úseku). Teď se nikdy nekříží hranice.
         seen = {}
-        for rx in rep_x:
-            cs = resolver.at(float(rx))
-            mat = resolver.material_at(float(rx))
+
+        def data_at(x):
+            cs = resolver.at(x)
+            mat = resolver.material_at(x)
             key = (id(cs), id(mat))
             if key not in seen:
                 seen[key] = (build_influence(cs, n=50), alpha_pl_for(cs), mat.Re, mat.Rm)
-            rep.append((rx, seen[key]))
-        rep_xarr = np.array([rx for rx, _ in rep])
-
-        def data_at(x):
-            j = int(np.argmin(np.abs(rep_xarr - x)))
-            return rep[j][1]
+            return seen[key]
 
     if progress:
         progress(0.5)
 
+    from .sections_along import segment_at, property_by_id
     out = []
     for i in range(n_stations):
         xq = xs[0] + (xs[-1]-xs[0])*i/(n_stations-1)
         idx = int(np.argmin(np.abs(xs - xq)))
         p = pts[idx]
+        # složený PID z různých materiálů → RF per materiál (min)
+        seg = segment_at(state, p.x)
+        pr = property_by_id(state, getattr(seg, "property_id", None))
+        if pr is not None and getattr(pr, "composite_parts", None):
+            from .composite import composite_assess
+            ca = composite_assess(state, pr, p.N, p.M, basis, Mk=p.Mk, V=p.V)
+            if ca is not None:
+                out.append(ReserveResult(p.x, ca["sigma_max"], ca["tau_max"], ca["mises_max"],
+                                         ca["RF_yield"], ca["RF_ultimate"], ca["RF"],
+                                         ca["critical"]))
+                continue
         infl, alpha, Re, Rm = data_at(p.x)
         sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk, combine=combine)
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
@@ -243,9 +254,22 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     return out
 
 
-def _assess(section, mat, state, N, V, M, Mk):
+def _assess(section, mat, state, N, V, M, Mk, seg=None):
     """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
-    Vrací dílčí dict (bez x/VVÚ)."""
+    Vrací dílčí dict (bez x/VVÚ). Pro složený PID z různých materiálů (seg s
+    property_id) vrátí per-materiálové posouzení (normálové, B1)."""
+    if seg is not None:
+        pid = getattr(seg, "property_id", None)
+        if pid:
+            from .sections_along import property_by_id
+            p = property_by_id(state, pid)
+            if p is not None and getattr(p, "composite_parts", None):
+                from .composite import composite_assess
+                ca = composite_assess(state, p, N, M, getattr(state, "rf_basis", "min"), Mk=Mk, V=V)
+                if ca is not None:
+                    ca.update({"section": section, "material": mat, "alpha_pl": 1.0,
+                               "sigma_z": None, "tau_z": None, "sigma_red_combined": False})
+                    return ca
     sg = tu = mz = 0.0
     z_sg = z_tu = 0.0
     combine = getattr(state, "sigma_red_mode", "exact") == "combined"
@@ -304,6 +328,8 @@ def values_at_x(result, state, x):
         return None
     x, N, V, M, Mk, w, phi, theta = _interp_forces(result, x)
     resolver = getattr(result, "resolver", None)
+    from .sections_along import segment_at
+    seg = segment_at(state, x)
     if resolver is not None:
         section = resolver.at(x)
         mat = resolver.material_at(x)
@@ -311,7 +337,7 @@ def values_at_x(result, state, x):
         section = result.section
         mat = state.material()
     d = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
-    d.update(_assess(section, mat, state, N, V, M, Mk))
+    d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg))
     return d
 
 
@@ -337,7 +363,7 @@ def values_at_x_multi(result, state, x, tol=1e-3):
             section = None
         mat = material_for_segment(state, seg)
         d = dict(base)
-        d.update(_assess(section, mat, state, N, V, M, Mk))
+        d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg))
         try:
             d["seg_index"] = all_segs.index(seg)
         except ValueError:

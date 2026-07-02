@@ -97,7 +97,18 @@ def solve_beam(state, factors=None) -> SolverResult:
         G_e = resolver.G_at(x_mid)      # per-úsekové G (materiál úseku)
         if G_e is None:
             G_e = G
-        return A, Iy, J, As, cs, E_e, G_e
+        # efektivní tuhosti: pro složený PID z různých materiálů modulem vážené
+        # (EA=ΣEᵢAᵢ, EIy k neutrální ose), jinak E·geometrie. Torze složeného =
+        # variabilní-G FEM (GJ)_eff (B2); jinak G·J. Smyk GAs zatím ×G (geom. As).
+        w = resolver.weighted_at(x_mid)
+        if w is not None:
+            EA, EIy = w.EA, w.EIy
+            GJ = w.GJ if getattr(w, "GJ", None) else G_e * J
+        else:
+            EA, EIy = E_e * A, E_e * Iy
+            GJ = G_e * J
+        GAs = G_e * As
+        return EA, EIy, GJ, GAs, cs
 
     # ── 1. Diskretizace ──
     xs = {0.0, float(length)}
@@ -170,14 +181,13 @@ def solve_beam(state, factors=None) -> SolverResult:
         ns, ne = nodes[i], nodes[i+1]
         has_hinge = any(abs(h.x - ns["x"]) < 1e-3 for h in state.hinges)
         x_mid = (ns["x"] + ne["x"]) / 2
-        A_e, Iy_e, J_e, As_e, cs_e, E_e, G_e = elem_props(x_mid)
+        EA_e, EIy_e, GJ_e, GAs_e, cs_e = elem_props(x_mid)
         elements.append({
             "id": i, "ns": ns, "ne": ne,
             "L": ne["x"] - ns["x"],
             "release_start": has_hinge, "release_end": False,
             "xs": ns["x"], "xe": ne["x"],
-            "A": A_e, "Iy": Iy_e, "J": J_e, "As": As_e, "section": cs_e,
-            "E": E_e, "G": G_e,
+            "EA": EA_e, "EIy": EIy_e, "GJ": GJ_e, "GAs": GAs_e, "section": cs_e,
         })
 
     K = np.zeros((num_dof, num_dof))
@@ -185,14 +195,14 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     theory = state.theory
 
-    def k_element(L_e, A, Iy, J, As, E_e, G_e):
+    def k_element(L_e, EA, EIy, GJ, GAs):
         k = np.zeros((8, 8))
-        ka = E_e*A/L_e
+        ka = EA/L_e
         k[0, 0] = ka; k[0, 4] = -ka; k[4, 0] = -ka; k[4, 4] = ka
-        kt = G_e*J/L_e
+        kt = GJ/L_e
         k[3, 3] = kt; k[3, 7] = -kt; k[7, 3] = -kt; k[7, 7] = kt
-        Phi = (12*E_e*Iy)/(G_e*As*L_e**2) if theory == "timoshenko" else 0.0
-        f = (E_e*Iy)/(L_e**3*(1+Phi))
+        Phi = (12*EIy)/(GAs*L_e**2) if theory == "timoshenko" else 0.0
+        f = EIy/(L_e**3*(1+Phi))
         kb11 = 12*f
         kb12 = 6*L_e*f
         kb22 = (4+Phi)*L_e**2*f
@@ -205,7 +215,7 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     for elem in elements:
         L_e = elem["L"]
-        k_e = k_element(L_e, elem["A"], elem["Iy"], elem["J"], elem["As"], elem["E"], elem["G"])
+        k_e = k_element(L_e, elem["EA"], elem["EIy"], elem["GJ"], elem["GAs"])
 
         released = []
         if elem["release_start"]:
@@ -383,10 +393,9 @@ def solve_beam(state, factors=None) -> SolverResult:
         u1, w1, phi1, th1 = U[sd], U[sd+1], U[sd+2], U[sd+3]
         u2, w2, phi2, th2 = U[ed], U[ed+1], U[ed+2], U[ed+3]
 
-        A_e, Iy_e, J_e, As_e, E_e, G_e = (elem["A"], elem["Iy"], elem["J"], elem["As"],
-                                          elem["E"], elem["G"])
-        Phi_e = (12*E_e*Iy_e)/(G_e*As_e*L_e**2) if theory == "timoshenko" else 0.0
-        fe = (E_e*Iy_e)/(L_e**3*(1+Phi_e))
+        EA_e, EIy_e, GJ_e, GAs_e = (elem["EA"], elem["EIy"], elem["GJ"], elem["GAs"])
+        Phi_e = (12*EIy_e)/(GAs_e*L_e**2) if theory == "timoshenko" else 0.0
+        fe = EIy_e/(L_e**3*(1+Phi_e))
         kb11 = 12*fe
         kb12 = 6*L_e*fe
         kb22 = (4+Phi_e)*L_e**2*fe
@@ -427,8 +436,8 @@ def solve_beam(state, factors=None) -> SolverResult:
         IL = L_e*A0[-1] - A1[-1]    # ∫(L−s)q ds
         Vi = (Mj - Mi - IL)/L_e if L_e > 1e-12 else 0.0
 
-        N = (E_e*A_e/L_e)*(u2-u1)
-        Mk = (G_e*J_e/L_e)*(th2-th1)
+        N = (EA_e/L_e)*(u2-u1)
+        Mk = (GJ_e/L_e)*(th2-th1)
 
         local_points = []
         nsteps = 100

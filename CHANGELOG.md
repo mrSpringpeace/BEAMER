@@ -2,6 +2,70 @@
 
 Version format: **X.XX**
 
+## 1.24
+
+- Composite sections – **full per-material von Mises** (completes the composite
+  stress calculation): a composite PID is now assessed against the reduced stress
+  from all components — normal σ (modulus-weighted), torsional shear τ_t and
+  transverse shear τ_V, each separately per material, with the reserve factor (RF)
+  taken from that material's own strength.
+  - **Torsion:** effective stiffness (GJ)_eff via a variable-G Saint-Venant FEM
+    (each mesh element carries its material's G); the solver uses it directly.
+    Validated against sectionproperties (concentric rod-in-tube and an asymmetric
+    bonded joint) and analytically.
+  - **Torsional stress τ_t** from the warping field; **τ_V** from an
+    E-weighted Jourawski formula (reduces to the classic one for a single material).
+  - The Cross-section tab, RF-along-the-beam and the report show σ/τ/σ_red and RF
+    per material.
+  - Note: the mesh is non-conforming at material interfaces → stress is sampled at
+    the element centroid (convergent; a few % at the interface on a very coarse
+    mesh). `beamer/composite_fem.py`, `beamer/_fem.py` (variable-G warping).
+
+## 1.23
+
+- **Fix (RF along a beam with several segments):** the RF-along-the-beam
+  assessment could cross segment boundaries when selecting the cross-section — for
+  a beam with a step change in section, one segment could be evaluated through the
+  neighbouring segment's section (e.g. the moment of a stiffer segment divided by
+  the weaker segment's section modulus → falsely low RF and the wrong critical
+  location; at the opposite boundary the reverse, an unsafely overestimated RF).
+  The section and material are now always resolved at the actual position x and
+  segment boundaries are never crossed. The single-section check (Cross-section
+  tab) was already correct; the "segment RF ≠ global min RF" mismatch is gone.
+  `reserves_along_beam`.
+
+## 1.22
+
+- Composite profiles with different materials (PID): a PID can be marked
+  "Composite of profiles" and, in the composition dialog, assembled from ready
+  profiles in the library (pick a section, material, position dy/dz, angle) with a
+  live preview. The calculation is modulus-weighted (transformed section):
+  EA=ΣEᵢAᵢ, neutral-axis position from the stiffnesses, EIy about the NA; the
+  solver uses effective stiffnesses EA/EIy/GJ/GAs (single material unchanged).
+  Stress and RF are assessed **per material** (Cross-section tab, RF along the
+  beam, report). `beamer/composite.py`, `Property.composite_parts`,
+  `Body.material_id`.
+- Profile rotation (PID): a "Rotation [°]" field rotates the whole cross-section —
+  Iy/Iz/Iyz, stress and the solver are all computed from the rotated shape
+  (planar tool: uses the transformed Iy, ignores the biaxial Iyz coupling).
+  `CrossSectionDef.rotation`, `Property.rotation`.
+- Cross-validation against the sectionproperties library (dev-only, skipped on
+  CI): rotation (Iy/Iz/Iyz) and the composite section (EA/EIy/neutral axis) match
+  to machine precision.
+
+## 1.21
+
+- Layout: the centre of the window is now split into tabs **[Internal forces |
+  Cross-section & stress]**. The Cross-section tab moved from the right panel into
+  the centre, where it has more room for deeper evaluation (stress contours,
+  composite materials – roadmap). The right panel keeps Results / Assessment (RF)
+  / Report. The active-combination indicator (▶) also shows on the Cross-section
+  tab. No change to calculations or the project format.
+- Tests: +4 analytical benchmarks (cantilever with end moment, simply supported
+  beam with a central point load, and the statically indeterminate propped
+  cantilever + fixed-fixed beam under UDL — validating the direct stiffness
+  method against closed-form solutions). 38 tests total.
+
 ## 1.20
 
 - Fix: the skew-roller solver now does one step of iterative refinement. The

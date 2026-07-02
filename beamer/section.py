@@ -313,8 +313,24 @@ class CrossSection:
     """
 
     def __init__(self, pts_xy=None, slices_for_circle=None, walls=None,
-                 IT_override=None, bodies=None):
+                 IT_override=None, bodies=None, rotation=0.0):
         self.valid = False
+        # natočení celého průřezu o `rotation` [°] – otočí geometrii kolem počátku
+        # (_compute pak recentruje na těžiště). Bending Iy/Iz/Iyz i napětí/smyk se
+        # tak počítají z natočeného tvaru; torzní konstanta je rotací invariantní.
+        if rotation:
+            a = math.radians(rotation)
+            ca, sa = math.cos(a), math.sin(a)
+
+            def _r(p):
+                x, z = p[0], p[1]
+                return (x*ca - z*sa, x*sa + z*ca)
+            if pts_xy:
+                pts_xy = [_r(p) for p in pts_xy]
+            if bodies:
+                bodies = [([_r(p) for p in outer],
+                           [[_r(q) for q in h] for h in holes])
+                          for outer, holes in bodies]
         self.pts = pts_xy
         self._sl_circ = slices_for_circle
         self._walls_input = walls
@@ -1168,7 +1184,7 @@ def _sec_signature(sdef, fem):
         bodies = [((b.points if hasattr(b, "points") else b.get("points")),
                    (b.holes if hasattr(b, "holes") else b.get("holes")))
                   for b in sdef.bodies]
-    sig = (sdef.type, fem,
+    sig = (sdef.type, fem, getattr(sdef, "rotation", 0.0) or 0.0,
            json.dumps([
                sdef.params,
                sdef.polygon_points, sdef.polygon_holes,
@@ -1209,6 +1225,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
     """Vlastní sestavení (bez cache) – viz build_section."""
     t = sdef.type
     p = sdef.params or {}
+    rot = getattr(sdef, "rotation", 0.0) or 0.0      # natočení celého průřezu [°]
 
     def gv(key, default):
         try:
@@ -1233,7 +1250,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
         else:
             IT = None   # degenerovaný (tw ≥ rozměr) → ponech výpočet na jádře
             Am = 0.0
-        cs = CrossSection(bodies=[(outer, holes)], IT_override=IT)
+        cs = CrossSection(bodies=[(outer, holes)], IT_override=IT, rotation=rot)
         cs.section_type = "box"
         if Am > 0:
             cs.torsion_model = "closed_box"     # Bredt: τ = Mk/(2·Am·t)
@@ -1280,14 +1297,14 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             # přes legacy single-polygon API (přesné IT/Iω/střed smyku/smyk. plochy).
             if len(bodies_pts) == 1:
                 outer, holes = bodies_pts[0]
-                cs = CrossSection(bodies=bodies_pts)
+                cs = CrossSection(bodies=bodies_pts, rotation=rot)
                 if fem:
                     _apply_fem_properties(cs, outer, holes)
                 else:
                     cs.fem_used = False
             else:
                 # multi-body FEM: per-body Saint-Venant + paralelní osy
-                cs = CrossSection(bodies=bodies_pts)
+                cs = CrossSection(bodies=bodies_pts, rotation=rot)
                 if fem:
                     _apply_fem_composite(cs, bodies_pts)
                 else:
@@ -1301,7 +1318,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             raise ValueError("Vlastní průřez potřebuje alespoň 3 body.")
         holes = [[(float(p["y"]), float(p["z"])) for p in h]
                  for h in (sdef.polygon_holes or []) if len(h) >= 3]
-        cs = CrossSection(pts_xy=pts)
+        cs = CrossSection(pts_xy=pts, rotation=rot)
         if fem:
             _apply_fem_properties(cs, pts, holes)   # přesné IT, Iw, střed smyku, smyk. plochy
         else:
@@ -1316,13 +1333,13 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             raise ValueError("Konstrukční tvar je prázdný nebo neplatný.")
         if len(bodies_pts) == 1:
             outer, holes = bodies_pts[0]
-            cs = CrossSection(bodies=bodies_pts)
+            cs = CrossSection(bodies=bodies_pts, rotation=rot)
             if fem:
                 _apply_fem_properties(cs, outer, holes)
             else:
                 cs.fem_used = False
         else:
-            cs = CrossSection(bodies=bodies_pts)
+            cs = CrossSection(bodies=bodies_pts, rotation=rot)
             if fem:
                 _apply_fem_composite(cs, bodies_pts)
             else:
@@ -1332,7 +1349,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
     else:
         raise ValueError(f"Neznámý typ průřezu: {t}")
 
-    cs = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls, IT_override=IT)
+    cs = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls, IT_override=IT, rotation=rot)
     cs.section_type = t
     # poloměry pro vykreslení obrysu + torzní model pro τ_t
     if t == "circle":

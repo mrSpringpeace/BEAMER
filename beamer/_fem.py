@@ -838,13 +838,17 @@ def compute_geometric_properties(nodes, elements):
 #
 # Reference: Pilkey 2002 Chapter 5, sectionproperties theory dokument.
 
-def solve_warping_function(nodes, elements, cy, cz):
+def solve_warping_function(nodes, elements, cy, cz, elem_G=None):
     """
     Řeší Saint-Venantovu warping funkci ω(y,z) v centroidálních souřadnicích.
 
+    elem_G : volitelné pole G per element (variabilní modul → složený průřez).
+             K i F se váží elementovým G. Pro None (nebo konstantní G) se ω
+             nezmění (G se vytkne) a J je geometrická jako dosud.
+
     Vrací:
       omega: (n_nodes,) ndarray – warping function v každém uzlu
-      K_csr: sparse matice tuhosti (pro pozdější výpočet J)
+      K_csr: sparse matice tuhosti (G-VÁŽENÁ, pokud elem_G) – pro výpočet J
     """
     n_nodes = len(nodes)
     # Souřadnice v centroidálním systému
@@ -853,10 +857,11 @@ def solve_warping_function(nodes, elements, cy, cz):
     K = lil_matrix((n_nodes, n_nodes))
     F = np.zeros(n_nodes)
 
-    for elem in elements:
+    for ei, elem in enumerate(elements):
         idx = elem
         coords = nodes[elem]      # globální (pro shape fcs)
         coords_c = nodes_c[elem]  # centroidální
+        ge = 1.0 if elem_G is None else float(elem_G[ei])
 
         Ke = np.zeros((_CURRENT_N_NODES_PER_ELEM, _CURRENT_N_NODES_PER_ELEM))
         Fe = np.zeros(_CURRENT_N_NODES_PER_ELEM)
@@ -872,10 +877,10 @@ def solve_warping_function(nodes, elements, cy, cz):
             y_c = float(np.dot(N, coords_c[:, 0]))
             z_c = float(np.dot(N, coords_c[:, 1]))
 
-            # K_ij = (∂N_i/∂y · ∂N_j/∂y + ∂N_i/∂z · ∂N_j/∂z) · dA
-            Ke += (np.outer(dN_dy, dN_dy) + np.outer(dN_dz, dN_dz)) * dA
-            # F_i = (∂N_i/∂y · z_c - ∂N_i/∂z · y_c) · dA
-            Fe += (dN_dy * z_c - dN_dz * y_c) * dA
+            # K_ij = G·(∂N_i/∂y · ∂N_j/∂y + ∂N_i/∂z · ∂N_j/∂z) · dA
+            Ke += ge * (np.outer(dN_dy, dN_dy) + np.outer(dN_dz, dN_dz)) * dA
+            # F_i = G·(∂N_i/∂y · z_c - ∂N_i/∂z · y_c) · dA
+            Fe += ge * (dN_dy * z_c - dN_dz * y_c) * dA
 
         for a in range(_CURRENT_N_NODES_PER_ELEM):
             for b in range(_CURRENT_N_NODES_PER_ELEM):
@@ -920,22 +925,41 @@ def solve_warping_function(nodes, elements, cy, cz):
     return omega, K_csr
 
 
-def compute_torsion_constant(nodes, elements, omega, K_csr, Ixx_c, Iyy_c):
+def compute_torsion_constant(nodes, elements, omega, K_csr, Ixx_c, Iyy_c,
+                             elem_G=None, cy=0.0, cz=0.0):
     """
     Saint-Venantova torzní konstanta dle Pilkey eq. 5.62 / sectionproperties:
 
-       J = Ixx + Iyy - ω^T K ω
+       J = (Ixx + Iyy) - ω^T K ω
 
     kde Ixx, Iyy jsou centroidální momenty setrvačnosti a K je matice
     tuhosti Laplaceova operátoru.
 
-    Tato formulace je MATEMATICKY EXAKTNÍ a je validována proti Pilkey
-    benchmark sections (channel, arc, composite). Viz sectionproperties
-    Theory dokumentaci.
+    Pro VARIABILNÍ G (elem_G, složený průřez) se vrací efektivní torzní tuhost
+    (GJ)_eff = Ip_G - ω^T K_G ω, kde Ip_G = Σ_e G_e·∫(y²+z²)dA (G-vážený polární
+    moment) a K_G je G-vážená matice (z solve_warping_function s elem_G). Pro
+    konstantní G se redukuje na G·J; pro elem_G=None na dnešní geometrickou J.
     """
     omega_K_omega = float(omega @ (K_csr @ omega))
-    J = Ixx_c + Iyy_c - omega_K_omega
-    return J
+    if elem_G is None:
+        Ip = Ixx_c + Iyy_c
+    else:
+        nodes_c = nodes - np.array([cy, cz])
+        Ip = 0.0
+        for ei, elem in enumerate(elements):
+            ge = float(elem_G[ei])
+            coords_c = nodes_c[elem]
+            for gp in _CURRENT_GAUSS:
+                L1, L2, L3, w = gp
+                N, dN1, dN2, dN3 = _CURRENT_SHAPE_FUNC(L1, L2, L3)
+                J_det, _, _ = element_jacobian(coords_c, dN1, dN2, dN3)
+                if J_det <= 0:
+                    continue
+                dA = 0.5 * J_det * w
+                y = float(np.dot(N, coords_c[:, 0]))
+                z = float(np.dot(N, coords_c[:, 1]))
+                Ip += ge * (y*y + z*z) * dA
+    return Ip - omega_K_omega
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -961,6 +985,60 @@ def compute_torsion_constant(nodes, elements, omega, K_csr, Ixx_c, Iyy_c):
 # Reference:
 #   - Pilkey W.D. (2002), Chapter 6 (Shear Center) & 7 (Warping)
 #   - sectionproperties Theory: "Shear Center" a "Warping Constant"
+
+def torsion_shear_centroids(nodes, elements, omega, cy, cz):
+    """Jednotkový torzní smyk v TĚŽIŠTI každého elementu (stabilní – bez
+    artefaktu na rozhraní materiálů u nekonformní sítě). Vrací:
+      coords : (n_elem, 2) globální (y,z) těžiště,
+      shear  : (n_elem, 2) složky (∂ω/∂y − z, ∂ω/∂z + y) v centroid. souř.
+    Skutečné napětí = G_e · θ' · shear, θ' = Mk/(GJ)_eff."""
+    nodes_c = nodes - np.array([cy, cz])
+    ne = len(elements)
+    coords = np.zeros((ne, 2))
+    shear = np.zeros((ne, 2))
+    N, dN_dL1, dN_dL2, dN_dL3 = _CURRENT_SHAPE_FUNC(1/3.0, 1/3.0, 1/3.0)
+    for ei, elem in enumerate(elements):
+        coords_c = nodes_c[elem]
+        J_det, dN_dy, dN_dz = element_jacobian(coords_c, dN_dL1, dN_dL2, dN_dL3)
+        if J_det <= 0 or dN_dy is None:
+            continue
+        om_e = omega[elem]
+        y_c = float(np.dot(N, coords_c[:, 0]))
+        z_c = float(np.dot(N, coords_c[:, 1]))
+        coords[ei, 0] = y_c + cy
+        coords[ei, 1] = z_c + cz
+        shear[ei, 0] = float(np.dot(dN_dy, om_e)) - z_c
+        shear[ei, 1] = float(np.dot(dN_dz, om_e)) + y_c
+    return coords, shear
+
+
+def torsion_shear_at_corners(nodes, elements, omega, cy, cz):
+    """Jednotkové torzní smykové „toky" v ROHOVÝCH uzlech každého elementu
+    (rohy dosáhnou hranic/rozhraní, kde bývá extrém). Vrací:
+      coords : (n_elem, 3, 2) globální (y,z) tří rohů,
+      shear  : (n_elem, 3, 2) složky (∂ω/∂y − z, ∂ω/∂z + y) v centroid. souř.
+    Skutečné napětí = G_e · θ' · shear, kde θ' = Mk/(GJ)_eff. Nezávisí na G."""
+    nodes_c = nodes - np.array([cy, cz])
+    ne = len(elements)
+    coords = np.zeros((ne, 3, 2))
+    shear = np.zeros((ne, 3, 2))
+    corners = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+    shp = [(_CURRENT_SHAPE_FUNC(*c)) for c in corners]
+    for ei, elem in enumerate(elements):
+        coords_c = nodes_c[elem]
+        om_e = omega[elem]
+        for ci, (N, dN_dL1, dN_dL2, dN_dL3) in enumerate(shp):
+            J_det, dN_dy, dN_dz = element_jacobian(coords_c, dN_dL1, dN_dL2, dN_dL3)
+            if J_det <= 0 or dN_dy is None:
+                continue
+            y_c = float(np.dot(N, coords_c[:, 0]))
+            z_c = float(np.dot(N, coords_c[:, 1]))
+            coords[ei, ci, 0] = y_c + cy
+            coords[ei, ci, 1] = z_c + cz
+            shear[ei, ci, 0] = float(np.dot(dN_dy, om_e)) - z_c
+            shear[ei, ci, 1] = float(np.dot(dN_dz, om_e)) + y_c
+    return coords, shear
+
 
 def compute_shear_center_and_warping(nodes, elements, omega, cy, cz,
                                      Ixx_c, Iyy_c, Ixy_c):

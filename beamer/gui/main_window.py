@@ -124,9 +124,15 @@ class MainWindow(QMainWindow):
         self.input_panel.setMinimumWidth(300)   # bez horní meze → volně tažitelné
         splitter.addWidget(self.input_panel)
 
-        # střed: nahoře schéma nosníku (1/3), dole scrollovatelné VVÚ grafy (2/3)
+        # ── STŘED: karty [VVÚ | Průřez a napjatost] ──
         # pozadí středu je ZÁMĚRNĚ vždy světlé (i v tmavém režimu) – grafy působí
         # jako inženýrský výkres a zůstávají přehledné.
+        self.center_tabs = QTabWidget()
+
+        # karta VVÚ: nahoře schéma nosníku (1/3), dole scrollovatelné diagramy (2/3)
+        vvu_tab = QWidget()
+        vvu_l = QVBoxLayout(vvu_tab)
+        vvu_l.setContentsMargins(0, 0, 0, 0)
         center = QSplitter(Qt.Vertical)
         self.schema_canvas = SchemaCanvas()
         center.addWidget(self.schema_canvas)
@@ -140,12 +146,10 @@ class MainWindow(QMainWindow):
         center.setStretchFactor(0, 1)
         center.setStretchFactor(1, 2)
         center.setSizes([220, 600])
-        splitter.addWidget(center)
+        vvu_l.addWidget(center)
+        self.center_tabs.addTab(vvu_tab, tr("VVÚ"))
 
-        # pravý: taby
-        self.tabs = QTabWidget()
-
-        # tab napjatost
+        # karta Průřez a napjatost (přesunuta z pravého panelu – víc prostoru)
         stress_tab = QWidget()
         sv = QVBoxLayout(stress_tab)
         psel = QHBoxLayout()
@@ -153,19 +157,24 @@ class MainWindow(QMainWindow):
         self.part_sel = QComboBox()
         self.part_sel.currentIndexChanged.connect(self._on_part_selected)
         psel.addWidget(self.part_sel, 1)
+        self.sec_combo_lbl = QLabel("")           # indikátor kombinace i na kartě Průřez
+        self.sec_combo_lbl.setStyleSheet("font-weight:bold;")
+        psel.addWidget(self.sec_combo_lbl)
         sv.addLayout(psel)
         top = QHBoxLayout()
         self.section_canvas = SectionCanvas()
-        self.section_canvas.setMaximumWidth(300)   # menší obrázek průřezu
         top.addWidget(self.section_canvas, 2)
         self.results_panel = ResultsPanel()
-        top.addWidget(self.results_panel, 3)        # víc místa pro tabulku
+        top.addWidget(self.results_panel, 3)
         sv.addLayout(top, 3)
         self.stress_canvas = StressCanvas()
-        sv.addWidget(self.stress_canvas, 2)         # grafy o něco menší
-        self.tabs.addTab(stress_tab, tr("Průřez a napjatost"))
+        sv.addWidget(self.stress_canvas, 2)
+        self.center_tabs.addTab(stress_tab, tr("Průřez a napjatost"))
+        splitter.addWidget(self.center_tabs)
 
-        # tab výsledky (souhrnný protokol) + ovládání velikosti fontu
+        # ── PRAVÝ panel: karty Výsledky / Posouzení / Report ──
+        self.right_tabs = QTabWidget()
+
         from PySide6.QtWidgets import QTextEdit
         results_tab = QWidget()
         rtv = QVBoxLayout(results_tab)
@@ -183,21 +192,19 @@ class MainWindow(QMainWindow):
         self.results_text.setReadOnly(True)
         self._apply_results_font()
         rtv.addWidget(self.results_text, 1)
-        self.tabs.addTab(results_tab, tr("Výsledky"))
+        self.right_tabs.addTab(results_tab, tr("Výsledky"))
 
-        # tab posouzení
         margin_tab = QWidget()
         mv = QVBoxLayout(margin_tab)
         self.margin_canvas = MarginCanvas()
         mv.addWidget(self.margin_canvas)
-        self.tabs.addTab(margin_tab, tr("Posouzení (RF)"))
+        self.right_tabs.addTab(margin_tab, tr("Posouzení (RF)"))
 
-        # tab report – hodnoty ve zvoleném řezu x
         self.report_panel = ReportPanel()
-        self.tabs.addTab(self.report_panel, tr("Report"))
+        self.right_tabs.addTab(self.report_panel, tr("Report"))
 
-        splitter.addWidget(self.tabs)
-        splitter.setSizes([400, 600, 500])
+        splitter.addWidget(self.right_tabs)
+        splitter.setSizes([320, 720, 460])
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
@@ -326,7 +333,8 @@ class MainWindow(QMainWindow):
         txt = QLabel(
             f"<h3>BEAMER&nbsp;&nbsp;v{__version__}</h3>"
             f"<p>{desc}</p>"
-            f"<p>© mrSpringpeace</p>")
+            f"<p><a href='https://github.com/mrSpringpeace/BEAMER'>"
+            f"github.com/mrSpringpeace/BEAMER</a></p>")
         txt.setOpenExternalLinks(True)
         txt.setWordWrap(True)
         top.addWidget(txt, 1)
@@ -414,13 +422,16 @@ class MainWindow(QMainWindow):
         name = self._active_combo_name()
         n = len(getattr(self.state, "load_combinations", []) or [])
         if name:
-            self.combo_lbl.setText("▶ " + name)
-            self.combo_lbl.setToolTip(tr("Zobrazená kombinace"))
+            txt, tip = "▶ " + name, tr("Zobrazená kombinace")
         elif n:
-            self.combo_lbl.setText(tr("▶ (žádná kombinace)"))
-            self.combo_lbl.setToolTip(tr("Vyber kombinaci v Load Cases → Zobrazit vybranou"))
+            txt, tip = tr("▶ (žádná kombinace)"), tr("Vyber kombinaci v Load Cases → Zobrazit vybranou")
         else:
-            self.combo_lbl.setText("")
+            txt, tip = "", ""
+        self.combo_lbl.setText(txt)
+        self.combo_lbl.setToolTip(tip)
+        if hasattr(self, "sec_combo_lbl"):     # stejný indikátor i na kartě Průřez
+            self.sec_combo_lbl.setText(txt)
+            self.sec_combo_lbl.setToolTip(tip)
 
     def _on_rf_basis(self, _):
         """Změna řídicí báze RF (min / Re / Rm) – jen přepočet posouzení
@@ -457,10 +468,11 @@ class MainWindow(QMainWindow):
         self.compute_btn.setText(tr("▶  Spočítat  (F5)"))
         self.vvu_combined_cb.setText(tr("VVÚ v jednom grafu"))
         self.vvu_deform_cb.setText(tr("Zobrazit průhyb a pootočení"))
-        self.tabs.setTabText(0, tr("Průřez a napjatost"))
-        self.tabs.setTabText(1, tr("Výsledky"))
-        self.tabs.setTabText(2, tr("Posouzení (RF)"))
-        self.tabs.setTabText(3, tr("Report"))
+        self.center_tabs.setTabText(0, tr("VVÚ"))
+        self.center_tabs.setTabText(1, tr("Průřez a napjatost"))
+        self.right_tabs.setTabText(0, tr("Výsledky"))
+        self.right_tabs.setTabText(1, tr("Posouzení (RF)"))
+        self.right_tabs.setTabText(2, tr("Report"))
         self.input_panel.reload_from_state()
         self._sec_sig = None
         self._live_update_section()
@@ -665,7 +677,7 @@ class MainWindow(QMainWindow):
                             pcrit = min(self.result.points, key=lambda p: abs(p.x - xq))
                             mat = material_for_segment(self.state, sg)
                             assess = _assess(sec_forced, mat, self.state,
-                                             pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+                                             pcrit.N, pcrit.V, pcrit.M, pcrit.Mk, seg=sg)
                             self.section_canvas.plot(sec_forced)
                             self.stress_canvas.plot(sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
                             self.results_panel.set_section(sec_forced, title, assess)
@@ -687,9 +699,11 @@ class MainWindow(QMainWindow):
             assess = None
             try:
                 from ..analysis import _assess
+                from ..sections_along import segment_at
                 mat = resolver.material_at(pcrit.x)
                 assess = _assess(sec_crit, mat, self.state,
-                                 pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+                                 pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
+                                 seg=segment_at(self.state, pcrit.x))
             except Exception:
                 pass
             self.section_canvas.plot(sec_crit)

@@ -85,6 +85,17 @@ def _resolve_secref(state, ref_id, embedded):
     return lib if lib is not None else embedded
 
 
+def _with_rotation(sdef, deg):
+    """Vrátí definici průřezu s přidaným natočením `deg` [°] (kopie, nemutuje
+    sdílený knihovní průřez). Nulová rotace → beze změny."""
+    if sdef is None or not deg:
+        return sdef
+    import copy
+    d = copy.copy(sdef)     # mělká kopie: mění se jen skalární rotation
+    d.rotation = (getattr(sdef, "rotation", 0.0) or 0.0) + float(deg)
+    return d
+
+
 def eff_defs(state, seg):
     """Efektivní (sec1, sec2) úseku – z PID (property_id), jinak inline.
     Oba zdroje mohou odkazovat do knihovny průřezů (sec1_id/sec2_id) – odkaz má
@@ -93,9 +104,15 @@ def eff_defs(state, seg):
     if pid:
         p = property_by_id(state, pid)
         if p is not None:
+            rot = getattr(p, "rotation", 0.0) or 0.0     # natočení celého PID
+            if getattr(p, "composite_parts", None):      # složený PID (z profilů)
+                from .composite import composite_def
+                cdef = composite_def(state, p)
+                if cdef is not None:
+                    return _with_rotation(cdef, rot), None
             s1 = _resolve_secref(state, getattr(p, "sec1_id", None), p.sec1)
             s2 = _resolve_secref(state, getattr(p, "sec2_id", None), p.sec2)
-            return s1, s2
+            return _with_rotation(s1, rot), _with_rotation(s2, rot)
     s1 = _resolve_secref(state, getattr(seg, "sec1_id", None), seg.sec1)
     s2 = _resolve_secref(state, getattr(seg, "sec2_id", None), seg.sec2)
     return s1, s2
@@ -149,6 +166,32 @@ class SectionResolver:
     def __init__(self, state):
         self.state = state
         self._cache = {}
+        self._wcache = {}
+
+    def weighted_at(self, x: float):
+        """CompositeProps (modulem vážené EA/EIy/NA) pro složený PID z RŮZNÝCH
+        materiálů v poloze x, jinak None (jednomateriál → solver použije E·geometrii)."""
+        seg = segment_at(self.state, x)
+        pid = getattr(seg, "property_id", None)
+        if not pid:
+            return None
+        p = property_by_id(self.state, pid)
+        if p is None or not getattr(p, "composite_parts", None):
+            return None
+        key = id(p)
+        if key not in self._wcache:
+            from .composite import composite_weighted
+            w = composite_weighted(self.state, p)
+            if w and w.multi_material:
+                try:                       # B2: variabilní-G torzní tuhost
+                    from .composite_fem import composite_torsion_GJ
+                    w.GJ = composite_torsion_GJ(self.state, p)
+                except Exception:
+                    w.GJ = None
+                self._wcache[key] = w
+            else:
+                self._wcache[key] = None
+        return self._wcache[key]
 
     def at(self, x: float) -> CrossSection:
         seg = segment_at(self.state, x)

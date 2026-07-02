@@ -591,34 +591,75 @@ class InputPanel(QWidget):
         box = CollapsibleBox(f"PID {p.pid}: {p.name or '—'}",
                              expanded=(len(self.state.properties) <= 2))
         cl = box.content_layout
-        f = QFormLayout()
-        cl.addLayout(f)
+        fn = QFormLayout()
+        cl.addLayout(fn)
         nm = QLineEdit(p.name)
         nm.setPlaceholderText(tr("název vlastnosti"))
         nm.textChanged.connect(lambda s, pp=p, b=box: (setattr(pp, "name", s),
                                b.setTitle(f"PID {pp.pid}: {pp.name or '—'}"),
                                self._refresh_parts(), self._emit()))
-        f.addRow(tr("Název:"), nm)
-        mcb = QComboBox()
-        for m in self.state.materials:
-            mcb.addItem(m.name, m.id)
-        mcb.setCurrentIndex(max(0, mcb.findData(p.material_id)))
-        mcb.currentIndexChanged.connect(
-            lambda _, pp=p, c=mcb: (setattr(pp, "material_id", c.currentData()),
-                                    self._emit()))
-        f.addRow(tr("Materiál:"), mcb)
-        f.addRow(tr("Průřez:"), self._section_picker(p, "sec1", self._refresh_properties))
-        taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
-        taper.setChecked(p.tapered)
-        taper.toggled.connect(lambda on, pp=p: self._toggle_prop_taper(pp, on))
-        cl.addWidget(taper)
-        if p.tapered:
-            cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
-            cl.addWidget(self._section_picker(p, "sec2", self._refresh_properties))
+        fn.addRow(tr("Název:"), nm)
+        rot = _spin(getattr(p, "rotation", 0.0), -360, 360, 5, 1, " °")
+        rot.valueChanged.connect(lambda v, pp=p: (setattr(pp, "rotation", v),
+                                                  self._refresh_parts(), self._emit()))
+        fn.addRow(tr("Natočení:"), rot)
+
+        comp_cb = QCheckBox(tr("Složené z profilů (skladba)"))
+        comp_cb.setChecked(p.is_composite)
+        comp_cb.toggled.connect(lambda on, pp=p: self._toggle_prop_composite(pp, on))
+        cl.addWidget(comp_cb)
+
+        if p.is_composite:
+            n = len(p.composite_parts or [])
+            info = QLabel(tr("Skladba: %d profil(ů) z knihovny. Materiál a polohu "
+                             "zadáš v okně skladby.") % n)
+            info.setObjectName("hint"); info.setWordWrap(True)
+            cl.addWidget(info)
+            eb = QPushButton(tr("Upravit skladbu…"))
+            eb.clicked.connect(lambda _, pp=p: self._edit_composite(pp))
+            cl.addWidget(eb)
+        else:
+            f = QFormLayout()
+            cl.addLayout(f)
+            mcb = QComboBox()
+            for m in self.state.materials:
+                mcb.addItem(m.name, m.id)
+            mcb.setCurrentIndex(max(0, mcb.findData(p.material_id)))
+            mcb.currentIndexChanged.connect(
+                lambda _, pp=p, c=mcb: (setattr(pp, "material_id", c.currentData()),
+                                        self._emit()))
+            f.addRow(tr("Materiál:"), mcb)
+            f.addRow(tr("Průřez:"), self._section_picker(p, "sec1", self._refresh_properties))
+            taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
+            taper.setChecked(p.tapered)
+            taper.toggled.connect(lambda on, pp=p: self._toggle_prop_taper(pp, on))
+            cl.addWidget(taper)
+            if p.tapered:
+                cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
+                cl.addWidget(self._section_picker(p, "sec2", self._refresh_properties))
+
         db = QPushButton(tr("Smazat PID"))
         db.clicked.connect(lambda _, pp=p: self._del_property(pp))
         cl.addWidget(db)
         return box
+
+    def _toggle_prop_composite(self, p, on):
+        p.composite_parts = [] if on else None
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+        if on:
+            # rovnou otevři okno skladby (odloženě – ať doběhne přestavba boxů)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._edit_composite(p))
+
+    def _edit_composite(self, p):
+        from .composite_dialog import CompositeEditorDialog
+        dlg = CompositeEditorDialog(self.state, p, self)
+        dlg.exec()
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
 
     def _add_property(self):
         import copy as _c
@@ -1343,7 +1384,19 @@ class ResultsPanel(QWidget):
             title = tr("— Průřez —")
         # posouzení vybraného řezu
         prows = []
-        if assess is not None:
+        if assess is not None and assess.get("materials"):
+            # složený PID z různých materiálů → napětí a RF per materiál
+            # (σ modulem vážené + τ z variabilní-G torze → von Mises)
+            prows.append((tr("Složený průřez – napětí per materiál (σ, τ, σ_red):"), ""))
+            for m in assess["materials"]:
+                prows.append((f"  {m['material']}: σ / τ / σ_red [MPa]",
+                              f"{fmt(m.get('sigma_max', 0))} / {fmt(m.get('tau_max', 0))}"
+                              f" / {fmt(m.get('mises_max', m.get('sigma_max', 0)))}"))
+                prows.append((f"  {m['material']}: RF_yield / RF_ult",
+                              f"{fmt(m.get('RF_yield', 0))} / {fmt(m.get('RF_ultimate', 0))}"))
+            prows.append(("RF (řídicí = min přes materiály)",
+                          f"{fmt(assess.get('RF', 0))} ({assess.get('critical', '')})"))
+        elif assess is not None:
             z_sg = assess.get("sigma_z")
             z_tu = assess.get("tau_z")
             sig_lbl = "σ (normál.) [MPa]"
@@ -1611,6 +1664,14 @@ class ReportPanel(QWidget):
                 ("RF_yield / RF_ult", f"{fmt(d['RF_yield'])} / {fmt(d['RF_ultimate'])}"),
                 ("RF", f"{fmt(d['RF'])}  ({d['critical']})"),
             ]
+            if d.get("materials"):        # složený PID → rozpad per materiál
+                rows.append((tr("  — per materiál (σ / τ / σ_red) —"), ""))
+                for mm in d["materials"]:
+                    rows.append((f"  {mm['material']} [MPa]",
+                                 f"{fmt(mm.get('sigma_max', 0))} / {fmt(mm.get('tau_max', 0))}"
+                                 f" / {fmt(mm.get('mises_max', mm.get('sigma_max', 0)))}"))
+                    rows.append((f"  {mm['material']}: RF_y / RF_u",
+                                 f"{fmt(mm.get('RF_yield', 0))} / {fmt(mm.get('RF_ultimate', 0))}"))
         self.table.setRowCount(0)
         for name, val in rows:
             r = self.table.rowCount()

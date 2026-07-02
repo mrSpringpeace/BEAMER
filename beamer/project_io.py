@@ -46,6 +46,7 @@ def _csdef(d):
             Body(
                 points=list(b.get("points") or []),
                 holes=list(b.get("holes") or []),
+                material_id=b.get("material_id"),
             )
             for b in bodies_raw
         ]
@@ -60,6 +61,7 @@ def _csdef(d):
         shapes=d.get("shapes"),
         id=d.get("id"),
         name=d.get("name", ""),
+        rotation=d.get("rotation", 0.0),
     )
 
 
@@ -92,6 +94,8 @@ def dict_to_state(d: dict) -> ProjectState:
                 material_id=p.get("material_id"),
                 sec1=_csdef(p.get("sec1")), sec2=_csdef(p.get("sec2")),
                 sec1_id=p.get("sec1_id"), sec2_id=p.get("sec2_id"),
+                composite_parts=p.get("composite_parts"),
+                rotation=p.get("rotation", 0.0),
             ) for p in d.get("properties", [])
         ],
         additional_factor=d.get("additional_factor",

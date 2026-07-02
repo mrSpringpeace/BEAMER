@@ -98,6 +98,7 @@ class Body:
     """
     points: list = field(default_factory=list)   # vnější obrys: [{"y":..,"z":..}, ...]
     holes: list = field(default_factory=list)    # díry: [[{"y":..,"z":..}, ...], ...]
+    material_id: Optional[str] = None            # per-těleso materiál (složený PID); None = materiál úseku
 
 
 @dataclass
@@ -112,6 +113,7 @@ class CrossSectionDef:
     shapes: Optional[list] = None                      # konstrukční tvar: list[dict] primitiv + bool. operací
     id: Optional[str] = None                           # identita v knihovně průřezů (None = zapečený inline)
     name: str = ""                                     # název v knihovně
+    rotation: float = 0.0                              # natočení průřezu [°] (kolem těžiště)
 
 
 @dataclass
@@ -155,10 +157,18 @@ class Property:
     sec2: Optional[CrossSectionDef] = None
     sec1_id: Optional[str] = None       # odkaz na průřez v knihovně; None = zapečený sec1
     sec2_id: Optional[str] = None       # odkaz na 2. průřez (náběh); None = zapečený sec2
+    composite_parts: Optional[list] = None  # složený PID: [{section_id, material_id, dy, dz, angle}, …]
+    rotation: float = 0.0                    # natočení celého průřezu PID [°]
 
     @property
     def tapered(self) -> bool:
         return self.sec2 is not None
+
+    @property
+    def is_composite(self) -> bool:
+        # režim „složené" je zapnutý i s prázdným seznamem (0 profilů) – rozlišuj
+        # None (vypnuto) od [] (zapnuto, zatím bez profilů)
+        return self.composite_parts is not None
 
 
 @dataclass

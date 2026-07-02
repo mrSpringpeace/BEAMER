@@ -16,7 +16,7 @@ _CONFIG_PATH = os.path.join(_CONFIG_DIR, "settings.json")
 
 @dataclass
 class Settings:
-    language: str = "en"            # "cs" | "en"
+    language: str = "cs"            # "cs" | "en"
     number_format: str = "fixed"    # "fixed" | "scientific"
     decimals: int = 2               # počet desetinných míst
     vvu_combined: bool = False      # VVÚ v jednom grafu
