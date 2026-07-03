@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from ..i18n import tr
 from ..model import Body
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 
 GRID = 5.0      # snap mřížka [mm]
 HIT_PX = 10     # poloměr uchopení bodu [px]
@@ -293,7 +293,7 @@ class PolygonEditor(QWidget):
         # ── horní lišta: výběr cíle + manipulační tlačítka ──
         bar = QHBoxLayout()
         bar.addWidget(QLabel(tr("Editovat:")))
-        self.combo = QComboBox()
+        self.combo = NoWheelComboBox()
         self.combo.currentIndexChanged.connect(self._on_combo)
         bar.addWidget(self.combo, 1)
         b_add_body = QPushButton(tr("+ Tělo"))

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 
 from ..settings import SETTINGS
 from ..i18n import tr
-from .spin import NoWheelSpinBox
+from .spin import NoWheelSpinBox, NoWheelComboBox
 
 
 class SettingsDialog(QDialog):
@@ -26,14 +26,14 @@ class SettingsDialog(QDialog):
         g = QGroupBox()
         f = QFormLayout(g)
 
-        self.lang_cb = QComboBox()
+        self.lang_cb = NoWheelComboBox()
         self.lang_cb.addItem("Čeština", "cs")
         self.lang_cb.addItem("English", "en")
         self.lang_cb.setCurrentIndex(self.lang_cb.findData(SETTINGS.language))
         self.lang_cb.currentIndexChanged.connect(self._on_language)
         f.addRow(tr("Jazyk / Language"), self.lang_cb)
 
-        self.theme_cb = QComboBox()
+        self.theme_cb = NoWheelComboBox()
         self.theme_cb.addItem(tr("Podle systému"), "system")
         self.theme_cb.addItem(tr("Světlý"), "light")
         self.theme_cb.addItem(tr("Tmavý"), "dark")
@@ -41,7 +41,7 @@ class SettingsDialog(QDialog):
         self.theme_cb.currentIndexChanged.connect(self._on_theme)
         f.addRow(tr("Vzhled"), self.theme_cb)
 
-        self.fmt_cb = QComboBox()
+        self.fmt_cb = NoWheelComboBox()
         self.fmt_cb.addItem(tr("Fixed (pevný)"), "fixed")
         self.fmt_cb.addItem(tr("Scientific (vědecký)"), "scientific")
         self.fmt_cb.setCurrentIndex(self.fmt_cb.findData(SETTINGS.number_format))

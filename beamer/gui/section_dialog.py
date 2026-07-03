@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from ..section import build_section
 from ..i18n import tr
 from ..settings import fmt
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 from .plots import SectionCanvas
 
 
@@ -47,7 +47,7 @@ class SectionEditorDialog(QDialog):
         left.setContentsMargins(0, 0, 0, 0)
         g = QGroupBox(tr("Typ a rozměry"))
         gv = QVBoxLayout(g)
-        self.cb = QComboBox()
+        self.cb = NoWheelComboBox()
         for key, label in self._LABELS.items():
             self.cb.addItem(tr(label), key)
         # importy jsou na úrovni výběru typu (ne tlačítko v každém typu)
@@ -231,7 +231,9 @@ class SectionEditorDialog(QDialog):
         else:
             self.fem_btn.setEnabled(False)
             self.fem_lbl.setText("")
-        self.canvas.plot(sec)
+        # editor construction/polygon: náhled v zadávané soustavě (počátek 0,0 =
+        # osový kříž tam, kam míří zadané y,z; těžiště vyznačeno zvlášť)
+        self.canvas.plot(sec, raw_frame=self.sdef.type in ("construction", "polygon"))
         femtag = " (FEM)" if getattr(sec, "fem_used", False) else ""
         sc = tr("střed smyku")
         nb = len(sec.bodies_c) if getattr(sec, "bodies_c", None) else 1

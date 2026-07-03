@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..i18n import tr
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 
 _OPS = [("add", "＋ sjednocení"), ("sub", "－ rozdíl"), ("int", "∩ průnik")]
 _KINDS = [("rect", "Obdélník"), ("circle", "Kruh")]
@@ -38,8 +38,9 @@ class ShapesEditor(QWidget):
 
         info = QLabel(tr("Tvary se skládají shora dolů. První tvar přidává, "
                          "další upravují (sjednocení/rozdíl/průnik). Poloha y,z je "
-                         "RELATIVNÍ mezi tvary [mm]; výsledek se v náhledu vztáhne "
-                         "k těžišti (posun jediného tvaru proto obrázek nezmění)."))
+                         "poloha středu tvaru [mm] v soustavě náhledu: počátek "
+                         "(0,0) je osový kříž, těžiště výsledku je vyznačeno "
+                         "zvlášť (červený křížek). U obdélníku je navíc úhel."))
         info.setWordWrap(True)
         info.setObjectName("hint")
         lay.addWidget(info)
@@ -120,7 +121,7 @@ class ShapesEditor(QWidget):
             self.table.insertRow(r)
             kind = s.get("kind", "rect")
 
-            cb_kind = QComboBox()
+            cb_kind = NoWheelComboBox()
             for k, lbl in _KINDS:
                 cb_kind.addItem(tr(lbl), k)
             cb_kind.setCurrentIndex(max(0, [k for k, _ in _KINDS].index(kind)))
@@ -128,7 +129,7 @@ class ShapesEditor(QWidget):
                 lambda _, i=idx, c=cb_kind: self._set_kind(i, c.currentData()))
             self.table.setCellWidget(r, 0, cb_kind)
 
-            cb_op = QComboBox()
+            cb_op = NoWheelComboBox()
             for op, lbl in _OPS:
                 cb_op.addItem(tr(lbl), op)
             cur_op = s.get("op", "add")

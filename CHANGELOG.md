@@ -2,6 +2,31 @@
 
 Version format: **X.XX**
 
+## 1.26
+
+UI and usability:
+- **Fix: flashing small windows on project load.** `CollapsibleBox` called
+  `content.setVisible()` before `content` had a parent, so it briefly became a
+  standalone top-level window (then immediately hid) on every panel rebuild. The
+  unsaved-changes confirmation was unrelated and worked correctly.
+- **Save** (Ctrl+S) writes straight to the currently open file without a dialog;
+  **Save As…** (Ctrl+Shift+S) always shows the dialog.
+- **Demo beam** moved into the File menu (after Save As), separated by a divider.
+- **A newly added or duplicated item** (section, PID, segment, load) now appears
+  expanded in the panel.
+- **Duplicate** for section, PID, segment and load (a copy with a new id right
+  after the original, "(copy)" in the name; segment positions are recomputed).
+- **The mouse wheel no longer changes values** in dropdowns (material, PID,
+  type…). Scrolling the panel used to switch the selection by accident.
+- **Construction/polygon editor: preview in the input frame.** The origin (0,0)
+  is the axis cross where the entered y,z point; the resulting centroid is marked
+  separately. Previously the preview was centroid-centered, so an entered
+  position (e.g. a circle at 0,0) did not match the picture — it looked like a
+  bug but was only a different frame.
+- **New "Stress along the beam" tab** in the centre: the σ_red (von Mises)
+  envelope on top and, below it, the σ (normal) and τ (shear) components that
+  feed into it.
+
 ## 1.25
 
 Fixes from a deep review of the computational core (findings N1–N9):

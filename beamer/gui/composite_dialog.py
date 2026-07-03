@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..i18n import tr
 from ..settings import fmt
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 from .plots import SectionCanvas
 
 
@@ -121,14 +121,14 @@ class CompositeEditorDialog(QDialog):
         for i, part in enumerate(self.prop.composite_parts):
             r = self.table.rowCount()
             self.table.insertRow(r)
-            sc = QComboBox()
+            sc = NoWheelComboBox()
             for s in self._usable_sections():
                 sc.addItem(s.name or tr("Průřez"), s.id)
             sc.setCurrentIndex(max(0, sc.findData(part.get("section_id"))))
             sc.currentIndexChanged.connect(
                 lambda _, ii=i, c=sc: self._set(ii, "section_id", c.currentData()))
             self.table.setCellWidget(r, 0, sc)
-            mc = QComboBox()
+            mc = NoWheelComboBox()
             for m in self.state.materials:
                 mc.addItem(m.name, m.id)
             mc.setCurrentIndex(max(0, mc.findData(part.get("material_id"))))

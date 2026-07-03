@@ -36,11 +36,15 @@ class CollapsibleBox(QWidget):
         self.toggle.setArrowType(_Qt.DownArrow if expanded else _Qt.RightArrow)
         self.toggle.toggled.connect(self._on_toggle)
         v.addWidget(self.toggle)
-        self.content = QWidget()
+        # POZOR: content musí mít rodiče (self) DŘÍV, než se zavolá setVisible –
+        # jinak je to parentless widget a setVisible(True) z něj na okamžik udělá
+        # samostatné top-level okno (problikávající „malá okýnka" při každé
+        # přestavbě panelu, např. po načtení projektu).
+        self.content = QWidget(self)
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(10, 2, 2, 6)
-        self.content.setVisible(expanded)
         v.addWidget(self.content)
+        self.content.setVisible(expanded)
 
     def _on_toggle(self, on):
         self.content.setVisible(on)
@@ -59,7 +63,7 @@ from ..model import (
 )
 from ..i18n import tr
 from ..settings import fmt, SETTINGS
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 
 # parametry pro každý typ průřezu: (klíč, popisek, výchozí)
 SECTION_PARAMS = {
@@ -211,7 +215,7 @@ class InputPanel(QWidget):
         f = QFormLayout()
         box.content_layout.addLayout(f)
         # celková délka L se odvozuje z délek úseků – v menu se nezobrazuje
-        self.theory_cb = QComboBox()
+        self.theory_cb = NoWheelComboBox()
         self.theory_cb.addItem("Euler–Bernoulli", "euler-bernoulli")
         self.theory_cb.addItem("Timoshenko", "timoshenko")
         idx = self.theory_cb.findData(self.state.theory)
@@ -237,7 +241,7 @@ class InputPanel(QWidget):
         box = self._group(tr("Materiály (knihovna)"), expanded=True, persist_key="material")
         v = box.content_layout
         row = QHBoxLayout()
-        self.mat_cb = QComboBox()
+        self.mat_cb = NoWheelComboBox()
         self._reload_mat_combo()
         self.mat_cb.currentIndexChanged.connect(self._on_material)
         row.addWidget(self.mat_cb, 1)
@@ -459,6 +463,9 @@ class InputPanel(QWidget):
         edit = QPushButton(tr("Upravit…"))
         edit.clicked.connect(lambda _, sec=s: self._edit_library_section(sec))
         h.addWidget(edit)
+        dup = QPushButton(tr("Duplikovat"))
+        dup.clicked.connect(lambda _, sec=s: self._dup_library_section(sec))
+        h.addWidget(dup)
         dele = QPushButton("✕")
         dele.setMaximumWidth(28)
         dele.clicked.connect(lambda _, sec=s: self._del_library_section(sec))
@@ -472,6 +479,16 @@ class InputPanel(QWidget):
         self.state.sections.append(sec)
         self._refresh_section_library()
         self._edit_library_section(sec)      # rovnou otevři editor
+        self._emit()
+
+    def _dup_library_section(self, sec):
+        import copy as _c
+        dup = _c.deepcopy(sec)
+        dup.id = new_id("sec")
+        dup.name = (sec.name or tr("Průřez")) + " " + tr("(kopie)")
+        i = self.state.sections.index(sec)
+        self.state.sections.insert(i + 1, dup)
+        self._refresh_section_library()
         self._emit()
 
     def _edit_library_section(self, sec):
@@ -516,7 +533,7 @@ class InputPanel(QWidget):
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
-        cb = QComboBox()
+        cb = NoWheelComboBox()
         cb.addItem(tr("(vlastní – inline)"), None)
         for s in self.state.sections:
             cb.addItem(f"{s.name or tr('Průřez')} ({tr(SECTION_LABELS.get(s.type, s.type))})", s.id)
@@ -582,14 +599,27 @@ class InputPanel(QWidget):
         self.layout.addWidget(box)
         self._refresh_properties()
 
+    def _dup_del_row(self, dup_text, dup_fn, del_text, del_fn):
+        """Řádek tlačítek [Duplikovat | Smazat] pod obsahem sbalitelné položky."""
+        row = QHBoxLayout()
+        du = QPushButton(dup_text)
+        du.clicked.connect(lambda _: dup_fn())
+        row.addWidget(du)
+        de = QPushButton(del_text)
+        de.clicked.connect(lambda _: del_fn())
+        row.addWidget(de)
+        return row
+
     def _refresh_properties(self):
         self._clear_layout(self.props_layout)
         for p in self.state.properties:
             self.props_layout.addWidget(self._property_box(p))
+        self._expand_obj = None      # jednorázový příznak „rozbal novou položku"
 
     def _property_box(self, p):
         box = CollapsibleBox(f"PID {p.pid}: {p.name or '—'}",
-                             expanded=(len(self.state.properties) <= 2))
+                             expanded=(len(self.state.properties) <= 2
+                                       or p is getattr(self, "_expand_obj", None)))
         cl = box.content_layout
         fn = QFormLayout()
         cl.addLayout(fn)
@@ -621,7 +651,7 @@ class InputPanel(QWidget):
         else:
             f = QFormLayout()
             cl.addLayout(f)
-            mcb = QComboBox()
+            mcb = NoWheelComboBox()
             for m in self.state.materials:
                 mcb.addItem(m.name, m.id)
             mcb.setCurrentIndex(max(0, mcb.findData(p.material_id)))
@@ -638,9 +668,9 @@ class InputPanel(QWidget):
                 cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
                 cl.addWidget(self._section_picker(p, "sec2", self._refresh_properties))
 
-        db = QPushButton(tr("Smazat PID"))
-        db.clicked.connect(lambda _, pp=p: self._del_property(pp))
-        cl.addWidget(db)
+        cl.addLayout(self._dup_del_row(
+            tr("Duplikovat PID"), lambda: self._dup_property(p),
+            tr("Smazat PID"), lambda: self._del_property(p)))
         return box
 
     def _toggle_prop_composite(self, p, on):
@@ -666,9 +696,24 @@ class InputPanel(QWidget):
         next_pid = (max((p.pid for p in self.state.properties), default=0) + 1)
         base = self.state.section_segments[0] if self.state.section_segments else None
         sec = _c.deepcopy(base.sec1) if base else CrossSectionDef()
-        self.state.properties.append(Property(
-            new_id("prop"), next_pid, tr("Vlastnost") + f" {next_pid}",
-            material_id=self.state.selected_material_id, sec1=sec))
+        p = Property(new_id("prop"), next_pid, tr("Vlastnost") + f" {next_pid}",
+                     material_id=self.state.selected_material_id, sec1=sec)
+        self.state.properties.append(p)
+        self._expand_obj = p
+        self._refresh_properties()
+        self._refresh_parts()
+        self._emit()
+
+    def _dup_property(self, p):
+        import copy as _c
+        next_pid = (max((q.pid for q in self.state.properties), default=0) + 1)
+        dup = _c.deepcopy(p)
+        dup.id = new_id("prop")
+        dup.pid = next_pid
+        dup.name = (p.name or tr("Vlastnost")) + " " + tr("(kopie)")
+        i = self.state.properties.index(p)
+        self.state.properties.insert(i + 1, dup)
+        self._expand_obj = dup
         self._refresh_properties()
         self._refresh_parts()
         self._emit()
@@ -748,9 +793,12 @@ class InputPanel(QWidget):
             self._part_boxes.append(box)
             self.parts_layout.addWidget(box)
         self._update_len_label()
+        self._expand_obj = None
 
     def _part_box(self, i, seg):
-        box = CollapsibleBox(self._part_title(i, seg), expanded=(len(self.state.section_segments) <= 2))
+        box = CollapsibleBox(self._part_title(i, seg),
+                             expanded=(len(self.state.section_segments) <= 2
+                                       or seg is getattr(self, "_expand_obj", None)))
         cl = box.content_layout
         f = QFormLayout()
         cl.addLayout(f)
@@ -759,7 +807,7 @@ class InputPanel(QWidget):
         lsp.valueChanged.connect(lambda val, s=seg, b=box: self._set_part_length(s, val, b))
         f.addRow(tr("Délka:"), lsp)
         # PID volba: (inline) nebo některá vlastnost
-        pidcb = QComboBox()
+        pidcb = NoWheelComboBox()
         pidcb.addItem(tr("(inline – vlastní)"), None)
         for p in self.state.properties:
             pidcb.addItem(f"PID {p.pid}: {p.name}", p.id)
@@ -775,7 +823,7 @@ class InputPanel(QWidget):
             cl.addWidget(note)
         else:
             # inline materiál
-            mcb = QComboBox()
+            mcb = NoWheelComboBox()
             for m in self.state.materials:
                 mcb.addItem(m.name, m.id)
             mcb.setCurrentIndex(max(0, mcb.findData(seg.material_id)))
@@ -799,11 +847,15 @@ class InputPanel(QWidget):
             if seg.tapered:
                 cl.addWidget(QLabel(tr("Průřez B (konec náběhu):")))
                 cl.addWidget(self._section_picker(seg, "sec2", self._refresh_parts))
-        # smazat úsek
+        # duplikovat / smazat úsek
         if len(self.state.section_segments) > 1:
-            db = QPushButton(tr("Smazat úsek"))
-            db.clicked.connect(lambda _, s=seg: self._del_part(s))
-            cl.addWidget(db)
+            cl.addLayout(self._dup_del_row(
+                tr("Duplikovat úsek"), lambda: self._dup_part(seg),
+                tr("Smazat úsek"), lambda: self._del_part(seg)))
+        else:
+            du = QPushButton(tr("Duplikovat úsek"))
+            du.clicked.connect(lambda _, s=seg: self._dup_part(s))
+            cl.addWidget(du)
         return box
 
     def _set_part_length(self, seg, new_len, box):
@@ -840,9 +892,30 @@ class InputPanel(QWidget):
         sec = _c.deepcopy(base.sec1) if base else _c.deepcopy(self.state.cross_section)
         mid = base.material_id if base else self.state.selected_material_id
         x1 = parts[-1].x2 if parts else 0.0
-        parts.append(SectionSegment(x1, x1 + 1000.0, sec, None, material_id=mid))
+        new_seg = SectionSegment(x1, x1 + 1000.0, sec, None, material_id=mid)
+        parts.append(new_seg)
         # přepočet celkové délky
         self.state.length = parts[-1].x2
+        self._expand_obj = new_seg
+        self._refresh_parts()
+        self._emit()
+
+    def _dup_part(self, seg):
+        import copy as _c
+        parts = self.state.section_segments
+        dup = _c.deepcopy(seg)
+        i = parts.index(seg)
+        parts.insert(i + 1, dup)
+        # přepočet x1/x2 celého řetězce – délky zachytit PŘED mutací (length je
+        # property x2−x1, čtení po přepsání x1 by dalo špatnou hodnotu)
+        lengths = [p.length for p in parts]
+        x = 0.0
+        for p, Lp in zip(parts, lengths):
+            p.x1 = x
+            p.x2 = x + Lp
+            x += Lp
+        self.state.length = x
+        self._expand_obj = dup
         self._refresh_parts()
         self._emit()
 
@@ -1011,7 +1084,7 @@ class InputPanel(QWidget):
             xsp = _spin(sup.x, 0, 1e6, 50, 1)
             xsp.valueChanged.connect(lambda val, s=sup: (setattr(s, "x", val), self._emit()))
             self.sup_table.setCellWidget(r, 1, xsp)
-            cb = QComboBox()
+            cb = NoWheelComboBox()
             for tp, lbl in [("pin", "kloub"), ("roller", "rolna"), ("fixed", "vetknutí")]:
                 cb.addItem(tr(lbl), tp)
             cb.setCurrentIndex(cb.findData(sup.type))
@@ -1162,6 +1235,7 @@ class InputPanel(QWidget):
         lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         for ld in self.state.loads:
             self.loads_layout.addWidget(self._load_row(ld))
+        self._expand_obj = None
 
     def _load_title(self, ld):
         labels = {"point_force": "Bodová síla", "distributed": "Spojité",
@@ -1180,7 +1254,8 @@ class InputPanel(QWidget):
 
     def _load_row(self, ld):
         n = len(self.state.loads)
-        box = CollapsibleBox(self._load_title(ld), expanded=(n <= 3))
+        box = CollapsibleBox(self._load_title(ld),
+                             expanded=(n <= 3 or ld is getattr(self, "_expand_obj", None)))
         cl = box.content_layout
         f = QFormLayout()
         cl.addLayout(f)
@@ -1193,7 +1268,7 @@ class InputPanel(QWidget):
 
         # zatěžovací stav (LC) – kvůli kombinacím v Load Case Builderu
         if len(self.state.load_cases) > 1:
-            lccb = QComboBox()
+            lccb = NoWheelComboBox()
             for lc in self.state.load_cases:
                 lccb.addItem(lc.name, lc.id)
             lccb.setCurrentIndex(max(0, lccb.findData(ld.load_case_id)))
@@ -1227,9 +1302,9 @@ class InputPanel(QWidget):
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow("Mx:", bind("Mx", " N·mm"))
 
-        db = QPushButton(tr("Smazat zatížení"))
-        db.clicked.connect(lambda _, l=ld: self._del_load(l))
-        cl.addWidget(db)
+        cl.addLayout(self._dup_del_row(
+            tr("Duplikovat zatížení"), lambda: self._dup_load(ld),
+            tr("Smazat zatížení"), lambda: self._del_load(ld)))
         return box
 
     def _add_load(self, tp):
@@ -1249,6 +1324,18 @@ class InputPanel(QWidget):
             ld.x = self.state.length/2
             ld.Mx = 1e5
         self.state.loads.append(ld)
+        self._expand_obj = ld
+        self._refresh_loads()
+        self._emit()
+
+    def _dup_load(self, ld):
+        import copy as _c
+        dup = _c.deepcopy(ld)
+        dup.id = new_id("load")
+        dup.name = (ld.name + " " + tr("(kopie)")) if ld.name else tr("(kopie)")
+        i = self.state.loads.index(ld)
+        self.state.loads.insert(i + 1, dup)
+        self._expand_obj = dup
         self._refresh_loads()
         self._emit()
 
@@ -1291,7 +1378,7 @@ class InputPanel(QWidget):
         self.plast_cb.setChecked(self.state.plasticity_enabled)
         self.plast_cb.toggled.connect(self._on_plast_toggle)
         f.addRow(self.plast_cb)
-        self.plast_method_cb = QComboBox()
+        self.plast_method_cb = NoWheelComboBox()
         self.plast_method_cb.addItem(tr("analyticky (W_pl/W_el)"), "analytic")
         self.plast_method_cb.addItem(tr("tabulkově (známé profily)"), "tabular")
         self.plast_method_cb.setCurrentIndex(
@@ -1517,7 +1604,7 @@ class ReportPanel(QWidget):
         # ── volba souřadnice ──
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("Souřadnice x [mm]:")))
-        self.x_spin = QDoubleSpinBox()
+        self.x_spin = NoWheelDoubleSpinBox()
         self.x_spin.setDecimals(1)
         self.x_spin.setRange(0.0, 1e9)
         self.x_spin.setSingleStep(10.0)

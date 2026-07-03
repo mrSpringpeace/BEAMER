@@ -17,7 +17,7 @@ from ..i18n import tr
 from ..settings import fmt
 from ..model import Load
 from ..loadgen import generate_q, make_loads
-from .spin import NoWheelDoubleSpinBox
+from .spin import NoWheelDoubleSpinBox, NoWheelComboBox
 from .plots import MplCanvas
 
 _KINDS = [
@@ -55,7 +55,7 @@ class LoadGenDialog(QDialog):
         g = QGroupBox(tr("Zadání"))
         f = QFormLayout(g)
 
-        self.src_cb = QComboBox()
+        self.src_cb = NoWheelComboBox()
         self.src_cb.addItem(tr("(ruční zadání)"), None)
         for ld in self.state.loads:
             if ld.type == "point_force":
@@ -74,13 +74,13 @@ class LoadGenDialog(QDialog):
         f.addRow(tr("Konec úseku b:"), self.b)
         f.addRow(tr("Poloha síly x_F:"), self.xf)
 
-        self.kind = QComboBox()
+        self.kind = NoWheelComboBox()
         for k, lbl in _KINDS:
             self.kind.addItem(tr(lbl), k)
         self.kind.currentIndexChanged.connect(self._update)
         f.addRow(tr("Typ rozložení:"), self.kind)
 
-        self.lc = QComboBox()
+        self.lc = NoWheelComboBox()
         for c in self.state.load_cases:
             self.lc.addItem(c.name, c.id)
         f.addRow(tr("Cílový stav (LC):"), self.lc)

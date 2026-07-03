@@ -15,8 +15,10 @@ from .. import project_io
 from ..i18n import tr
 from ..settings import SETTINGS
 from .widgets import InputPanel, ResultsPanel, ReportPanel
-from .plots import BeamDiagramCanvas, SchemaCanvas, SectionCanvas, StressCanvas, MarginCanvas
+from .plots import (BeamDiagramCanvas, SchemaCanvas, SectionCanvas, StressCanvas,
+                    MarginCanvas, StressAlongCanvas)
 from .worker import ComputeWorker
+from .spin import NoWheelComboBox
 
 
 class MainWindow(QMainWindow):
@@ -81,7 +83,7 @@ class MainWindow(QMainWindow):
         self.vvu_deform_cb.toggled.connect(self._on_vvu_deform)
         bar.addWidget(self.vvu_deform_cb)
         bar.addWidget(QLabel(tr("RF k:")))
-        self.rf_basis_cb = QComboBox()
+        self.rf_basis_cb = NoWheelComboBox()
         self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
         self.rf_basis_cb.addItem("Re", "yield")
         self.rf_basis_cb.addItem("Rm", "ultimate")
@@ -90,7 +92,7 @@ class MainWindow(QMainWindow):
         self.rf_basis_cb.currentIndexChanged.connect(self._on_rf_basis)
         bar.addWidget(self.rf_basis_cb)
         bar.addWidget(QLabel(tr("σ_red:")))
-        self.sigred_cb = QComboBox()
+        self.sigred_cb = NoWheelComboBox()
         self.sigred_cb.addItem(tr("přesné max"), "exact")
         self.sigred_cb.addItem(tr("konzervativní (σ⊕τ)"), "combined")
         self.sigred_cb.setToolTip(tr(
@@ -149,12 +151,25 @@ class MainWindow(QMainWindow):
         vvu_l.addWidget(center)
         self.center_tabs.addTab(vvu_tab, tr("VVÚ"))
 
+        # karta Napětí podél nosníku (obálka σ_red + složky σ, τ)
+        stressx_tab = QWidget()
+        sx_l = QVBoxLayout(stressx_tab)
+        sx_l.setContentsMargins(0, 0, 0, 0)
+        self.stress_along_canvas = StressAlongCanvas()
+        sx_scroll = QScrollArea()
+        sx_scroll.setWidgetResizable(True)
+        sx_scroll.setWidget(self.stress_along_canvas)
+        sx_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
+                                "{ background:#ffffff; }")
+        sx_l.addWidget(sx_scroll)
+        self.center_tabs.addTab(stressx_tab, tr("Napětí podél nosníku"))
+
         # karta Průřez a napjatost (přesunuta z pravého panelu – víc prostoru)
         stress_tab = QWidget()
         sv = QVBoxLayout(stress_tab)
         psel = QHBoxLayout()
         psel.addWidget(QLabel(tr("Úsek:")))
-        self.part_sel = QComboBox()
+        self.part_sel = NoWheelComboBox()
         self.part_sel.currentIndexChanged.connect(self._on_part_selected)
         psel.addWidget(self.part_sel, 1)
         self.sec_combo_lbl = QLabel("")           # indikátor kombinace i na kartě Průřez
@@ -222,6 +237,11 @@ class MainWindow(QMainWindow):
         self._recent_menu.setToolTipsVisible(True)
         self._a_save = QAction(self); self._a_save.setShortcut(QKeySequence.Save)
         self._a_save.triggered.connect(self.save_project); m.addAction(self._a_save)
+        self._a_saveas = QAction(self)
+        self._a_saveas.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._a_saveas.triggered.connect(self.save_project_as); m.addAction(self._a_saveas)
+        m.addSeparator()
+        self._a_demo = QAction(self); self._a_demo.triggered.connect(self.load_demo); m.addAction(self._a_demo)
         m.addSeparator()
         self._a_nos = QAction(self); self._a_nos.triggered.connect(self.import_nos); m.addAction(self._a_nos)
         m.addSeparator()
@@ -231,7 +251,6 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._a_quit = QAction(self); self._a_quit.triggered.connect(self.close); m.addAction(self._a_quit)
 
-        self._a_demo = QAction(self); self._a_demo.triggered.connect(self.load_demo); mb.addAction(self._a_demo)
         self._a_set = QAction(self); self._a_set.triggered.connect(self.open_settings); mb.addAction(self._a_set)
         self._a_about = QAction(self); self._a_about.triggered.connect(self.open_about); mb.addAction(self._a_about)
         self._retranslate_menu()
@@ -241,7 +260,8 @@ class MainWindow(QMainWindow):
         self._a_new.setText(tr("Nový"))
         self._a_open.setText(tr("Otevřít…"))
         self._recent_menu.setTitle(tr("Naposledy otevřeno"))
-        self._a_save.setText(tr("Uložit jako…"))
+        self._a_save.setText(tr("Uložit"))
+        self._a_saveas.setText(tr("Uložit jako…"))
         self._a_nos.setText(tr("Importovat Ministatik (*.nos)…"))
         self._a_exp.setText(tr("Export protokolu (TXT)…"))
         self._a_png.setText(tr("Export VVÚ (PNG)…"))
@@ -581,6 +601,7 @@ class MainWindow(QMainWindow):
         self._refresh_part_selector()
         self._render_selected_part()
         self.margin_canvas.plot(self.reserves)
+        self.stress_along_canvas.plot(self.reserves)
         self.results_panel.set_analysis(self.result, self.state, self.reserves)
         self.report_panel.set_context(self.result, self.state, self.reserves)
         self._refresh_results_text()
@@ -825,11 +846,22 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(tr("Importováno z Ministatik: ") + path)
 
     def save_project(self) -> bool:
-        """Uloží projekt. Vrací True při úspěšném uložení, jinak False
-        (zrušený dialog nebo chyba) – využívá `_confirm_discard`."""
-        path, _ = QFileDialog.getSaveFileName(self, tr("Uložit projekt"), self._start("projekt.json"), "BEAMER (*.json)")
+        """Uložit: zapíše do aktuálně otevřeného souboru bez dialogu. Když žádný
+        není (nový/demo/import), spadne na Uložit jako. Vrací True při úspěchu."""
+        path = getattr(self, "_current_file", None)
+        if not path:
+            return self.save_project_as()
+        return self._write_project(path)
+
+    def save_project_as(self) -> bool:
+        """Uložit jako: vždy zobrazí dialog výběru souboru. Vrací True při úspěchu."""
+        start = self._current_file or self._start("projekt.json")
+        path, _ = QFileDialog.getSaveFileName(self, tr("Uložit projekt"), start, "BEAMER (*.json)")
         if not path:
             return False
+        return self._write_project(path)
+
+    def _write_project(self, path) -> bool:
         self._remember(path)
         try:
             project_io.save_project(self.state, path)

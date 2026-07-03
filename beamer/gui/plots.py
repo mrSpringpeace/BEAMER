@@ -414,6 +414,58 @@ class BeamDiagramCanvas(MplCanvas):
         ax.set_title(tr("Vnitřní účinky"), fontsize=9, loc="left")
 
 
+class StressAlongCanvas(MplCanvas):
+    """Napětí podél nosníku (obálka): σ_red (redukované von Mises) nahoře a pod
+    ním složky, které do něj vstupují – σ (normálové) a τ (smykové). Hodnoty
+    jsou maximum přes průřez v každé stanici (u složeného průřezu max přes
+    materiály). Data z reserves_along_beam."""
+
+    def __init__(self):
+        super().__init__(figsize=(6, 8))
+
+    def plot(self, reserves):
+        self.fig.clear()
+        if not reserves:
+            self.fig.set_layout_engine("constrained")
+            ax = self.fig.add_subplot(111)
+            ax.text(0.5, 0.5, tr("Bez výsledku – stiskněte Spočítat"),
+                    ha="center", va="center", color="#888")
+            ax.axis("off")
+            self.draw()
+            return
+        self.fig.set_layout_engine(None)
+        x = np.array([r.x for r in reserves])
+        specs = [
+            (tr("σ_red – redukované napětí (von Mises) [MPa]"),
+             np.array([r.mises_max for r in reserves]), "#c62828"),
+            (tr("σ – normálové napětí [MPa]"),
+             np.array([r.sigma_max for r in reserves]), "#1565c0"),
+            (tr("τ – smykové napětí [MPa]"),
+             np.array([r.tau_max for r in reserves]), "#2e7d32"),
+        ]
+        self.setMinimumHeight(150 * len(specs))
+        axes = self.fig.subplots(len(specs), 1, sharex=True)
+        if len(specs) == 1:
+            axes = [axes]
+        xL = float(x[-1]) if len(x) else 1.0
+        for ax, (title, arr, color) in zip(axes, specs):
+            ax.axhline(0, color="#999", lw=0.8)
+            ax.plot(x, arr, color=color, lw=1.4)
+            ax.fill_between(x, arr, 0, color=color, alpha=0.15)
+            _annotate_extremes(ax, x, arr, color)
+            ax.set_title(title, fontsize=8, loc="left")
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=7)
+            amax = max(float(np.nanmax(arr)), 0.0)
+            span = amax or 1.0
+            ax.set_ylim(-0.05 * span, amax + 0.24 * span)   # napětí ≥ 0 (obálka)
+        axes[-1].set_xlim(-X_PAD * xL, (1 + X_PAD) * xL)
+        axes[-1].set_xlabel("x [mm]", fontsize=8)
+        self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
+                                 top=0.96, bottom=0.06, hspace=0.42)
+        self.draw()
+
+
 class SectionCanvas(MplCanvas):
     """Náhled tvaru průřezu s těžištěm, hlavními osami a středem smyku.
     Pro kompozit zobrazuje VŠECHNA tělesa s reálně vyřezanými dírami."""
@@ -464,7 +516,12 @@ class SectionCanvas(MplCanvas):
                           lw=lw, alpha=alpha)
         ax.add_patch(patch)
 
-    def plot(self, section):
+    def plot(self, section, raw_frame=False):
+        """`raw_frame=True` vykreslí geometrii v ZADÁVANÉ soustavě (počátek 0,0 =
+        osový kříž tam, kam míří zadané souřadnice), těžiště vyznačí zvlášť.
+        Vhodné pro editor (konstrukční tvar, polygon), kde jinak zadaná poloha
+        nesedí s obrázkem centrovaným na těžiště. Výchozí False = centrováno na
+        těžiště (jako dřív)."""
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         ax.set_aspect("equal")
@@ -474,20 +531,28 @@ class SectionCanvas(MplCanvas):
             self.draw()
             return
 
+        # posun geometrie zpět do zadávané soustavy (centroidální coords +
+        # těžiště v zadání); pro raw_frame=False je nulový (beze změny)
+        ox = float(getattr(section, "cx_raw", 0.0)) if raw_frame else 0.0
+        oz = float(getattr(section, "cz_raw", 0.0)) if raw_frame else 0.0
+
+        def _sh(poly):
+            return [(x + ox, y + oz) for x, y in poly]
+
         all_ys = []
         all_zs = []
 
         if getattr(section, "bodies_c", None):
             # kompozit: vykresli každé tělo jako celek s vyřezanými dírami
             for outer, holes in section.bodies_c:
-                self._add_body_patch(ax, outer, holes)
-                for q in outer:
+                self._add_body_patch(ax, _sh(outer), [_sh(h) for h in holes])
+                for q in _sh(outer):
                     all_ys.append(q[0]); all_zs.append(q[1])
                 for h in holes:
-                    for q in h:
+                    for q in _sh(h):
                         all_ys.append(q[0]); all_zs.append(q[1])
         elif section.pts:
-            pc = section._pts_c
+            pc = _sh(section._pts_c)
             self._add_body_patch(ax, pc, [])
             all_ys = [p[0] for p in pc]
             all_zs = [p[1] for p in pc]
@@ -501,15 +566,16 @@ class SectionCanvas(MplCanvas):
                 r_out = max(max(abs(yl), abs(yr))
                             for _, _, yl, yr in section._sl_circ) * 1e3
             if r_in > 1e-9:
-                patch = Annulus((0.0, 0.0), r_out, width=r_out - r_in,
+                patch = Annulus((ox, oz), r_out, width=r_out - r_in,
                                 facecolor="#b4cdeb", edgecolor="#30568f",
                                 lw=1.4, alpha=0.9)
             else:
-                patch = Circle((0.0, 0.0), r_out,
+                patch = Circle((ox, oz), r_out,
                                facecolor="#b4cdeb", edgecolor="#30568f",
                                lw=1.4, alpha=0.9)
             ax.add_patch(patch)
-            all_ys.extend([-r_out, r_out]); all_zs.extend([-r_out, r_out])
+            all_ys.extend([ox - r_out, ox + r_out])
+            all_zs.extend([oz - r_out, oz + r_out])
 
         # limity tak, aby celý kompozit byl vidět včetně rezervy
         if all_ys and all_zs:
@@ -517,15 +583,18 @@ class SectionCanvas(MplCanvas):
             ax.set_xlim(min(all_ys)-pad, max(all_ys)+pad)
             ax.set_ylim(min(all_zs)-pad, max(all_zs)+pad)
 
-        # těžiště
-        ax.plot(0, 0, "+", color="#c62828", ms=14, mew=2)
-        # osy
+        # těžiště (v zadávané soustavě posunuté na svou skutečnou polohu)
+        ax.plot(ox, oz, "+", color="#c62828", ms=14, mew=2,
+                label=tr("těžiště") if raw_frame else None)
+        # osy: v raw_frame je počátek (0,0) = zadávaný osový kříž
         ax.axhline(0, color="#3070c8", lw=0.8, alpha=0.6)
         ax.axvline(0, color="#3070c8", lw=0.8, alpha=0.6)
+        if raw_frame:
+            ax.legend(loc="best", fontsize=7, framealpha=0.7)
         # střed smyku
         if abs(section.z_SC) > 1e-6 or abs(section.y_SC) > 1e-6:
-            ax.plot(section.y_SC, section.z_SC, "x", color="#2e7d32", ms=10, mew=2,
-                    label=tr("střed smyku"))
+            ax.plot(section.y_SC + ox, section.z_SC + oz, "x", color="#2e7d32",
+                    ms=10, mew=2, label=tr("střed smyku"))
         # indikátor kompozitu (kolik těles je vyhodnoceno)
         if getattr(section, "bodies_c", None) and len(section.bodies_c) > 1:
             ax.set_title(tr("Průřez (kompozit, %d těles)") % len(section.bodies_c),

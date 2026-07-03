@@ -6,7 +6,7 @@ nadřazenému scrollu, takže panel lze rolovat).
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox, QAbstractSpinBox
+from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox, QAbstractSpinBox, QComboBox
 
 
 class NoWheelDoubleSpinBox(QDoubleSpinBox):
@@ -28,6 +28,18 @@ class NoWheelSpinBox(QSpinBox):
         self.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setKeyboardTracking(False)
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    """Rozbalovací seznam, který nereaguje na kolečko myši. Rolování panelu tak
+    nechtěně nemění vybranou hodnotu (materiál, PID, typ…) – kolečko propadne
+    nadřazenému scrollu. Výběr jen kliknutím/klávesnicí."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def wheelEvent(self, e):
         e.ignore()
