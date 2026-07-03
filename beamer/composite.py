@@ -100,6 +100,7 @@ class CompositeProps:
     Iz_eq: float
     multi_material: bool
     GJ: float = None     # (GJ)_eff torzní tuhost přes variabilní-G FEM [N·mm²]
+    GA: float = None     # Σ Gᵢ·Aᵢ – pro váženou smykovou tuhost GAs [N]
 
 
 def _material_by_id(state, mid):
@@ -145,22 +146,26 @@ def composite_weighted(state, prop):
     pbodies = _positioned_bodies(state, prop)
     if not pbodies:
         return None
-    bodies_E = [(g, float(m.E) if m else 210000.0) for g, m in pbodies]
+    bodies_E = [(g, float(m.E) if m else 210000.0,
+                 float(m.G) if m else 81000.0) for g, m in pbodies]
     EM = [0.0] * 6                       # E-vážené momenty M00,M10,M01,M20,M02,M11
+    GA = 0.0                             # Σ Gᵢ·Aᵢ (vážená smyková tuhost)
     Es = set()
-    for (outer, holes), E in bodies_E:
+    for (outer, holes), E, G in bodies_E:
         Es.add(round(E, 6))
         if outer and len(outer) >= 3:
             m = _raw_moments(outer)
             sg = 1.0 if m[0] >= 0 else -1.0
             for k in range(6):
                 EM[k] += E * sg * m[k]
+            GA += G * sg * m[0]
         for h in holes:
             if h and len(h) >= 3:
                 hm = _raw_moments(h)
                 sgh = 1.0 if hm[0] >= 0 else -1.0
                 for k in range(6):
                     EM[k] -= E * sgh * hm[k]
+                GA -= G * sgh * hm[0]
     EA = EM[0]
     if EA <= 1e-9:
         return None
@@ -168,14 +173,16 @@ def composite_weighted(state, prop):
     EIy = EM[4] - EA * z_NA**2           # Σ Eᵢ ∫z² dA k NA
     EIz = EM[3] - EA * y_NA**2
     EIyz = EM[5] - EA * y_NA * z_NA
-    E_ref = max(E for _, E in bodies_E)
+    E_ref = max(E for _, E, _g in bodies_E)
     return CompositeProps(EA, EIy, EIz, EIyz, y_NA, z_NA, E_ref,
-                          EA / E_ref, EIy / E_ref, EIz / E_ref, len(Es) > 1)
+                          EA / E_ref, EIy / E_ref, EIz / E_ref, len(Es) > 1,
+                          GA=GA)
 
 
 def composite_stress(state, prop, N, M):
     """Normálové napětí a RF PER MATERIÁL složeného PID (ohyb + osová síla, B1).
-    N [N], M [N·mm]. σ v tělese materiálu i: σ = Eᵢ·(N/EA + M·(z−z_NA)/EIy).
+    N [N], M [N·mm]. σ v tělese materiálu i: σ = Eᵢ·(N/EA − M·(z−z_NA)/EIy)
+    (znaménková konvence solveru: M kladný = sagging = tah na dolním vlákně).
     Vrátí list dict {material, E, sigma_max, RF_yield, RF_ultimate} (per materiál,
     max přes jeho tělesa), nebo None. Jen normálové – slouží jako B1 fallback,
     plný von Mises (σ+τ_t+τ_V) počítá composite_fem.composite_stress_field."""
@@ -188,7 +195,8 @@ def composite_stress(state, prop, N, M):
             continue
         zs = [z for _, z in outer]
         for z in (min(zs), max(zs)):
-            sig = mat.E * (N / w.EA + M * (z - w.z_NA) / w.EIy)
+            # M kladný = sagging → tah dole (shodně se solverem a section.stress)
+            sig = mat.E * (N / w.EA - M * (z - w.z_NA) / w.EIy)
             a = agg.setdefault(mat.id, {"material": mat.name, "E": mat.E,
                                         "Re": mat.Re, "Rm": mat.Rm, "sigma_max": 0.0})
             a["sigma_max"] = max(a["sigma_max"], abs(sig))
@@ -208,34 +216,43 @@ def section_by_id_(state, sid):
 
 def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0):
     """Posouzení složeného PID PER MATERIÁL. B2: plný von Mises přes FEM pole
-    (σ modulem vážené + τ z variabilní-G torze ve stejném bodě). Když FEM pole
-    selže, spadne zpět na B1 (jen normálové σ). Vrací dict kompatibilní s
-    _assess: sigma_max/tau_max/mises_max/RF (řídicí) + 'materials'. None, když
-    není vícemateriálový."""
+    (σ v rozích elementů + τ_t z variabilní-G torze + τ_V E-vážený Žuravskij).
+    Režim σ_red „combined" (state.sigma_red_mode) se aplikuje per materiál:
+    σ_red = √(σ_max² + 3·τ_max²) ze špiček (konzervativní, pro čepy/šrouby).
+    Když FEM pole selže, spadne zpět na B1 (jen normálové σ) a výsledek nese
+    příznak 'b1_fallback' – UI na to upozorní; pod krutem/smykem by jinak τ
+    tiše zmizelo. Vrací dict kompatibilní s _assess: sigma_max/tau_max/
+    mises_max/RF (řídicí) + 'materials'. None, když není vícemateriálový."""
     w = composite_weighted(state, prop)
     if w is None or not w.multi_material:
         return None
+    combine = getattr(state, "sigma_red_mode", "exact") == "combined"
 
     rows = None
+    fallback = False
     try:
         from .composite_fem import composite_stress_field
         field = composite_stress_field(state, prop, N, M, Mk, V)
     except Exception:
         field = None
     if field and field.get("materials"):
-        rows = []
-        for a in field["materials"].values():
-            mz = a["mises_max"]
-            a["RF_yield"] = (a["Re"] / mz) if mz > 1e-9 else float("inf")
-            a["RF_ultimate"] = (a["Rm"] / mz) if mz > 1e-9 else float("inf")
-            rows.append(a)
+        rows = list(field["materials"].values())
     if rows is None:                          # B1 fallback (jen normálové)
+        fallback = True
         rows = composite_stress(state, prop, N, M)
         for a in rows or []:
             a.setdefault("tau_max", 0.0)
             a.setdefault("mises_max", a["sigma_max"])
     if not rows:
         return None
+
+    import math
+    for a in rows:
+        if combine:                            # špičky sečtené (konzervativní)
+            a["mises_max"] = math.sqrt(a["sigma_max"]**2 + 3.0*a["tau_max"]**2)
+        mz = a["mises_max"]
+        a["RF_yield"] = (a["Re"] / mz) if mz > 1e-9 else float("inf")
+        a["RF_ultimate"] = (a["Rm"] / mz) if mz > 1e-9 else float("inf")
 
     sigma_max = max(r["sigma_max"] for r in rows)
     tau_max = max(r.get("tau_max", 0.0) for r in rows)
@@ -251,4 +268,5 @@ def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0):
         crit = "yield" if rfy <= rfu else "ultimate"
     return {"materials": rows, "sigma_max": sigma_max, "tau_max": tau_max,
             "mises_max": mises_max, "RF_yield": rfy, "RF_ultimate": rfu,
-            "RF": rf, "critical": crit, "composite": True}
+            "RF": rf, "critical": crit, "composite": True,
+            "b1_fallback": fallback, "sigma_red_combined": combine}

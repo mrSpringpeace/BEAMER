@@ -2,6 +2,40 @@
 
 Version format: **X.XX**
 
+## 1.25
+
+Fixes from a deep review of the computational core (findings N1–N9):
+
+- **N1 (serious): bending sign in composite sections.** Per-material σ used the
+  bending term with the opposite sign relative to the axial force (against the
+  solver convention "positive M = tension at the bottom fibre"). Pure bending or
+  a symmetric section leaves |σ| unchanged (which is why tests passed), but for
+  N+M on an asymmetric composite one material came out non-conservative
+  (measured up to −36 % σ, i.e. RF overestimated by ~55 %). Fixed in both the
+  B1 path and the FEM field + regression test.
+- **N3: composite σ is now evaluated at element corners** (they reach the
+  extreme fibre) instead of centroids (~2 % underestimate); τ stays at the
+  centroid (stable on the non-conforming mesh), von Mises pairs them per corner.
+  σ_max now matches the exact fibre to machine precision.
+- **N2: the composite-assessment fallback is no longer silent.** If the FEM
+  field fails, the result carries a flag and the UI shows a warning
+  ("normal σ only, τ=0") — previously shear vanished quietly under torque.
+- **N6: the "conservative σ⊕τ" reduced-stress mode now applies to composites**
+  (per material √(σ_max²+3τ_max²) from the peaks; it was ignored before).
+- **N4: the composite mesh cache detects edits of polygon/boolean library
+  profiles** (signature now covers polygon points/bodies/shapes; previously a
+  stale GJ/τ survived until restart).
+- **N7: composite shear stiffness is weighted**: GAs = ΣGᵢAᵢ·(As/A)
+  (Timoshenko; previously one material's G × geometric As).
+- **N5: the composition dialog no longer offers profiles without geometry**
+  (the "direct input" type used to be silently dropped from the assembly).
+- **N8: the per-segment critical-section table** takes material/type through
+  the PID (previously inline segment fields → wrong material name).
+- **N9: a position inside a gap between segments** maps to the nearest segment
+  (previously always the last one).
+
+63 tests.
+
 ## 1.24
 
 - Composite sections – **full per-material von Mises** (completes the composite

@@ -37,8 +37,9 @@ def interp_def(d1: CrossSectionDef, d2: CrossSectionDef, t: float) -> CrossSecti
 
 
 def normalized_segments(state) -> list:
-    """Vrátí seznam SectionSegment pokrývající [0, length].
-    Pokud je definováno více úseků, doplní mezery prizmatickými úseky."""
+    """Vrátí definované úseky seřazené podle x1; bez úseků jeden přes celý
+    nosník (state.cross_section). Mezery mezi úseky se NEvyplňují – polohu
+    v mezeře řeší segment_at (vrátí nejbližší úsek)."""
     if not state.section_segments:
         return [SectionSegment(0.0, state.length, state.cross_section, None)]
     segs = sorted(state.section_segments, key=lambda s: s.x1)
@@ -46,12 +47,19 @@ def normalized_segments(state) -> list:
 
 
 def segment_at(state, x: float) -> SectionSegment:
-    for seg in normalized_segments(state):
+    segs = normalized_segments(state)
+    for seg in segs:
         if seg.x1 - 1e-6 <= x <= seg.x2 + 1e-6:
             return seg
-    # mimo definované úseky → nejbližší
-    segs = normalized_segments(state)
-    return segs[0] if x < segs[0].x1 else segs[-1]
+    # mimo definované úseky (před prvním, za posledním, vnitřní mezera)
+    # → NEJBLIŽŠÍ úsek podle vzdálenosti k intervalu [x1, x2]
+    def dist(seg):
+        if x < seg.x1:
+            return seg.x1 - x
+        if x > seg.x2:
+            return x - seg.x2
+        return 0.0
+    return min(segs, key=dist)
 
 
 def segments_at(state, x: float, tol: float = 1e-3) -> list:

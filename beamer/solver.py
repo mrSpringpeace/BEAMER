@@ -99,15 +99,18 @@ def solve_beam(state, factors=None) -> SolverResult:
             G_e = G
         # efektivní tuhosti: pro složený PID z různých materiálů modulem vážené
         # (EA=ΣEᵢAᵢ, EIy k neutrální ose), jinak E·geometrie. Torze složeného =
-        # variabilní-G FEM (GJ)_eff (B2); jinak G·J. Smyk GAs zatím ×G (geom. As).
+        # variabilní-G FEM (GJ)_eff (B2); jinak G·J. Smyková tuhost složeného
+        # GAs = ΣGᵢAᵢ·(As/A) – vážená plocha × smykový poměr sjednocené geometrie.
         w = resolver.weighted_at(x_mid)
         if w is not None:
             EA, EIy = w.EA, w.EIy
             GJ = w.GJ if getattr(w, "GJ", None) else G_e * J
+            GA_w = getattr(w, "GA", None)
+            GAs = GA_w * (As / A) if (GA_w and A > 1e-12) else G_e * As
         else:
             EA, EIy = E_e * A, E_e * Iy
             GJ = G_e * J
-        GAs = G_e * As
+            GAs = G_e * As
         return EA, EIy, GJ, GAs, cs
 
     # ── 1. Diskretizace ──

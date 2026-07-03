@@ -1388,6 +1388,10 @@ class ResultsPanel(QWidget):
             # složený PID z různých materiálů → napětí a RF per materiál
             # (σ modulem vážené + τ z variabilní-G torze → von Mises)
             prows.append((tr("Složený průřez – napětí per materiál (σ, τ, σ_red):"), ""))
+            if assess.get("b1_fallback"):
+                prows.append((tr("  ⚠ FEM pole selhalo – jen normálové σ (τ=0)!"), ""))
+            if assess.get("sigma_red_combined"):
+                prows.append((tr("  σ_red = konzervativní σ⊕τ (špičky sečteny)"), ""))
             for m in assess["materials"]:
                 prows.append((f"  {m['material']}: σ / τ / σ_red [MPa]",
                               f"{fmt(m.get('sigma_max', 0))} / {fmt(m.get('tau_max', 0))}"
@@ -1666,6 +1670,8 @@ class ReportPanel(QWidget):
             ]
             if d.get("materials"):        # složený PID → rozpad per materiál
                 rows.append((tr("  — per materiál (σ / τ / σ_red) —"), ""))
+                if d.get("b1_fallback"):
+                    rows.append((tr("  ⚠ FEM pole selhalo – jen normálové σ (τ=0)!"), ""))
                 for mm in d["materials"]:
                     rows.append((f"  {mm['material']} [MPa]",
                                  f"{fmt(mm.get('sigma_max', 0))} / {fmt(mm.get('tau_max', 0))}"

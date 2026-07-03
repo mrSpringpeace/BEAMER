@@ -64,10 +64,14 @@ _MESH_CACHE_MAX = 24
 
 
 def _prop_signature(state, prop):
-    """Levná obsahová signatura složeného PID (geometrie + G/E materiálů) pro
-    cache sítě/warpingu – FEM se pak nepočítá znovu pro každou stanici."""
+    """Obsahová signatura složeného PID (geometrie + G/E materiálů) pro cache
+    sítě/warpingu – FEM se pak nepočítá znovu pro každou stanici. Geometrii
+    profilu zachycuje _sec_signature (typ, params, polygon_points, bodies,
+    shapes, rotation) – dřívější zkrácená verze (jen type+params) přehlédla
+    editaci polygonového/konstrukčního profilu → stale GJ/τ."""
     from .sections_along import section_by_id
     from .composite import _material_by_id
+    from .section import _sec_signature
     parts = getattr(prop, "composite_parts", None) or []
     sig = [round(float(getattr(prop, "rotation", 0.0)), 6)]
     for p in parts:
@@ -75,9 +79,11 @@ def _prop_signature(state, prop):
         sec = section_by_id(state, sid)
         st = None
         if sec is not None:
-            st = (getattr(sec, "type", None),
-                  tuple(sorted((getattr(sec, "params", {}) or {}).items())),
-                  round(float(getattr(sec, "rotation", 0.0)), 6))
+            try:
+                st = _sec_signature(sec, False)
+            except Exception:
+                st = (getattr(sec, "type", None),
+                      repr(getattr(sec, "params", None)))
         m = _material_by_id(state, mid)
         GE = (round(float(getattr(m, "G", 0.0)), 6),
               round(float(getattr(m, "E", 0.0)), 6)) if m else None
@@ -209,11 +215,15 @@ def composite_torsion_GJ(state, prop):
 
 def composite_stress_field(state, prop, N, My, Mk, V=0.0):
     """Plné per-materiálové napětí složeného PID přes FEM pole: v každém elementu
-    kombinuje normálové σ (B1, modulem vážené), torzní smyk τ_t (variabilní-G
-    warping) a transverzální smyk τ_V (E-vážený Žuravskij, V·Q_E/(EIy·b)) ve
-    STEJNÉM vlákně a počítá von Mises. τ_t a τ_V se sčítají konzervativně
-    (|τ_t|+|τ_V|, jako u jednomateriálu). Vrací dict material_id →
-    {material, E, sigma_max, tau_max, mises_max} (+ '_GJ'). None, když nelze."""
+    kombinuje normálové σ (B1, modulem vážené; konvence M+ = sagging = tah dole,
+    tedy σ = E·(N/EA − M·(z−z_NA)/EIy)), torzní smyk τ_t (variabilní-G warping)
+    a transverzální smyk τ_V (E-vážený Žuravskij, V·Q_E/(EIy·b)) a počítá von
+    Mises. σ se vyhodnocuje v ROZÍCH elementu (dosáhnou krajní vlákno; hladká
+    funkce z, bez FEM artefaktu rozhraní), τ v TĚŽIŠTI (stabilní u nekonformní
+    sítě); von Mises = max přes rohy s τ těžiště (konzervativní párování).
+    τ_t a τ_V se sčítají konzervativně (|τ_t|+|τ_V|, jako u jednomateriálu).
+    Vrací dict material_id → {material, E, sigma_max, tau_max, mises_max}
+    (+ '_GJ'). None, když nelze."""
     import numpy as np
     from .composite import composite_weighted
     from . import _fem
@@ -240,20 +250,26 @@ def composite_stress_field(state, prop, N, My, Mk, V=0.0):
         for idx in order:
             QE[idx] = cum                    # moment plochy STRIKTNĚ nad vláknem
             cum += Ee[idx] * (zc[idx] - w.z_NA) * Ae[idx]
+
+        def _sig(E_e, z):
+            # M kladný = sagging → tah dole (shodně se solverem a section.stress)
+            return E_e * (N / w.EA - My * (z - w.z_NA) / w.EIy)
+
         for ei, (G_e, E_e, mid) in enumerate(comp["tags"]):
-            ez = coords[ei, 1]
-            sig = E_e * (N / w.EA + My * (ez - w.z_NA) / w.EIy)
             tau_t = G_e * thetap * float(np.hypot(shear[ei, 0], shear[ei, 1]))
             tau_V = (abs(V * QE[ei] / (w.EIy * be[ei]))
                      if (be[ei] > 1e-9 and abs(w.EIy) > 1e-9) else 0.0)
             tau = abs(tau_t) + tau_V         # konzervativní součet
+            # σ v rozích elementu (rohové uzly leží i na krajním vláknu)
+            sig = max((abs(_sig(E_e, nodes[ni][1])) for ni in elements[ei][:3]),
+                      default=0.0)
             mis = float(np.sqrt(sig * sig + 3.0 * tau * tau))
             m = mats.get(mid)
             a = agg.setdefault(mid, {"material": getattr(m, "name", mid),
                                      "E": E_e, "Re": getattr(m, "Re", 0.0),
                                      "Rm": getattr(m, "Rm", 0.0),
                                      "sigma_max": 0.0, "tau_max": 0.0, "mises_max": 0.0})
-            a["sigma_max"] = max(a["sigma_max"], abs(sig))
+            a["sigma_max"] = max(a["sigma_max"], sig)
             a["tau_max"] = max(a["tau_max"], tau)
             a["mises_max"] = max(a["mises_max"], mis)
     return {"materials": agg, "_GJ": GJ}

@@ -80,14 +80,30 @@ class CompositeEditorDialog(QDialog):
         self._rebuild()
 
     # ── operace ──
+    def _usable_sections(self):
+        """Knihovní profily s použitelnou geometrií. Typ „direct" (jen přímé
+        charakteristiky, žádný obrys) by se do skladby tiše vynechal – proto
+        se v nabídce vůbec neukazuje."""
+        from ..composite import section_bodies_centroidal
+        out = []
+        for s in self.state.sections:
+            try:
+                if section_bodies_centroidal(s):
+                    out.append(s)
+            except Exception:
+                pass
+        return out
+
     def _add(self):
-        if not self.state.sections:
-            self.info.setText(tr("Nejdřív přidej průřez do knihovny (Průřezy)."))
+        usable = self._usable_sections()
+        if not usable:
+            self.info.setText(tr("Nejdřív přidej průřez s geometrií do knihovny "
+                                 "(Průřezy). Typ „přímé zadání“ skládat nejde."))
             return
         mid = (self.state.selected_material_id or
                (self.state.materials[0].id if self.state.materials else None))
         self.prop.composite_parts.append(
-            {"section_id": self.state.sections[0].id, "material_id": mid,
+            {"section_id": usable[0].id, "material_id": mid,
              "dy": 0.0, "dz": 0.0, "angle": 0.0})
         self._rebuild()
 
@@ -106,7 +122,7 @@ class CompositeEditorDialog(QDialog):
             r = self.table.rowCount()
             self.table.insertRow(r)
             sc = QComboBox()
-            for s in self.state.sections:
+            for s in self._usable_sections():
                 sc.addItem(s.name or tr("Průřez"), s.id)
             sc.setCurrentIndex(max(0, sc.findData(part.get("section_id"))))
             sc.currentIndexChanged.connect(

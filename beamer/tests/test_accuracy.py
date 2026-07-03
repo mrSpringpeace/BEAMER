@@ -803,3 +803,91 @@ def test_b2_composite_transverse_shear_reduces():
     f = composite_stress_field(st, prop, 0.0, 0.0, 0.0, V)
     tauV = f["materials"]["st"]["tau_max"]
     assert _rel(tauV, 1.5 * V / (40 * 40)) < 1e-3      # 40×40, τ_max = 1.5 V/A
+
+
+def _bimetal_state():
+    """Nesymetrický bimetal: ocel nahoře (z 0..20), hliník dole (z −20..0)."""
+    steel = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85, Re=235, Rm=360)
+    alu = Material("al", "Hliník", E=70000, G=27000, nu=0.33, rho=2.7, Re=200, Rm=300)
+    r = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20}, id="r", name="R")
+    return _composite_state(
+        [{"section_id": "r", "material_id": "st", "dy": 0, "dz": 10, "angle": 0},
+         {"section_id": "r", "material_id": "al", "dy": 0, "dz": -10, "angle": 0}],
+        [r], [steel, alu])
+
+
+def test_composite_bending_sign_with_axial():
+    """Znaménko ohybu u kompozitu (N1): M+ = sagging = tah DOLE (konvence
+    solveru). Pro N+M na NEsymetrickém bimetalu musí σ per materiál odpovídat
+    σ = E·(N/EA − M·(z−z_NA)/EIy); s obráceným znaménkem by hliník (dole)
+    vyšel o ~36 % nekonzervativně."""
+    from beamer.composite import composite_stress, composite_weighted
+    from beamer.composite_fem import composite_stress_field
+    st, prop = _bimetal_state()
+    w = composite_weighted(st, prop)
+    N, M = 50e3, 1.0e6
+
+    def sig_ok(E, z):
+        return E * (N / w.EA - M * (z - w.z_NA) / w.EIy)
+
+    expect = {"Ocel": max(abs(sig_ok(210000, z)) for z in (0.0, 20.0)),
+              "Hliník": max(abs(sig_ok(70000, z)) for z in (-20.0, 0.0))}
+    by = {r_["material"]: r_ for r_ in composite_stress(st, prop, N, M)}
+    for nm in expect:
+        assert _rel(by[nm]["sigma_max"], expect[nm]) < 1e-9
+    f = composite_stress_field(st, prop, N, M, 0.0, 0.0)
+    for a in f["materials"].values():
+        assert _rel(a["sigma_max"], expect[a["material"]]) < 1e-9
+    # hliník (dole, tah se přičítá k tahu) musí nést víc než samotné N/EA
+    assert by["Hliník"]["sigma_max"] > 70000 * (N / w.EA)
+
+
+def test_composite_field_sigma_reaches_fiber():
+    """σ z FEM pole (N3): vyhodnocení v rozích elementů dosáhne přesné krajní
+    vlákno – žádné podhodnocení proti B1 (těžiště elementu by dalo ~2 % míň)."""
+    from beamer.composite import composite_stress
+    from beamer.composite_fem import composite_stress_field
+    st, prop = _bimetal_state()
+    by = {r_["material"]: r_ for r_ in composite_stress(st, prop, 0.0, 1.0e6)}
+    f = composite_stress_field(st, prop, 0.0, 1.0e6, 0.0, 0.0)
+    for a in f["materials"].values():
+        assert _rel(a["sigma_max"], by[a["material"]]["sigma_max"]) < 1e-9
+
+
+def test_composite_mesh_cache_sees_polygon_edit():
+    """Signatura cache kompozitní sítě (N4): editace polygon_points knihovního
+    profilu musí zneplatnit cache – GJ se přepočítá (dřív zůstal starý)."""
+    import math
+    from beamer.composite_fem import composite_torsion_GJ
+    steel = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85, Re=235, Rm=360)
+    alu = Material("al", "Hliník", E=70000, G=27000, nu=0.33, rho=2.7, Re=200, Rm=300)
+    poly = CrossSectionDef(type="polygon", id="pg", name="P", polygon_points=[
+        {"y": -20, "z": -10}, {"y": 20, "z": -10},
+        {"y": 20, "z": 10}, {"y": -20, "z": 10}])
+    r = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20}, id="r", name="R")
+    st, prop = _composite_state(
+        [{"section_id": "pg", "material_id": "st", "dy": 0, "dz": 10, "angle": 0},
+         {"section_id": "r", "material_id": "al", "dy": 0, "dz": -10, "angle": 0}],
+        [poly, r], [steel, alu])
+    GJ1 = composite_torsion_GJ(st, prop)
+    # editace geometrie polygonu (2× šířka) → GJ se MUSÍ změnit
+    poly.polygon_points = [{"y": -40, "z": -10}, {"y": 40, "z": -10},
+                           {"y": 40, "z": 10}, {"y": -40, "z": 10}]
+    GJ2 = composite_torsion_GJ(st, prop)
+    assert GJ1 is not None and GJ2 is not None
+    assert abs(GJ2 - GJ1) / GJ1 > 0.1
+
+
+def test_composite_combined_sigma_red_mode():
+    """Režim σ_red „combined" (N6) působí i na kompozit: σ_red per materiál
+    = √(σ_max²+3·τ_max²) ze špiček; bez fallbacku je b1_fallback False."""
+    import math
+    from beamer.composite import composite_assess
+    st, prop = _bimetal_state()
+    st.sigma_red_mode = "combined"
+    ca = composite_assess(st, prop, N=10e3, M=5e5, basis="min", Mk=2e5, V=1e3)
+    assert ca is not None and not ca.get("b1_fallback")
+    assert ca.get("sigma_red_combined") is True
+    for m in ca["materials"]:
+        assert _rel(m["mises_max"],
+                    math.sqrt(m["sigma_max"]**2 + 3*m["tau_max"]**2)) < 1e-9

@@ -268,7 +268,7 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None):
                 ca = composite_assess(state, p, N, M, getattr(state, "rf_basis", "min"), Mk=Mk, V=V)
                 if ca is not None:
                     ca.update({"section": section, "material": mat, "alpha_pl": 1.0,
-                               "sigma_z": None, "tau_z": None, "sigma_red_combined": False})
+                               "sigma_z": None, "tau_z": None})
                     return ca
     sg = tu = mz = 0.0
     z_sg = z_tu = 0.0
@@ -467,18 +467,26 @@ def peaks_x(result, attr):
 
 def critical_per_part(state, reserves):
     """Pro každý úsek (section_segment) vrátí kritickou stanici (nejnižší RF).
-    Vrací list dictů: {idx, x1, x2, material, section_type, crit (ReserveResult|None)}."""
-    from .sections_along import normalized_segments
+    Vrací list dictů: {idx, x1, x2, material, section_type, crit (ReserveResult|None)}.
+    Materiál a typ průřezu se berou EFEKTIVNĚ (přes PID / knihovní odkaz),
+    ne z inline polí úseku – ta jsou u PID úseků jen placeholder."""
+    from .sections_along import (normalized_segments, material_for_segment,
+                                 eff_defs, property_by_id)
     segs = normalized_segments(state)
     out = []
     for i, seg in enumerate(segs):
         in_seg = [r for r in reserves if seg.x1 - 1e-6 <= r.x <= seg.x2 + 1e-6]
         crit = min(in_seg, key=lambda r: r.RF) if in_seg else None
-        mid = getattr(seg, "material_id", None)
-        mat = next((m for m in state.materials if m.id == mid), None)
-        mat_name = mat.name if mat else (state.material().name if state.materials else "?")
+        mat = material_for_segment(state, seg)
+        mat_name = mat.name if mat else "?"
+        p = property_by_id(state, getattr(seg, "property_id", None))
+        if p is not None and getattr(p, "composite_parts", None):
+            sec_type = "composite"
+        else:
+            s1, _s2 = eff_defs(state, seg)
+            sec_type = getattr(s1, "type", None) or "?"
         out.append({
             "idx": i, "x1": seg.x1, "x2": seg.x2,
-            "material": mat_name, "section_type": seg.sec1.type, "crit": crit,
+            "material": mat_name, "section_type": sec_type, "crit": crit,
         })
     return out
