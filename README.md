@@ -59,11 +59,14 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 - **Supports & loads** — pin / roller (at an angle) / fixed, plus **elastic
   springs** and, for rigid supports, a **clearance** (unilateral contact) or a
   **prescribed settlement**. Point forces, moments, torsion, distributed loads
-  (including from a pasted *x, q* curve) and **thermal** ΔT.
+  (including from a pasted *x, q* curve) and **thermal** loads — uniform ΔT
+  (axial) and a **through-depth gradient** (thermal curvature / bending).
 - **Load combinations & envelope** — an **envelope** of internal forces and RF
   across all combinations, plus a **conservative** hand-analysis-style check.
-- **Column buckling** — Johnson–Euler check per compressed segment (weak axis,
-  editable buckling-length factor μ), evaluated over the force envelope.
+- **Column buckling** — a per-segment Johnson–Euler check (weak axis, editable
+  buckling-length factor μ) and a **system eigenvalue buckling analysis** (phase
+  2): the critical load factor and mode shape from the geometric stiffness
+  matrix, with the effective length following from the boundary conditions.
 - **Material library** — common aerospace alloys and steel; custom materials
   with arbitrary *E*, *G*, *ν*, *Re*, *Rm*, *ρ*.
 - **Files & export** — human-readable JSON projects, text and **DOCX** report

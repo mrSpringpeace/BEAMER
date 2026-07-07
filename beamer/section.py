@@ -1385,6 +1385,23 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
         hh = (12.0 * max(cs.Iy, 1e-9)) ** 0.25
         cs.torsion_model = "solid_rect"
         cs.torsion_ab = (hh, hh)
+
+    # Natočení parametrického profilu: z_SC/Iω/Wk se počítají scanline aproximací,
+    # která platí jen v PŘIROZENÉ orientaci – běží-li na natočené geometrii, dá
+    # špatný střed smyku a Iω (a y_SC natvrdo 0). Iω i Wk jsou rotačně invariantní,
+    # střed smyku je bod, který se s profilem otáčí. Spočítáme je z nenatočeného
+    # dvojníka a vektor SC otočíme o úhel. A/Iy/Iz/Iyz/IT z natočeného `cs` jsou
+    # správně (integrace na natočené geometrii), beam výsledek se tím nemění.
+    if rot:
+        nat = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls,
+                           IT_override=IT, rotation=0.0)
+        th = math.radians(rot)
+        ca, sa = math.cos(th), math.sin(th)
+        y0, z0 = nat.y_SC, nat.z_SC
+        cs.y_SC = y0 * ca - z0 * sa
+        cs.z_SC = y0 * sa + z0 * ca
+        cs.Iw = nat.Iw
+        cs.Wk = nat.Wk
     return cs
 
 

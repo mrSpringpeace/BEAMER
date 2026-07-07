@@ -59,10 +59,13 @@ class MplCanvas(FigureCanvasQTAgg):
         super().__init__(self.fig)
 
 
-def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
+def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True,
+                 filter_by_combination=True):
     """Schéma nosníku: nosník, číslované podpory, klouby, zatížení (+popisky)
     a – je-li `result` – grafické reakce. `show_loads`/`show_supports` skryjí
-    zatížení, resp. podpory a reakce (přehlednost složitých modelů)."""
+    zatížení, resp. podpory a reakce (přehlednost složitých modelů).
+    `filter_by_combination`=False vypne filtr dle kombinace (ukáže všechna
+    zadaná zatížení v původní velikosti, napříč kombinacemi)."""
     L = state.length
     _title = tr("Schéma nosníku")
     try:
@@ -72,6 +75,19 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
     if _comb is not None:
         _title += f"   —   ▶ {_comb.name}"
     ax.set_title(_title, fontsize=9, loc="left")
+
+    # Zatížení se kreslí v kontextu ZOBRAZENÉ kombinace: ukáže se jen to, které v
+    # ní má nenulový faktor, a velikost (šipky i popisky) je násobená faktorem ×
+    # dodatečným součinitelem – schéma tak sedí s reakcemi. Bez kombinace (nebo
+    # prázdná) se ukážou zadané hodnoty (násobitel 1).
+    _cf = getattr(_comb, "factors", None) if _comb is not None else None
+    _use_comb = filter_by_combination and bool(_cf)
+
+    def _lmult(ld):
+        if not _use_comb:
+            return 1.0
+        from ..solver import _load_multiplier
+        return _load_multiplier(state, ld, _cf)
 
     # nosník po úsecích – střídavě „inkoust" / tlumená, ať jdou úseky rozeznat
     segs = getattr(state, "section_segments", None) or []
@@ -142,14 +158,16 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
 
     # měřítko spojitého zatížení: max |q| → pevná amplituda (společné pro všechny)
     dloads = [ld for ld in state.loads if ld.type == "distributed"]
-    qmax = max((max(abs(ld.q1), abs(ld.q2)) for ld in dloads), default=0.0)
+    qmax = max((max(abs(ld.q1), abs(ld.q2)) * abs(_lmult(ld)) for ld in dloads),
+               default=0.0)
     qscale = (16.0 / qmax) if qmax > 1e-12 else 0.0
     alen = max(L * 0.04, 1e-9)   # délka vodorovné šipky momentu [mm]
 
     # Měřítko šipek sil a reakcí. Délka ∝ √(velikost) – odmocninové stlačení
     # rozsahu: velké reakce neutlumí malé zadané síly, pořadí zůstává.
     AMP_F, FLOOR_F = 15.0, 5.0
-    fvals = [abs(ld.Fz) for ld in state.loads if ld.type == "point_force" and abs(ld.Fz) > 1e-9]
+    fvals = [abs(ld.Fz) * abs(_lmult(ld)) for ld in state.loads
+             if ld.type == "point_force" and abs(ld.Fz) * abs(_lmult(ld)) > 1e-9]
     if result is not None and getattr(result, "is_stable", False):
         fvals += [abs(rc.Rz) for rc in result.reactions if abs(rc.Rz) > 1e-6]
     Fmax = max(fvals, default=1.0) or 1.0
@@ -162,7 +180,16 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
 
     # zatížení – šipka KONČÍ (hrot) v působišti na nosníku; +Fz míří nahoru
     for ld in (state.loads if show_loads else []):
-        if ld.type == "point_force" and (abs(ld.Fz) > 1e-9 or abs(ld.Fx) > 1e-9):
+        m = _lmult(ld)
+        if _use_comb and abs(m) < 1e-12:
+            continue        # zatížení není v zobrazené kombinaci → skrýt
+        # škálované hodnoty (faktor kombinace × dodatečný součinitel)
+        Fz, Fx = ld.Fz * m, ld.Fx * m
+        q1, q2 = ld.q1 * m, ld.q2 * m
+        My, Mx, dT = ld.My * m, ld.Mx * m, ld.dT * m
+        dTg = getattr(ld, "dT_grad", 0.0) * m
+
+        if ld.type == "point_force" and (abs(Fz) > 1e-9 or abs(Fx) > 1e-9):
             cnt["F"] += 1; code = f"F{cnt['F']}"
         elif ld.type == "distributed":
             cnt["q"] += 1; code = f"q{cnt['q']}"
@@ -173,18 +200,18 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
         else:
             code = ""
 
-        if ld.type == "point_force" and abs(ld.Fz) > 1e-9:
-            up = ld.Fz > 0
-            tail = -flen(ld.Fz) if up else flen(ld.Fz)   # hrot v (x,0), ocas opačně ke směru
+        if ld.type == "point_force" and abs(Fz) > 1e-9:
+            up = Fz > 0
+            tail = -flen(Fz) if up else flen(Fz)   # hrot v (x,0), ocas opačně ke směru
             ax.annotate("", xy=(ld.x, 0), xytext=(ld.x, tail),
                         arrowprops=dict(arrowstyle="-|>", color=C_LOAD, lw=1.6))
-            ax.text(ld.x, tail + (-2 if up else 2), f"{code}\n{ld.Fz:.0f} N",
+            ax.text(ld.x, tail + (-2 if up else 2), f"{code}\n{Fz:.0f} N",
                     ha="center", va="top" if up else "bottom", fontsize=6.5, color=C_LOAD)
         elif ld.type == "distributed":
             # lichoběžník: výška ∝ q, +q nahoru. Profil na opačné straně než síla,
             # šipky míří k nosníku. Při změně znaménka profil prochází nosníkem.
-            y1 = -qscale * ld.q1
-            y2 = -qscale * ld.q2
+            y1 = -qscale * q1
+            y2 = -qscale * q2
             x1, x2 = ld.x1, ld.x2
             ax.fill([x1, x2, x2, x1], [y1, y2, 0, 0], color=C_DIST, alpha=0.12)
             ax.plot([x1, x2], [y1, y2], color=C_DIST, lw=1.3)        # šikmá horní hrana
@@ -198,33 +225,36 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
                 if abs(yi) > 0.6:
                     ax.annotate("", xy=(xi, 0), xytext=(xi, yi),
                                 arrowprops=dict(arrowstyle="-|>", color=C_DIST, lw=0.8))
-            ax.text(x1, y1 + (2 if y1 >= 0 else -2), f"{code}: {ld.q1:.1f}", ha="center",
+            ax.text(x1, y1 + (2 if y1 >= 0 else -2), f"{code}: {q1:.1f}", ha="center",
                     va="bottom" if y1 >= 0 else "top", fontsize=6.5, color=C_DIST)
-            ax.text(x2, y2 + (2 if y2 >= 0 else -2), f"{ld.q2:.1f} N/mm", ha="center",
+            ax.text(x2, y2 + (2 if y2 >= 0 else -2), f"{q2:.1f} N/mm", ha="center",
                     va="bottom" if y2 >= 0 else "top", fontsize=6.5, color=C_DIST)
-        elif ld.type == "point_force" and abs(ld.Fx) > 1e-9:
-            dx = -flen(ld.Fx) if ld.Fx > 0 else flen(ld.Fx)
+        elif ld.type == "point_force" and abs(Fx) > 1e-9:
+            dx = -flen(Fx) if Fx > 0 else flen(Fx)
             ax.annotate("", xy=(ld.x, 0), xytext=(ld.x + dx, 0),
                         arrowprops=dict(arrowstyle="-|>", color=C_LOAD, lw=1.6))
             ax.text(ld.x, 5, code, ha="center", fontsize=6.5, color=C_LOAD)
         elif ld.type == "moment":
             # svislá čára + dvě vodorovné šipky (silová dvojice) dle orientace
             H = 15.0
-            sgn = 1.0 if ld.My >= 0 else -1.0   # +M = CCW: horní šipka vlevo, dolní vpravo
+            sgn = 1.0 if My >= 0 else -1.0   # +M = CCW: horní šipka vlevo, dolní vpravo
             ax.plot([ld.x, ld.x], [-H, H], color=C_MOM, lw=1.4)
             ax.annotate("", xy=(ld.x - sgn*alen, H), xytext=(ld.x, H),
                         arrowprops=dict(arrowstyle="-|>", color=C_MOM, lw=1.6))
             ax.annotate("", xy=(ld.x + sgn*alen, -H), xytext=(ld.x, -H),
                         arrowprops=dict(arrowstyle="-|>", color=C_MOM, lw=1.6))
-            ax.text(ld.x, H + 3, f"{code}  {ld.My:.0f}", ha="center", fontsize=6.5, color=C_MOM)
+            ax.text(ld.x, H + 3, f"{code}  {My:.0f}", ha="center", fontsize=6.5, color=C_MOM)
         elif ld.type == "torsion":
             ax.plot(ld.x, 0, "D", color=C_TOR, ms=6)
-            ax.text(ld.x, 6, f"{code}  Mk={ld.Mx:.0f}", ha="center", fontsize=6.5, color=C_TOR)
+            ax.text(ld.x, 6, f"{code}  Mk={Mx:.0f}", ha="center", fontsize=6.5, color=C_TOR)
         elif ld.type == "thermal":
             # teplota: barevný pás těsně nad nosníkem (červená ohřev / modrá chladnutí)
-            c_th = "#d84315" if ld.dT >= 0 else "#1565c0"
+            c_th = "#d84315" if dT >= 0 else "#1565c0"
             ax.fill_between([ld.x1, ld.x2], 2.0, 5.0, color=c_th, alpha=0.35, lw=0)
-            ax.text((ld.x1 + ld.x2) / 2, 6.5, f"ΔT={ld.dT:+.0f} °C",
+            lbl = f"ΔT={dT:+.0f} °C"
+            if abs(dTg) > 1e-9:
+                lbl += f"\ngrad {dTg:+.0f} °C"
+            ax.text((ld.x1 + ld.x2) / 2, 6.5, lbl,
                     ha="center", fontsize=6.5, color=c_th)
 
     # deformovaný tvar (po výpočtu) – w(x) škálované na čitelnou amplitudu
@@ -281,20 +311,44 @@ def _annotate_extremes(ax, x, arr, color):
                     bbox=dict(boxstyle="round,pad=0.15", fc=_PANEL, ec=color, alpha=0.85, lw=0.6))
 
 
+def draw_buckling_mode(ax, state, be):
+    """Tvar vybočení (fáze 2): nedeformovaná osa + první vlastní tvar (normovaný),
+    značky podpor, popisek λ_cr a μ_eff. `be` = BucklingEigenResult."""
+    L = state.length
+    x = np.asarray(be.x_mode)
+    w = np.asarray(be.w_mode)
+    amp = L * 0.06                       # čitelná amplituda tvaru
+    ax.plot([0, L], [0, 0], color="#bbb", lw=1.5, ls="--")     # nedeformovaná osa
+    ax.plot(x, w * amp, color="#c62828", lw=2.0)               # vlastní tvar
+    for s in state.supports:
+        mk, col = {"fixed": ("s", "#444"), "pin": ("^", "#1565c0"),
+                   "roller": ("o", "#2e7d32"), "spring": ("D", "#8e24aa")}.get(
+                       s.type, ("^", "#1565c0"))
+        ax.plot(s.x, 0, mk, color=col, ms=9)
+    ax.set_title(tr("Tvar vybočení") +
+                 f"   (λ_cr = {be.lam_cr:.3g},  μ_eff = {be.mu_eff:.3g})",
+                 fontsize=9, loc="left")
+    ax.set_yticks([]); ax.set_xlabel("x [mm]", fontsize=8)
+    ax.set_xlim(-X_PAD * L, (1 + X_PAD) * L)
+    ax.grid(True, axis="x", alpha=0.3)
+
+
 class SchemaCanvas(MplCanvas):
     """Samostatné plátno se schématem nosníku (vstup + reakce)."""
 
     def __init__(self):
         super().__init__(figsize=(6, 2.4))
 
-    def plot(self, state, result=None, show_loads=True, show_supports=True):
+    def plot(self, state, result=None, show_loads=True, show_supports=True,
+             filter_by_combination=True):
         self.fig.clear()
         # pevné okraje (shodné s VVÚ grafy) → nosník lícuje s křivkami;
         # None odebere layout engine (umožní subplots_adjust)
         self.fig.set_layout_engine(None)
         ax = self.fig.add_subplot(111)
         _draw_schema(ax, state, result, show_loads=show_loads,
-                     show_supports=show_supports)
+                     show_supports=show_supports,
+                     filter_by_combination=filter_by_combination)
         ax.set_xlabel("x [mm]", fontsize=8)
         self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
                                  top=0.80, bottom=0.28)

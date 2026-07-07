@@ -92,6 +92,13 @@ class MainWindow(QMainWindow):
         self.show_sup_cb.setChecked(getattr(SETTINGS, "schema_show_supports", True))
         self.show_sup_cb.toggled.connect(self._on_schema_vis)
         bar.addWidget(self.show_sup_cb)
+        self.show_all_loads_cb = QCheckBox(tr("napříč komb."))
+        self.show_all_loads_cb.setToolTip(tr(
+            "Zobrazit všechna zadaná zatížení bez ohledu na zobrazenou kombinaci "
+            "(jinak schéma ukazuje jen zatížení z aktivní kombinace, škálovaná faktorem)."))
+        self.show_all_loads_cb.setChecked(getattr(SETTINGS, "schema_all_loads", False))
+        self.show_all_loads_cb.toggled.connect(self._on_schema_vis)
+        bar.addWidget(self.show_all_loads_cb)
         bar.addWidget(QLabel(tr("RF k:")))
         self.rf_basis_cb = NoWheelComboBox()
         self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
@@ -609,11 +616,13 @@ class MainWindow(QMainWindow):
         self.schema_canvas.plot(
             self.state, result,
             show_loads=self.show_loads_cb.isChecked(),
-            show_supports=self.show_sup_cb.isChecked())
+            show_supports=self.show_sup_cb.isChecked(),
+            filter_by_combination=not self.show_all_loads_cb.isChecked())
 
     def _on_schema_vis(self, _=None):
         SETTINGS.schema_show_loads = self.show_loads_cb.isChecked()
         SETTINGS.schema_show_supports = self.show_sup_cb.isChecked()
+        SETTINGS.schema_all_loads = self.show_all_loads_cb.isChecked()
         SETTINGS.save()
         self._plot_schema(None if getattr(self, "_dirty", True) else self.result)
 
@@ -931,6 +940,21 @@ class MainWindow(QMainWindow):
                 images[key] = buf.getvalue()
             except Exception:
                 pass
+        # tvar vybočení (fáze 2) – vykreslí se jen když je co (tlak → vlastní tvar)
+        try:
+            from ..analysis import buckling_eigen_check
+            from ..gui.plots import draw_buckling_mode
+            from matplotlib.figure import Figure
+            be = buckling_eigen_check(self.state, self.result)
+            if be is not None:
+                fig = Figure(figsize=(6, 2.2)); ax = fig.add_subplot(111)
+                draw_buckling_mode(ax, self.state, be)
+                fig.subplots_adjust(left=0.04, right=0.98, top=0.82, bottom=0.24)
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+                images["buckling"] = buf.getvalue()
+        except Exception:
+            pass
         try:
             from ..report_docx import build_docx
             build_docx(self.state, self.result, self.reserves, path, images=images,

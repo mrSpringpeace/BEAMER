@@ -137,6 +137,26 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             L.append("  " + tr("(slabá osa I_min, L_vzpěr=μ·L_úseku; fáze 1 – bez interakce s ohybem)"))
             L.append("")
 
+        # fáze 2: bifurkace soustavy (vlastní čísla) – dražší (~0,3 s), jen export
+        if include_conservative:
+            from .analysis import buckling_eigen_check
+            try:
+                be = buckling_eigen_check(state, result)
+            except Exception:
+                be = None
+            if be is not None:
+                L.append(tr("VZPĚRNÁ STABILITA – FÁZE 2 (bifurkace soustavy, vlastní čísla)")
+                         + f" – {tr('zobrazená kombinace')}")
+                L.append(f"  λ_cr = {fmt(be.lam_cr)} = RF_vzpěr "
+                         f"({tr('násobitel zatížení do vybočení')})")
+                L.append(f"  P_cr = {fmt(be.P_cr)} N   (N_ref = {fmt(be.N_ref)} N)   "
+                         f"μ_eff = {fmt(be.mu_eff)}")
+                L.append("  " + tr("(slabá osa I_min; vzpěrná délka VYPLYNE z okrajových "
+                                   "podmínek – bez ručního μ; osové pole z rovnováhy jedné "
+                                   "kombinace; podpory drží příčný posun i v rovině vybočení; "
+                                   "bez interakce s ohybem)"))
+                L.append("")
+
         if env is not None:
             try:
                 cc = conservative_check(state, env=env)
@@ -199,5 +219,8 @@ def _load_desc(ld):
     if ld.type == "torsion":
         return f"x={ld.x:.0f} Mx={ld.Mx} N·mm"
     if ld.type == "thermal":
-        return f"x1={ld.x1:.0f} x2={ld.x2:.0f} ΔT={ld.dT} °C"
+        s = f"x1={ld.x1:.0f} x2={ld.x2:.0f} ΔT={ld.dT} °C"
+        if abs(getattr(ld, "dT_grad", 0.0)) > 1e-9:
+            s += f" grad={ld.dT_grad} °C"
+        return s
     return ""

@@ -639,6 +639,175 @@ def buckling_check(state, result, env=None):
     return BucklingResult(rows, crit["RF"], crit["label"])
 
 
+@dataclass
+class BucklingEigenResult:
+    """Vzpěrná stabilita fáze 2 – lineární bifurkační analýza celé soustavy.
+
+    Řeší zobecněný problém vlastních čísel (K_b + λ·K_g)·φ = 0 v příčné (slabé)
+    rovině: K_b = ohybová tuhost o slabé ose EI_min, K_g = geometrická (počáteční
+    napětí) matice ze skutečného rozložení osové síly N(x) zobrazené kombinace.
+    Nejmenší kladné λ = **kritický násobitel zatížení** (RF_vzpěr = λ_cr; loads
+    lze násobit λ_cr, než soustava vybočí). Vzpěrná délka (μ) VYPLYNE z okrajových
+    podmínek – žádný ruční odhad jako ve fázi 1."""
+    lam_cr: float                  # kritický násobitel (RF_vzpěr)
+    P_cr: float                    # kritická osová síla v nejtlačenějším místě [N]
+    N_ref: float                   # referenční (max) tlak zobrazené kombinace [N]
+    mu_eff: float                  # efektivní součinitel vzpěrné délky (odvozený)
+    x_mode: list                   # uzly [mm]
+    w_mode: list                   # tvar vybočení (normovaný na max=1)
+    note: str = ""
+
+
+def buckling_eigen_check(state, result, factors=None, n_target=80):
+    """Vzpěr fáze 2 (vlastní čísla). Vrací `BucklingEigenResult` nebo None.
+    Slabá osa I_min, osová síla z `result` (rovnovážné pole jedné kombinace –
+    NE obálka). Předpoklady: podpory drží příčný posun i v rovině vybočení
+    (pin/rolna/vetknutí → w=0, vetknutí i φ=0), pružiny elasticky; klouby fáze 2
+    zatím neuvažují moment. Bez tlaku → None."""
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return None
+    try:
+        from scipy.linalg import eig as _geig
+    except Exception:
+        return None
+    from .sections_along import SectionResolver, normalized_segments
+
+    pts = sorted(result.points, key=lambda p: p.x)
+    xv = np.array([p.x for p in pts])
+    Nv = np.array([p.N for p in pts])
+    if float(Nv.min()) >= -1e-6:                 # nikde tlak → vzpěr neřešíme
+        return None
+    L = float(state.length)
+
+    # ── mřížka: uzly v podporách, kloubech, hranicích úseků; zhustit ~n_target ──
+    nodeset = {0.0, L}
+    for s in state.supports:
+        if 0 <= s.x <= L:
+            nodeset.add(float(s.x))
+    for h in state.hinges:
+        if 0 <= h.x <= L:
+            nodeset.add(float(h.x))
+    for sg in normalized_segments(state):
+        for xb in (sg.x1, sg.x2):
+            if 0 <= xb <= L:
+                nodeset.add(float(xb))
+    base = sorted(nodeset)
+    step = max(L / max(n_target, 1), 1e-6)
+    xs = [base[0]]
+    for a, b in zip(base[:-1], base[1:]):
+        nsub = max(1, int(math.ceil((b - a) / step)))
+        for k in range(1, nsub + 1):
+            xs.append(a + (b - a) * k / nsub)
+    xs = np.array(xs)
+    nn = len(xs)
+    ndof = 2 * nn                                # w, φ na uzel
+
+    resolver = SectionResolver(state)
+
+    def EImin_at(xm):
+        sec = resolver.at(xm)
+        if sec is None or not getattr(sec, "valid", False) or sec.A <= 1e-9:
+            return None
+        E_e = resolver.E_at(xm) or state.material().E
+        return E_e * min(sec.Iy, sec.Iz)
+
+    Kb = np.zeros((ndof, ndof))
+    Kg = np.zeros((ndof, ndof))
+    for i in range(nn - 1):
+        le = float(xs[i + 1] - xs[i])
+        if le <= 1e-9:
+            continue
+        xm = 0.5 * (xs[i] + xs[i + 1])
+        EI = EImin_at(xm)
+        if EI is None or EI <= 0:
+            return None
+        Ne = float(np.interp(xm, xv, Nv))        # osová síla (tah +), tlak < 0
+        # ohybová tuhost (Euler-Bernoulli, Hermite)
+        c = EI / le**3
+        kb = c * np.array([
+            [12,     6*le,    -12,     6*le],
+            [6*le,   4*le**2, -6*le,   2*le**2],
+            [-12,   -6*le,     12,    -6*le],
+            [6*le,   2*le**2, -6*le,   4*le**2]])
+        # geometrická (konzistentní), tah +
+        g = Ne / (30.0 * le)
+        kg = g * np.array([
+            [36,     3*le,   -36,     3*le],
+            [3*le,   4*le**2, -3*le, -le**2],
+            [-36,   -3*le,    36,    -3*le],
+            [3*le,  -le**2,  -3*le,   4*le**2]])
+        d = [2*i, 2*i+1, 2*i+2, 2*i+3]
+        for a in range(4):
+            for b in range(4):
+                Kb[d[a], d[b]] += kb[a, b]
+                Kg[d[a], d[b]] += kg[a, b]
+
+    # ── okrajové podmínky z podpor ──
+    def node_at(x):
+        j = int(np.argmin(np.abs(xs - x)))
+        return j if abs(xs[j] - x) < 1e-3 else None
+
+    fixed = set()
+    for s in state.supports:
+        j = node_at(s.x)
+        if j is None:
+            continue
+        if s.type == "spring":
+            Kb[2*j, 2*j] += float(getattr(s, "spring_z", 0.0) or 0.0)
+            Kb[2*j+1, 2*j+1] += float(getattr(s, "spring_ry", 0.0) or 0.0)
+        else:
+            fixed.add(2*j)                       # w=0 (pin/rolna/vetknutí)
+            if s.type == "fixed":
+                fixed.add(2*j+1)                 # φ=0 (vetknutí)
+
+    free = [d for d in range(ndof) if d not in fixed]
+    if len(free) < 2:
+        return None
+    Kb_r = Kb[np.ix_(free, free)]
+    Kg_r = Kg[np.ix_(free, free)]
+
+    # (K_b + λ·K_g)φ=0  →  K_b φ = λ·(−K_g)φ ; nejmenší kladné reálné λ
+    try:
+        w, V = _geig(Kb_r, -Kg_r)
+    except Exception:
+        return None
+    lam_cr = None
+    vec = None
+    for k in range(len(w)):
+        lk = w[k]
+        if abs(lk.imag) > 1e-6 * (abs(lk.real) + 1.0):
+            continue
+        lr = float(lk.real)
+        if lr <= 1e-9 or not np.isfinite(lr):
+            continue
+        if lam_cr is None or lr < lam_cr:
+            lam_cr = lr
+            vec = np.real(V[:, k])
+    if lam_cr is None:
+        return None
+
+    # tvar vybočení (w složky) na uzly
+    wfull = np.zeros(ndof)
+    for idx, d in enumerate(free):
+        wfull[d] = vec[idx]
+    wmode = wfull[0::2]
+    wmax = float(np.max(np.abs(wmode)))
+    if wmax > 1e-15:
+        wmode = wmode / wmax
+
+    N_ref = float(Nv.min())                      # největší tlak (nejzápornější)
+    P_cr = lam_cr * abs(N_ref)
+    # efektivní μ z Eulera: P_cr = π²·EI_min/(μ·L)²  → μ = π·√(EI_min/P_cr)/L
+    xc = float(xv[int(np.argmin(Nv))])
+    EI_ref = EImin_at(min(max(xc, 1e-6), L - 1e-6)) or 0.0
+    mu_eff = (math.pi * math.sqrt(EI_ref / P_cr) / L) if (P_cr > 0 and EI_ref > 0) else 0.0
+
+    return BucklingEigenResult(
+        lam_cr=lam_cr, P_cr=P_cr, N_ref=N_ref, mu_eff=mu_eff,
+        x_mode=[float(x) for x in xs], w_mode=[float(v) for v in wmode],
+        note="")
+
+
 def load_case_summary(state, factors, label=""):
     """Souhrnný řádek pro jednu kombinaci (faktory lc_id→faktor) pro Load Case
     Builder. Vrací (cols, result), kde cols = [(název_sloupce, hodnota), …]

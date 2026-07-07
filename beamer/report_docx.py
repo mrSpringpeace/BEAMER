@@ -150,6 +150,22 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
                          fmt(r["sigma_cr"]), fmt(r["P_cr"]), fmt(r["RF"])])
             doc.add_paragraph(f"RF_vzpěr,min = {fmt(bc.rf_min)} ({tr('řídí')} {bc.crit_label})")
 
+        # fáze 2: bifurkace soustavy (vlastní čísla)
+        from .analysis import buckling_eigen_check
+        try:
+            be = buckling_eigen_check(state, result)
+        except Exception:
+            be = None
+        if be is not None:
+            doc.add_heading(tr("Vzpěrná stabilita – fáze 2 (bifurkace soustavy, vlastní čísla)")
+                            + f" – {tr('zobrazená kombinace')}", 1)
+            doc.add_paragraph(f"λ_cr = {fmt(be.lam_cr)} = RF_vzpěr   "
+                              f"P_cr = {fmt(be.P_cr)} N   N_ref = {fmt(be.N_ref)} N   "
+                              f"μ_eff = {fmt(be.mu_eff)}")
+            doc.add_paragraph(tr("Vzpěrná délka vyplývá z okrajových podmínek (bez ručního "
+                                 "μ); slabá osa I_min; osové pole z rovnováhy jedné kombinace."))
+            _img(doc, images, "buckling")
+
         if env is not None:
             try:
                 cc = conservative_check(state, env=env)

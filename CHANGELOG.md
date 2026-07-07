@@ -2,6 +2,36 @@
 
 Version format: **X.XX**
 
+## 1.28
+Buckling, temperature, schematic and a rotation fix:
+- **Column buckling — phase 2 (system bifurcation, eigenvalues).** Solves the
+  generalized eigenproblem (K_b + λ·K_g)·φ = 0 in the transverse (weak) plane:
+  K_b = bending stiffness about the weak axis EI_min, K_g = geometric stiffness
+  from the actual axial-force distribution N(x) of the displayed combination.
+  The smallest positive λ is the **critical load factor** (RF_buckling). The
+  effective length (μ) **follows from the boundary conditions** — no manual
+  estimate as in phase 1. The report (text and DOCX) gets a section with λ_cr,
+  P_cr, μ_eff and a **buckling mode-shape figure**. Validated against three Euler
+  cases (μ = 1.0 / 0.5 / 2.0). Computed only for the report export (the live tab
+  stays fast). No moment interaction (N+M) yet.
+- **Thermal load — phase 2: gradient through the section depth → bending.** A new
+  "gradient ΔT" field (top-fibre minus bottom-fibre temperature) produces a
+  thermal curvature κ = α·ΔT_grad/h and moment M = EI·κ. A simply supported beam
+  bends freely (thermal camber, no stress); a statically indeterminate one
+  develops stress from the restrained curvature.
+- **The schematic draws loads in the context of the displayed combination.** Only
+  loads with a non-zero factor in the active combination are shown, scaled by the
+  factor × the additional factor (so the schematic matches the reactions). A
+  **"across combinations"** toggle turns the filter off and shows all entered
+  loads at their defined magnitude.
+- **Fix: rotating a parametric section corrupted the shear center and Iω.** The
+  scanline approximation is only valid in the natural orientation; for a rotated
+  section (rectangle/circle/tube/I/T/L/U/C/direct) it ran on the rotated geometry
+  → wrong shear center (y_SC hard-wired to 0) and Iω. It is now computed from an
+  un-rotated twin and the shear-center vector is rotated (Iω and Wk are
+  rotation-invariant). The beam result (internal forces/deflection/RF) was
+  unaffected — only the Section-tab properties were fixed.
+
 ## 1.27
 
 **Critical fix (wrong results for assemblies with a rotated PID):**

@@ -1375,6 +1375,8 @@ class InputPanel(QWidget):
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
         elif ld.type == "thermal":
             v = f"  ΔT={ld.dT:.0f} °C ({ld.x1:.0f}–{ld.x2:.0f})"
+            if abs(getattr(ld, "dT_grad", 0.0)) > 1e-9:
+                v += f"  grad {ld.dT_grad:.0f} °C"
         else:
             v = f"  Mx={ld.Mx:.0f} @ x={ld.x:.0f}"
         return f"{base}{nm}{v}"
@@ -1432,8 +1434,10 @@ class InputPanel(QWidget):
             f.addRow("x1:", bind("x1", " mm", 1, 50))
             f.addRow("x2:", bind("x2", " mm", 1, 50))
             f.addRow(tr("ΔT [°C]:"), bind("dT", " °C", 1, 5))
-            hint = QLabel(tr("Rovnoměrný ohřev úseku. Osové pnutí vzniká jen při "
-                             "vazbě (α z materiálu). Ohyb od gradientu zatím ne."))
+            f.addRow(tr("gradient ΔT [°C]:"), bind("dT_grad", " °C", 1, 5))
+            hint = QLabel(tr("ΔT = rovnoměrný ohřev → osová dilatace (pnutí jen při "
+                             "vazbě). Gradient = teplota horního vlákna − dolního → "
+                             "křivost/ohyb (napětí jen při vazbě; α z materiálu)."))
             hint.setWordWrap(True); hint.setObjectName("hint")
             cl.addWidget(hint)
 

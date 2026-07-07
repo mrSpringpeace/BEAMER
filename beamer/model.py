@@ -79,7 +79,8 @@ class Load:
     q1: float = 0.0          # N/mm (svislé, +nahoru)
     q2: float = 0.0
     # teplotní zatížení (type "thermal"): rovnoměrné ΔT na [x1,x2]
-    dT: float = 0.0          # změna teploty [°C] (+ = ohřev)
+    dT: float = 0.0          # změna teploty [°C] (+ = ohřev) – rovnoměrná složka → osová dilatace
+    dT_grad: float = 0.0     # gradient přes výšku [°C]: T(horní vlákno) − T(dolní) → křivost/ohyb
 
 
 @dataclass

@@ -287,26 +287,41 @@ def solve_beam(state, factors=None) -> SolverResult:
                     F[elem["ne"]["dof"]+1] += (L_e/20)*(3*qA+7*qB)*mult
                     F[elem["ne"]["dof"]+2] += -(L_e**2/60)*(2*qA+3*qB)*mult
 
-    # ── teplotní zatížení (rovnoměrné ΔT): ekvivalentní osové uzlové síly ──
-    # Volná teplotní dilatace ε_th=α·ΔT; při vazbě vzniká osová síla. Load vektor
-    # baru = EA·α·ΔT·[−1,+1]; recovery odečte teplotní přetvoření z N.
+    # ── teplotní zatížení: ekvivalentní uzlové síly ──
+    # Rovnoměrné ΔT → osová dilatace ε_th=α·ΔT; při vazbě vzniká osová síla
+    # (vektor baru EA·α·ΔT·[−1,+1]). Gradient přes výšku (ΔT_grad = T_horní−T_dolní)
+    # → teplotní křivost κ_th=α·ΔT_grad/h a moment M_th=EIy·κ_th; ekvivalentní
+    # uzlové momenty [0,−M_th,0,+M_th] (jako fixed-end od gradientu). Recovery
+    # odečte teplotní přetvoření z N i z M (volný prvek → napětí 0, vázaný → pnutí).
     def dT_at(sg):
-        v = 0.0
+        vu = vg = 0.0
         for ld in state.loads:
             if ld.type != "thermal":
                 continue
             if ld.x1 - 1e-9 <= sg <= ld.x2 + 1e-9:
                 lm = _load_multiplier(state, ld, factors)
-                v += float(getattr(ld, "dT", 0.0) or 0.0) * lm
-        return v
+                vu += float(getattr(ld, "dT", 0.0) or 0.0) * lm
+                vg += float(getattr(ld, "dT_grad", 0.0) or 0.0) * lm
+        return vu, vg
     for elem in elements:
-        dT_e = dT_at((elem["xs"] + elem["xe"]) / 2.0)
+        dT_e, dTg_e = dT_at((elem["xs"] + elem["xe"]) / 2.0)
         elem["dT"] = dT_e
-        if abs(dT_e) < 1e-12:
-            continue
-        N_th = elem["EA"] * elem["alpha"] * dT_e     # EA·α·ΔT
-        F[elem["ns"]["dof"]+0] += -N_th
-        F[elem["ne"]["dof"]+0] += +N_th
+        # rovnoměrná složka → osová síla
+        if abs(dT_e) > 1e-12:
+            N_th = elem["EA"] * elem["alpha"] * dT_e     # EA·α·ΔT
+            F[elem["ns"]["dof"]+0] += -N_th
+            F[elem["ne"]["dof"]+0] += +N_th
+        # gradient → teplotní moment (křivost)
+        M_th = 0.0
+        if abs(dTg_e) > 1e-12 and elem["alpha"] != 0.0:
+            cs = elem["section"]
+            h = float(getattr(cs, "z_top", 0.0)) - float(getattr(cs, "z_bot", 0.0))
+            if h > 1e-9:
+                kth = elem["alpha"] * dTg_e / h          # teplotní křivost
+                M_th = elem["EIy"] * kth
+                F[elem["ns"]["dof"]+2] += -M_th
+                F[elem["ne"]["dof"]+2] += +M_th
+        elem["M_th"] = M_th
 
     # ── okrajové podmínky ──
     constrained = set()    # DOF držené na NULE (tuhé podpory)
@@ -505,6 +520,12 @@ def solve_beam(state, factors=None) -> SolverResult:
                 qA, qB = qval(a)*lm, qval(b)*lm
                 feq += np.array([(L_e/20)*(7*qA+3*qB), (L_e**2/60)*(3*qA+2*qB),
                                  (L_e/20)*(3*qA+7*qB), -(L_e**2/60)*(2*qA+3*qB)])
+
+        # teplotní gradient: stejný ekvivalentní moment jako při sestavení, aby
+        # koncové momenty (a tím M(x)) obsahovaly teplotní příspěvek
+        M_th = elem.get("M_th", 0.0)
+        if abs(M_th) > 1e-12:
+            feq += np.array([0.0, -M_th, 0.0, +M_th])
 
         fend = kb @ ub - feq        # uzlové síly [Fz1, M1, Fz2, M2]
         Mi = 0.0 if elem["release_start"] else -fend[1]

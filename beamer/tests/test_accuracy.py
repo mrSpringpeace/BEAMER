@@ -750,6 +750,83 @@ def test_spring_support_stiff_limit_and_reaction():
     assert _rel(abs(Rz), abs(500.0 * w_supp)) < 1e-3           # reakce = k·w
 
 
+def test_rotated_parametric_shear_center_warping():
+    """Natočení parametrického profilu: Iω a Wk jsou rotačně invariantní, střed
+    smyku je bod, který se otáčí s profilem. Dřív scanline aproximace běžela na
+    natočené geometrii → špatný SC (y_SC natvrdo 0) a Iω. Oprava počítá z
+    nenatočeného dvojníka a vektor SC otočí. Iy/Iz musí zůstat tenzorově otočené."""
+    def mk(rot):
+        return build_section(CrossSectionDef(type="l_section",
+                             params={"h": 100, "b": 80, "t": 8}, rotation=rot))
+    s0 = mk(0.0)
+    assert abs(s0.z_SC) > 1.0            # L má SC mimo těžiště (jinak test nic netestuje)
+    for rot in (30.0, 90.0, 180.0):
+        s = mk(rot)
+        th = math.radians(rot); ca, sa = math.cos(th), math.sin(th)
+        y_exp = s0.y_SC * ca - s0.z_SC * sa
+        z_exp = s0.y_SC * sa + s0.z_SC * ca
+        assert math.hypot(s.y_SC - y_exp, s.z_SC - z_exp) < 1e-6   # SC = rotace SC(0)
+        assert _rel(s.Iw, s0.Iw) < 1e-9                            # Iω invariantní
+        assert _rel(s.Wk, s0.Wk) < 1e-9                            # Wk invariantní
+    # Iy/Iz se natočením 90° prohodí (nedotčeno opravou SC)
+    s90 = mk(90.0)
+    assert _rel(s90.Iy, s0.Iz) < 1e-6 and _rel(s90.Iz, s0.Iy) < 1e-6
+
+
+def test_schema_load_filter_by_combination():
+    """Schéma kreslí zatížení v kontextu ZOBRAZENÉ kombinace: jen zatížení s
+    nenulovým faktorem, velikost × faktor × dodatečný součinitel. Bez kombinace
+    fallback = zadané hodnoty."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from beamer.gui.plots import _draw_schema
+
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+    st = ProjectState(
+        length=1000, materials=[MAT], selected_material_id="m_steel",
+        cross_section=rect,
+        supports=[Support("a", 0, "pin", 0), Support("b", 1000, "roller", 0)],
+        load_cases=[LoadCase("lc1", "LC1"), LoadCase("lc2", "LC2")],
+        loads=[Load("A", "point_force", "A", "lc1", x=300, Fz=-1000),
+               Load("B", "point_force", "B", "lc2", x=700, Fz=-2000)],
+        load_combinations=[LoadCombination("C1", "C1", {"A": 1.0}),
+                           LoadCombination("C2", "C2", {"A": 1.0, "B": 0.5})],
+        additional_factor=1.0)
+
+    def force_labels(active, add=1.0):
+        st.selected_active_combination_id = active
+        st.additional_factor = add
+        fig = plt.figure(); ax = fig.add_subplot(111)
+        _draw_schema(ax, st, None)
+        vals = [t.get_text() for t in ax.texts
+                if " N" in t.get_text() and "N/mm" not in t.get_text()]
+        plt.close(fig)
+        return vals
+
+    assert force_labels("C1") == ["F1\n-1000 N"]                    # jen A
+    assert force_labels("C2") == ["F1\n-1000 N", "F2\n-1000 N"]     # A + B×0.5
+    assert force_labels("C1", add=1.5) == ["F1\n-1500 N"]           # × dodatečný souč.
+
+    # přepínač „napříč kombinacemi" (filter_by_combination=False) → vše raw i při
+    # aktivní kombinaci C1
+    st.selected_active_combination_id = "C1"; st.additional_factor = 1.0
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    _draw_schema(ax, st, None, filter_by_combination=False)
+    allv = [t.get_text() for t in ax.texts
+            if " N" in t.get_text() and "N/mm" not in t.get_text()]
+    plt.close(fig)
+    assert allv == ["F1\n-1000 N", "F2\n-2000 N"]
+    st.load_combinations = []; st.selected_active_combination_id = ""
+    st.additional_factor = 1.0
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    _draw_schema(ax, st, None)                                       # bez kombinace = raw
+    raw = [t.get_text() for t in ax.texts
+           if " N" in t.get_text() and "N/mm" not in t.get_text()]
+    plt.close(fig)
+    assert raw == ["F1\n-1000 N", "F2\n-2000 N"]
+
+
 def test_support_gap_contact():
     """Vůle podpory (nelineární kontakt, aktivní množina): střední podpora s
     vůlí g nechá uzel volný v ±g. Malé zatížení (průhyb < g) → nedosedne
@@ -929,6 +1006,84 @@ def test_thermal_axial_load():
     r2 = solve_beam(mk2(1025.0))
     N2 = r2.points[len(r2.points) // 2].N
     assert _rel(N2, -210000 * 3200 * 12e-6 * 50.0 * (1025 / 2000)) < 1e-6
+
+
+def test_buckling_eigen_euler_cases():
+    """Vzpěr fáze 2 (vlastní čísla): kritický násobitel λ_cr celé soustavy pro
+    tři klasické Eulerovy případy → odvozený součinitel vzpěrné délky μ musí
+    vyjít 1.0 (kloub-kloub), 0.5 (vetknutý-vetknutý), 2.0 (vetknutý-volný).
+    Tím se ověří geometrická matice tuhosti i okrajové podmínky (w=0 vs w=0&φ=0)."""
+    from beamer.analysis import buckling_eigen_check
+    E, b, h, L, P = 210000.0, 40.0, 80.0, 1000.0, 1000.0
+    matB = Material("mb", "St", E=E, G=81000.0, nu=0.3, rho=7.85,
+                    Re=235.0, Rm=360.0, alpha=12e-6)
+    rect = CrossSectionDef(type="rectangle", params={"b": b, "h": h})
+    Imin = min(b*h**3/12, h*b**3/12)
+    P_euler = math.pi**2 * E * Imin / L**2
+
+    def run(supports, loads):
+        st = ProjectState(
+            length=L, materials=[matB], selected_material_id="mb",
+            cross_section=rect, section_segments=[SectionSegment(0.0, L, rect, None)],
+            supports=supports, load_cases=[LoadCase("lc", "LC", False)], loads=loads,
+            load_combinations=[LoadCombination(id="c", name="c", factors={l.id: 1.0 for l in loads})],
+            additional_factor=1.0)
+        return buckling_eigen_check(st, solve_beam(st))
+
+    # kloub-kloub: osový tlak koncovou silou (rolna nechá u volné) → μ=1
+    bk = run([Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+             [Load("f", "point_force", "F", "lc", x=L, Fx=-P)])
+    assert _rel(bk.mu_eff, 1.0) < 1e-2 and _rel(bk.P_cr, P_euler) < 1e-2
+
+    # vetknutý-volný (konzola): μ=2, P_cr = Euler/4
+    bk = run([Support("a", 0, "fixed", 0)],
+             [Load("f", "point_force", "F", "lc", x=L, Fx=-P)])
+    assert _rel(bk.mu_eff, 2.0) < 1e-2 and _rel(bk.P_cr, 0.25 * P_euler) < 1e-2
+
+    # vetknutý-vetknutý: tlak z omezené teplotní dilatace (oba konce drží u) → μ=0.5
+    th = Load("t", "thermal", "T", "lc"); th.x1 = 0; th.x2 = L; th.dT = 50.0
+    bk = run([Support("a", 0, "fixed", 0), Support("b", L, "fixed", 0)], [th])
+    assert _rel(bk.mu_eff, 0.5) < 1e-2 and _rel(bk.P_cr, 4.0 * P_euler) < 1e-2
+
+    # čistý tah → žádné vybočení (None)
+    assert run([Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+               [Load("f", "point_force", "F", "lc", x=L, Fx=+P)]) is None
+
+
+def test_thermal_gradient_bending():
+    """Teplotní gradient (fáze 2): rozdíl teplot horní−dolní vlákno → křivost
+    κ=α·ΔT_grad/h. Prostě podepřený se volně prohne (M≈0, δ=κ·L²/8, bez pnutí);
+    vetknutý-vetknutý má konstantní M=E·I·κ (napětí od zabráněné křivosti)."""
+    E, alpha, b, h, L, dTg = 210000.0, 12e-6, 40.0, 80.0, 1000.0, 50.0
+    matT = Material("mt", "St", E=E, G=81000.0, nu=0.3, rho=7.85,
+                    Re=235.0, Rm=360.0, alpha=alpha)
+    rect = CrossSectionDef(type="rectangle", params={"b": b, "h": h})
+    I = b * h**3 / 12.0
+    kth = alpha * dTg / h
+    M_exp = E * I * kth
+    d_exp = kth * L**2 / 8.0
+
+    def mk(supports):
+        th = Load("t", "thermal", "dT", "lc"); th.x1 = 0; th.x2 = L
+        th.dT = 0.0; th.dT_grad = dTg
+        return ProjectState(
+            length=L, materials=[matT], selected_material_id="mt",
+            cross_section=rect, section_segments=[SectionSegment(0.0, L, rect, None)],
+            supports=supports, load_cases=[LoadCase("lc", "LC", False)], loads=[th],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"t": 1.0})],
+            additional_factor=1.0)
+
+    # prostě podepřený: volná křivost → M≈0, průhyb δ=κ·L²/8
+    r_ss = solve_beam(mk([Support("a", 0, "pin", 0), Support("b", L, "roller", 0)]))
+    assert max(abs(p.M) for p in r_ss.points) < 1e-3 * M_exp       # bez pnutí
+    w_mid = [p.w for p in r_ss.points if abs(p.x - L/2) < 6][0]
+    assert _rel(abs(w_mid), d_exp) < 5e-3                          # tepelná klenba
+    # vetknutý-vetknutý: zabráněná křivost → konstantní M=E·I·κ, průhyb ~0
+    r_ff = solve_beam(mk([Support("a", 0, "fixed", 0), Support("b", L, "fixed", 0)]))
+    Ms = [p.M for p in r_ff.points]
+    assert _rel(abs(Ms[len(Ms)//2]), M_exp) < 1e-6                 # M = E·I·κ
+    assert max(Ms) - min(Ms) < 1e-3 * M_exp                       # konstantní po délce
+    assert max(abs(p.w) for p in r_ff.points) < 1e-6              # bez průhybu
 
 
 if __name__ == "__main__":

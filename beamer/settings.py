@@ -23,6 +23,7 @@ class Settings:
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
     schema_show_loads: bool = True      # zobrazit zatížení ve schématu
     schema_show_supports: bool = True   # zobrazit podpory a reakce ve schématu
+    schema_all_loads: bool = False      # ve schématu ukázat zatížení napříč kombinacemi (bez filtru)
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
     last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
     theme: str = "system"           # vzhled: "system" | "light" | "dark"
@@ -55,7 +56,7 @@ def _load() -> Settings:
         s = Settings()
         for k in ("language", "number_format", "decimals", "vvu_combined",
                   "vvu_show_deform", "schema_show_loads", "schema_show_supports",
-                  "shared_library_dir", "last_dir",
+                  "schema_all_loads", "shared_library_dir", "last_dir",
                   "theme", "recent_files", "panel_expanded"):
             if k in d:
                 setattr(s, k, d[k])
