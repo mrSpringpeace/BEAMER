@@ -16,7 +16,7 @@ from ..i18n import tr
 from ..settings import SETTINGS
 from .widgets import InputPanel, ResultsPanel, ReportPanel
 from .plots import (BeamDiagramCanvas, SchemaCanvas, SectionCanvas, StressCanvas,
-                    MarginCanvas, StressAlongCanvas)
+                    MarginCanvas, StressAlongCanvas, BucklingCanvas)
 from .worker import ComputeWorker
 from .spin import NoWheelComboBox
 
@@ -180,6 +180,28 @@ class MainWindow(QMainWindow):
                                 "{ background:#ffffff; }")
         sx_l.addWidget(sx_scroll)
         self.center_tabs.addTab(stressx_tab, tr("Napětí podél nosníku"))
+
+        # karta Vzpěr (fáze 2 – bifurkace soustavy; eigen ~0,3 s → na tlačítko)
+        buck_tab = QWidget()
+        bk_l = QVBoxLayout(buck_tab)
+        bkbar = QHBoxLayout()
+        self.buck_btn = QPushButton(tr("▶ Spočítat vzpěr"))
+        self.buck_btn.clicked.connect(self.compute_buckling)
+        bkbar.addWidget(self.buck_btn)
+        self.buck_lbl = QLabel(tr("Vzpěr fáze 2 – stiskni „Spočítat vzpěr“."))
+        self.buck_lbl.setStyleSheet("font-weight:bold;")
+        bkbar.addWidget(self.buck_lbl, 1)
+        bk_l.addLayout(bkbar)
+        self.buckling_canvas = BucklingCanvas()
+        bk_scroll = QScrollArea()
+        bk_scroll.setWidgetResizable(True)
+        bk_scroll.setWidget(self.buckling_canvas)
+        bk_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
+                                "{ background:#ffffff; }")
+        bk_l.addWidget(bk_scroll)
+        self._buck_tab_index = self.center_tabs.addTab(buck_tab, tr("Vzpěr"))
+        self._buck_stale = True
+        self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
 
         # karta Průřez a napjatost (přesunuta z pravého panelu – víc prostoru)
         stress_tab = QWidget()
@@ -626,6 +648,33 @@ class MainWindow(QMainWindow):
         SETTINGS.save()
         self._plot_schema(None if getattr(self, "_dirty", True) else self.result)
 
+    def _on_center_tab_changed(self, idx):
+        # přepnutí na kartu Vzpěr → dopočítej, pokud je zneplatněný a je výsledek
+        if idx == getattr(self, "_buck_tab_index", -1) and getattr(self, "_buck_stale", True):
+            self.compute_buckling()
+
+    def compute_buckling(self):
+        """Vzpěr fáze 2 (bifurkace soustavy) pro aktuální stav+výsledek. Počítá se
+        na vyžádání (eigen ~0,3 s), ne v hlavním přepočtu."""
+        if not self.result or not getattr(self.result, "is_stable", False):
+            self.buck_lbl.setText(tr("Nejdřív spočítej výsledky (F5)."))
+            self.buckling_canvas.plot(self.state, None)
+            return
+        from ..analysis import buckling_eigen_check
+        try:
+            be = buckling_eigen_check(self.state, self.result)
+        except Exception:
+            be = None
+        self._buck_stale = False
+        if be is None:
+            self.buck_lbl.setText(tr("Bez tlakové osové síly – vzpěr se neřeší."))
+        else:
+            self.buck_lbl.setText(
+                f"λ_cr = {be.lam_cr:.3g}  (RF_vzpěr)    "
+                f"P_cr = {be.P_cr:.0f} N    μ_eff = {be.mu_eff:.3g}    "
+                f"N_ref = {be.N_ref:.0f} N")
+        self.buckling_canvas.plot(self.state, be)
+
     def _refresh_views(self):
         self._update_combo_label()
         self._plot_schema(self.result)                     # schéma + reakce
@@ -641,6 +690,14 @@ class MainWindow(QMainWindow):
         self.results_panel.set_analysis(self.result, self.state, self.reserves)
         self.report_panel.set_context(self.result, self.state, self.reserves)
         self._refresh_results_text()
+        # vzpěr je drahý → nepřepočítávat automaticky; jen zneplatnit (přepočte se
+        # tlačítkem nebo při přepnutí na kartu Vzpěr)
+        self._buck_stale = True
+        if self.center_tabs.currentIndex() == getattr(self, "_buck_tab_index", -1):
+            self.compute_buckling()
+        else:
+            self.buck_lbl.setText(tr("Vzpěr fáze 2 – stiskni „Spočítat vzpěr“."))
+            self.buckling_canvas.plot(self.state, None)
         if self.result and not self.result.is_stable:
             self.statusBar().showMessage("⚠ " + self.result.error_message)
         else:

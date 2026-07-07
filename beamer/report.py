@@ -211,11 +211,17 @@ def build_report(state, result, margins, include_conservative=False) -> str:
 
 def _load_desc(ld):
     if ld.type == "point_force":
-        return f"x={ld.x:.0f} Fx={ld.Fx} N Fz={ld.Fz} N ecc={ld.eccentricity} mm"
+        s = f"x={ld.x:.0f} Fx={ld.Fx} N Fz={ld.Fz} N"
+        if abs(getattr(ld, "Fy", 0.0)) > 1e-9:
+            s += f" Fy={ld.Fy} N"
+        return s + f" ecc={ld.eccentricity} mm"
     if ld.type == "distributed":
         return f"x1={ld.x1:.0f} x2={ld.x2:.0f} q1={ld.q1} q2={ld.q2} N/mm"
     if ld.type == "moment":
-        return f"x={ld.x:.0f} My={ld.My} N·mm"
+        s = f"x={ld.x:.0f} My={ld.My} N·mm"
+        if abs(getattr(ld, "Mz", 0.0)) > 1e-9:
+            s += f" Mz={ld.Mz} N·mm"
+        return s
     if ld.type == "torsion":
         return f"x={ld.x:.0f} Mx={ld.Mx} N·mm"
     if ld.type == "thermal":

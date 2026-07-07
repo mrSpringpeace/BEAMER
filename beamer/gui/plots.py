@@ -185,9 +185,21 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True,
             continue        # zatížení není v zobrazené kombinaci → skrýt
         # škálované hodnoty (faktor kombinace × dodatečný součinitel)
         Fz, Fx = ld.Fz * m, ld.Fx * m
+        Fy = getattr(ld, "Fy", 0.0) * m
         q1, q2 = ld.q1 * m, ld.q2 * m
         My, Mx, dT = ld.My * m, ld.Mx * m, ld.dT * m
+        Mz = getattr(ld, "Mz", 0.0) * m
         dTg = getattr(ld, "dT_grad", 0.0) * m
+        # mimorovinné složky (vodorovná rovina x-y) – boční pohled je neukáže,
+        # proto značka ⊗ (do roviny) s hodnotou
+        if abs(Fy) > 1e-9:
+            ax.plot(ld.x, 9, "o", mfc="none", mec="#00838f", ms=9)
+            ax.plot(ld.x, 9, "x", color="#00838f", ms=7)
+            ax.annotate(f"Fy={Fy:.0f} N", xy=(ld.x, 9), textcoords="offset points",
+                        xytext=(7, 0), fontsize=6.5, color="#00838f", va="center")
+        if abs(Mz) > 1e-9:
+            ax.annotate(f"Mz={Mz:.0f}", xy=(ld.x, 12), textcoords="offset points",
+                        xytext=(7, 6), fontsize=6.5, color="#00838f")
 
         if ld.type == "point_force" and (abs(Fz) > 1e-9 or abs(Fx) > 1e-9):
             cnt["F"] += 1; code = f"F{cnt['F']}"
@@ -333,6 +345,27 @@ def draw_buckling_mode(ax, state, be):
     ax.grid(True, axis="x", alpha=0.3)
 
 
+class BucklingCanvas(MplCanvas):
+    """Plátno tvaru vybočení (vzpěr fáze 2). `be`=None → informační hláška."""
+
+    def __init__(self):
+        super().__init__(figsize=(6, 3.0))
+
+    def plot(self, state, be):
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        if be is None:
+            ax.text(0.5, 0.5,
+                    tr("Bez tlakové osové síly – vzpěr se neřeší.\n"
+                       "(Nutný tlačený prut; pak stiskni „Spočítat vzpěr“.)"),
+                    ha="center", va="center", fontsize=10, color="#888",
+                    transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+        else:
+            draw_buckling_mode(ax, state, be)
+        self.draw()
+
+
 class SchemaCanvas(MplCanvas):
     """Samostatné plátno se schématem nosníku (vstup + reakce)."""
 
@@ -378,7 +411,10 @@ class BeamDiagramCanvas(MplCanvas):
         x = np.array([p.x for p in pts])
         d = dict(N=np.array([p.N for p in pts]), V=np.array([p.V for p in pts]),
                  M=np.array([p.M for p in pts]), Mk=np.array([p.Mk for p in pts]),
-                 w=np.array([p.w for p in pts]), phi=np.array([p.phi for p in pts]))
+                 w=np.array([p.w for p in pts]), phi=np.array([p.phi for p in pts]),
+                 V_y=np.array([getattr(p, "V_y", 0.0) for p in pts]),
+                 M_z=np.array([getattr(p, "M_z", 0.0) for p in pts]),
+                 v=np.array([getattr(p, "v", 0.0) for p in pts]))
         if self.combined:
             self.fig.set_layout_engine("constrained")
             self._plot_combined(x, d)
@@ -394,13 +430,16 @@ class BeamDiagramCanvas(MplCanvas):
     def _plot_separate(self, x, d):
         candidates = [
             (tr("N – osová síla [N]"), d["N"], "#1565c0"),
-            (tr("V – posouvající síla [N]"), d["V"], "#2e7d32"),
-            (tr("M – ohybový moment [N·mm]"), d["M"], "#c62828"),
+            (tr("V_z – posouvající síla svislá [N]"), d["V"], "#2e7d32"),
+            (tr("V_y – posouvající síla vodorovná [N]"), d["V_y"], "#66bb6a"),
+            (tr("M_y – ohybový moment (svislá rovina) [N·mm]"), d["M"], "#c62828"),
+            (tr("M_z – ohybový moment (vodorovná rovina) [N·mm]"), d["M_z"], "#ef5350"),
             (tr("Mk – kroutící moment [N·mm]"), d["Mk"], "#6a1b9a"),
         ]
         if self.show_deform:
             candidates += [
-                (tr("w – průhyb [mm]"), d["w"], "#00838f"),
+                (tr("w – průhyb svislý [mm]"), d["w"], "#00838f"),
+                (tr("v – průhyb vodorovný [mm]"), d["v"], "#26c6da"),
                 (tr("φ – pootočení [rad]"), d["phi"], "#ef6c00"),
             ]
         # nulové veličiny (např. N, Mk bez příslušného zatížení) se nezobrazují

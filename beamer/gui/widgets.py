@@ -1369,10 +1369,14 @@ class InputPanel(QWidget):
         nm = f" · {ld.name}" if ld.name else ""
         if ld.type == "point_force":
             v = f"  Fz={ld.Fz:.0f} N @ x={ld.x:.0f}"
+            if abs(getattr(ld, "Fy", 0.0)) > 1e-9:
+                v += f"  Fy={ld.Fy:.0f} N"
         elif ld.type == "distributed":
             v = f"  q={ld.q1:.1f}→{ld.q2:.1f} ({ld.x1:.0f}–{ld.x2:.0f})"
         elif ld.type == "moment":
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
+            if abs(getattr(ld, "Mz", 0.0)) > 1e-9:
+                v += f"  Mz={ld.Mz:.0f}"
         elif ld.type == "thermal":
             v = f"  ΔT={ld.dT:.0f} °C ({ld.x1:.0f}–{ld.x2:.0f})"
             if abs(getattr(ld, "dT_grad", 0.0)) > 1e-9:
@@ -1412,9 +1416,46 @@ class InputPanel(QWidget):
             return sp
 
         if ld.type == "point_force":
+            import math as _m
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow("Fx:", bind("Fx", " N"))
-            f.addRow(tr("Fz (+nahoru):"), bind("Fz", " N"))
+            fz_sp = bind("Fz", " N")
+            fy_sp = bind("Fy", " N")
+            f.addRow(tr("Fz (svislá, +nahoru):"), fz_sp)
+            f.addRow(tr("Fy (vodorovná):"), fy_sp)
+            # Alternativní zadání příčné síly velikostí + úhlem (obousměrně
+            # provázané s Fy/Fz). Úhel od svislé DOLŮ (gravitace = 0°), + k Fy.
+            mag0 = _m.hypot(ld.Fy, ld.Fz)
+            ang0 = _m.degrees(_m.atan2(ld.Fy, -ld.Fz)) if mag0 > 1e-9 else 0.0
+            mag_sp = _spin(mag0, 0.0, 1e9, 1.0, 2, " N")
+            ang_sp = _spin(ang0, -180.0, 180.0, 5.0, 1, " °")
+            ang_sp.setToolTip(tr("Úhel příčné síly od svislé dolů (0° = dolů, "
+                                 "90° = ve směru +Fy). Velikost + úhel se přepočtou na Fy, Fz."))
+            _lock = {"on": False}
+
+            def _from_polar():
+                if _lock["on"]:
+                    return
+                _lock["on"] = True
+                F = mag_sp.value(); a = _m.radians(ang_sp.value())
+                fz_sp.setValue(-F*_m.cos(a)); fy_sp.setValue(F*_m.sin(a))
+                _lock["on"] = False
+
+            def _from_comp():
+                if _lock["on"]:
+                    return
+                _lock["on"] = True
+                mag_sp.setValue(_m.hypot(ld.Fy, ld.Fz))
+                if abs(ld.Fy) + abs(ld.Fz) > 1e-9:
+                    ang_sp.setValue(_m.degrees(_m.atan2(ld.Fy, -ld.Fz)))
+                _lock["on"] = False
+
+            mag_sp.valueChanged.connect(lambda _v: _from_polar())
+            ang_sp.valueChanged.connect(lambda _v: _from_polar())
+            fz_sp.valueChanged.connect(lambda _v: _from_comp())
+            fy_sp.valueChanged.connect(lambda _v: _from_comp())
+            f.addRow(tr("│F│ příčná (nebo):"), mag_sp)
+            f.addRow(tr("úhel od svislé [°]:"), ang_sp)
             f.addRow(tr("excentricita:"), bind("eccentricity", " mm"))
             repl = QPushButton(tr("↦ Nahradit spojitým…"))
             repl.clicked.connect(lambda _, l=ld: self._open_loadgen(l))
@@ -1426,7 +1467,8 @@ class InputPanel(QWidget):
             f.addRow("q2:", bind("q2", " N/mm"))
         elif ld.type == "moment":
             f.addRow("x:", bind("x", " mm", 1, 50))
-            f.addRow("My:", bind("My", " N·mm"))
+            f.addRow(tr("My (kolem y):"), bind("My", " N·mm"))
+            f.addRow(tr("Mz (kolem z):"), bind("Mz", " N·mm"))
         elif ld.type == "torsion":
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow("Mx:", bind("Mx", " N·mm"))

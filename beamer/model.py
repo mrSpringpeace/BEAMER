@@ -69,9 +69,11 @@ class Load:
     # bodové síly / moment / krut (poloha)
     x: float = 0.0
     Fx: float = 0.0          # osová síla (N)
-    Fz: float = 0.0          # příčná síla (N, +nahoru)
+    Fz: float = 0.0          # příčná síla svislá (N, +nahoru, rovina x-z)
+    Fy: float = 0.0          # příčná síla vodorovná (N, rovina x-y) – biaxiál
     eccentricity: float = 0.0  # excentricita -> Mk = Fz·e (mm)
-    My: float = 0.0          # ohybový moment (N·mm)
+    My: float = 0.0          # ohybový moment kolem osy y (N·mm, rovina x-z)
+    Mz: float = 0.0          # ohybový moment kolem osy z (N·mm, rovina x-y) – biaxiál
     Mx: float = 0.0          # kroutící moment (N·mm)
     # spojité
     x1: float = 0.0

@@ -2,6 +2,31 @@
 
 Version format: **X.XX**
 
+## 1.29
+**Biaxial bending / spatial loading (solver 4 → 6 DOF).** A major core extension:
+the beam can now be loaded in both transverse planes (not only vertically).
+- **6 DOF per node** (u, w, θy, v, θz, θx) — a second bending plane x-y
+  (stiffness EIz). **New loads:** `Fy` (horizontal transverse force) and `Mz`
+  (moment about the z-axis). A planar problem (Fy=Mz=0) stays **unchanged**
+  (byte-identical to the previous solver), so simple analyses aren't complicated.
+- **Skew bending (Iyz coupling).** An unsymmetric/rotated section deflects
+  sideways under a vertical load; the coupling of the two bending planes through
+  the product of inertia Iyz is included both in the element stiffness and in the
+  stress assessment. Validated by the physical equivalence "rotate the section by
+  α vs rotate the load by −α" (deflection and stress invariant).
+- **Biaxial stress into the RF.** The normal stress is evaluated at the section's
+  true extreme fibres with the full unsymmetric-bending formula (My, Mz, Iy, Iz,
+  Iyz) — the critical point is usually at a corner, not on the axis.
+- **UI:** a transverse force can be entered by **its Fy/Fz components, or by
+  magnitude and angle** (0° = straight down) — any direction around the beam,
+  two-way linked. The internal-force diagrams show **both planes** (V_z/V_y,
+  M_y/M_z, w/v); the horizontal curves appear only when non-zero. The schematic
+  marks an out-of-plane force.
+
+Note: a composite (multi-material) section is still assessed uniaxially; a
+biaxial composite check, buckling about both axes and N+M interaction are planned
+follow-ups.
+
 ## 1.28
 Buckling, temperature, schematic and a rotation fix:
 - **Column buckling — phase 2 (system bifurcation, eigenvalues).** Solves the

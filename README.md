@@ -29,13 +29,16 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 
 ## Features
 
-- **Beam solver** — direct stiffness method (4 DOF per node: axial *u*,
-  transverse *w*, bending rotation *φ*, torsion *θ*). Handles statically
-  indeterminate beams; choice of **Euler–Bernoulli** or **Timoshenko** theory.
-  The mesh is refined automatically for accurate deflection under distributed
-  loads.
-- **Internal forces & deformations** — axial force *N*, shear *V*, bending
-  moment *M*, torsion *Mk*, deflection *w* and rotation *φ* along the beam,
+- **Beam solver** — direct stiffness method, **6 DOF per node** (axial *u*, two
+  transverse deflections *w*, *v*, two bending rotations, torsion). Handles
+  statically indeterminate beams; choice of **Euler–Bernoulli** or **Timoshenko**
+  theory. The mesh is refined automatically for accurate deflection.
+- **Biaxial bending** — loads in both transverse planes (vertical *Fz* and
+  horizontal *Fy*, or a force at any angle around the beam), with **skew-bending
+  coupling** through the product of inertia *Iyz* for unsymmetric/rotated
+  sections. A purely vertical (planar) problem behaves exactly as before.
+- **Internal forces & deformations** — axial force *N*, shears *V_z*/*V_y*,
+  bending moments *M_y*/*M_z*, torsion *Mk*, deflections *w*/*v* along the beam,
   with extrema marked on the diagrams.
 - **Segment-based model** — the beam is built from segments; each segment has
   its own **length**, **material** (from the library) and **cross-section**

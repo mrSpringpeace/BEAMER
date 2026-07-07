@@ -750,6 +750,122 @@ def test_spring_support_stiff_limit_and_reaction():
     assert _rel(abs(Rz), abs(500.0 * w_supp)) < 1e-3           # reakce = k·w
 
 
+def test_biaxial_iyz_coupling_rotation_equivalence():
+    """Biaxiál fáze B2: Iyz tuhostní spřažení (šikmý ohyb). Natočit SEKCI o α a
+    zatížit svisle = nechat sekci a natočit ZATÍŽENÍ o −α (stejná fyzika). Celková
+    deformace |d|=√(w²+v²) i max napětí musí být invariantní → ověří správné
+    znaménko/velikost křížové tuhosti EIyz i vyhodnocení napětí v pravých vláknech."""
+    from beamer.analysis import reserves_along_beam
+    E, b, h, L, P, a = 210000.0, 40.0, 80.0, 1000.0, 1000.0, 45.0
+    matB = Material("mb", "St", E=E, G=81000.0, nu=0.3, rho=7.85, Re=235.0, Rm=360.0)
+
+    def build(rot, Fy, Fz):
+        rect = CrossSectionDef(type="rectangle", params={"b": b, "h": h}, rotation=rot)
+        ld = Load("f", "point_force", "F", "lc", x=L/2, Fy=Fy, Fz=Fz)
+        return ProjectState(
+            length=L, materials=[matB], selected_material_id="mb",
+            cross_section=rect, section_segments=[SectionSegment(0.0, L, rect, None)],
+            supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+            load_cases=[LoadCase("lc", "LC", False)], loads=[ld],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"f": 1.0})],
+            additional_factor=1.0)
+
+    def solve(s):
+        r = solve_beam(s)
+        p = [q for q in r.points if abs(q.x - L/2) < 6][0]
+        return math.hypot(p.w, p.v), max(x.sigma_max for x in reserves_along_beam(r, s))
+
+    c = math.cos(math.radians(a))
+    dA, sA = solve(build(a, 0.0, -P))          # sekce +45°, svislá síla
+    dB, sB = solve(build(0.0, -P*c, -P*c))     # sekce 0°, síla natočená o −45°
+    assert _rel(dA, dB) < 1e-3                  # celková deformace invariantní
+    assert _rel(sA, sB) < 5e-3                  # max napětí invariantní
+    # bez spřažení (Iyz=0) je v-rovina od svislé síly nulová (kontrola regrese)
+    r0 = solve_beam(build(0.0, 0.0, -P))
+    assert max(abs(p.v) for p in r0.points) < 1e-9
+
+
+def test_biaxial_stress_into_rf():
+    """Biaxiál fáze B1: současný ohyb v obou rovinách (Fz+Fy) → normálové napětí
+    se sčítá v rohu průřezu: σ_max = |My|·z_ext/Iy + |Mz|·y_ext/Iz. Ověření přes
+    celý pipeline (reserves_along_beam) i regrese Mz=0 = uniaxiál."""
+    from beamer.analysis import reserves_along_beam
+    E, b, h, L, P = 210000.0, 40.0, 80.0, 1000.0, 1000.0
+    matB = Material("mb", "St", E=E, G=81000.0, nu=0.3, rho=7.85, Re=235.0, Rm=360.0)
+    rect = CrossSectionDef(type="rectangle", params={"b": b, "h": h})
+    Iy, Iz = b*h**3/12, h*b**3/12
+    Mmid = P*L/4
+    s_uni = Mmid*(h/2)/Iy                       # jen svislý ohyb
+    s_bx = Mmid*(h/2)/Iy + Mmid*(b/2)/Iz        # oba ohyby v rohu
+
+    def mk(*comps):
+        loads = []
+        for i, c in enumerate(comps):
+            ld = Load(f"f{i}", "point_force", "F", "lc", x=L/2)
+            setattr(ld, c, -P); loads.append(ld)
+        return ProjectState(
+            length=L, materials=[matB], selected_material_id="mb",
+            cross_section=rect, section_segments=[SectionSegment(0.0, L, rect, None)],
+            supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+            load_cases=[LoadCase("lc", "LC", False)], loads=loads,
+            load_combinations=[LoadCombination(id="c", name="c",
+                                               factors={l.id: 1.0 for l in loads})],
+            additional_factor=1.0)
+
+    # uniaxiální (jen Fz) a biaxiální (Fz+Fy) – poměr eliminuje vzorkování stanic
+    r1 = reserves_along_beam(solve_beam(mk("Fz")), mk("Fz"))
+    st2 = mk("Fz", "Fy")
+    r2 = reserves_along_beam(solve_beam(st2), st2)
+    sig1 = max(x.sigma_max for x in r1)
+    sig2 = max(x.sigma_max for x in r2)
+    assert _rel(sig2 / sig1, s_bx / s_uni) < 5e-3     # poměr napětí = 3.0 (roh)
+    # RF kleslo ve stejném poměru
+    rf1 = min(x.RF for x in r1); rf2 = min(x.RF for x in r2)
+    assert _rel(rf1 / rf2, s_bx / s_uni) < 1e-2
+    # uniaxiální absolutně (blízko midspanu) – biaxiální větev se nezapnula
+    assert 0.98 * s_uni < sig1 < 1.001 * s_uni
+
+
+def test_biaxial_horizontal_bending():
+    """Biaxiál fáze A (6 DOF, dvě dekuplované roviny): vodorovná síla Fy dá ohyb
+    v rovině x-y se slabou tuhostí EIz – zrcadlo svislého případu s Iz místo Iy.
+    Prostě podepřený, síla uprostřed: v_mid = P·L³/(48·E·Iz), M_z,mid = P·L/4.
+    Svislá rovina zůstane netknutá (w≈0, N≈0, Mk≈0)."""
+    E, b, h, L, P = 210000.0, 40.0, 80.0, 1000.0, 1000.0
+    matB = Material("mb", "St", E=E, G=81000.0, nu=0.3, rho=7.85, Re=235.0, Rm=360.0)
+    rect = CrossSectionDef(type="rectangle", params={"b": b, "h": h})
+    Iz = h * b**3 / 12.0                       # slabá osa (vodorovný ohyb)
+    v_exp = P * L**3 / (48.0 * E * Iz)
+    Mz_exp = P * L / 4.0
+
+    def mk(comp):
+        ld = Load("f", "point_force", "F", "lc", x=L/2)
+        setattr(ld, comp, -P)
+        return ProjectState(
+            length=L, materials=[matB], selected_material_id="mb",
+            cross_section=rect, section_segments=[SectionSegment(0.0, L, rect, None)],
+            supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+            load_cases=[LoadCase("lc", "LC", False)], loads=[ld],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"f": 1.0})],
+            additional_factor=1.0)
+
+    r = solve_beam(mk("Fy"))
+    v_mid = [p.v for p in r.points if abs(p.x - L/2) < 6][0]
+    Mz_mid = max(abs(p.M_z) for p in r.points)
+    assert _rel(abs(v_mid), v_exp) < 5e-3            # průhyb slabou osou
+    assert _rel(Mz_mid, Mz_exp) < 1e-6               # M_z = P·L/4
+    # svislá rovina netknutá
+    assert max(abs(p.w) for p in r.points) < 1e-9
+    assert max(abs(p.M) for p in r.points) < 1e-6
+    assert max(abs(p.N) for p in r.points) < 1e-6
+
+    # symetrie: Fy s Iz dá stejný |průhyb| jako Fz s Iy (zrcadlo)
+    rz = solve_beam(mk("Fz"))
+    Iy = b * h**3 / 12.0
+    w_mid = [p.w for p in rz.points if abs(p.x - L/2) < 6][0]
+    assert _rel(abs(v_mid) / abs(w_mid), Iy / Iz) < 5e-3   # poměr průhybů = Iy/Iz
+
+
 def test_rotated_parametric_shear_center_warping():
     """Natočení parametrického profilu: Iω a Wk jsou rotačně invariantní, střed
     smyku je bod, který se otáčí s profilem. Dřív scanline aproximace běžela na

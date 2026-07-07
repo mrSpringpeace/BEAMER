@@ -34,12 +34,20 @@ class StressInfluence:
 
     σ(z)   = N·c_sN + My·c_sM            [Pa]   (My v N·m)
     τ(z)   = Fz·c_tV + Mk·c_tT           [Pa]   (Mk v N·m)
+
+    Biaxiál (fáze B): normálové napětí v rozích bounding boxu z plného vzorce
+    nesymetrického ohybu (Iy, Iz, Iyz) – umožní zahrnout M_z.
     """
     z_mm: np.ndarray     # z-grid [mm od těžiště]
     c_sN: float          # 1/A_si          [1/m²]
     c_sM: np.ndarray     # z_si/Iy_si      [1/m³]
     c_tV: np.ndarray     # Q_si/(Iy_si·b_si)
     c_tT: np.ndarray     # t_si/IT_si
+    # biaxiální data (SI: m, m⁴) – rohy bounding boxu a momenty setrvačnosti
+    Iy_si: float = 0.0
+    Iz_si: float = 0.0
+    Iyz_si: float = 0.0
+    corners: tuple = ()  # ((y,z), …) [m] – 4 rohy bounding boxu od těžiště
 
 
 def build_influence(section: CrossSection, n=60) -> StressInfluence:
@@ -67,30 +75,79 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
         # τ_t dle torzního modelu průřezu (open/Bredt/kruh/…) – sdílené se stress()
         c_tT[i] = section._tau_t_coeff(zi)
     c_sN = 1.0/A_si if A_si > 1e-30 else 0.0
-    return StressInfluence(z, c_sN, c_sM, c_tV, c_tT)
+    # biaxiální data: skutečné hraniční body (od těžiště) v metrech + Iz, Iyz.
+    # Body obrysu (_pts_c) → přesné krajní vlákno i pro natočený/nepravoúhlý řez;
+    # kruh/trubka perimetr; jinak fallback rohy bounding boxu.
+    Iz_si = section.Iz/1e12
+    Iyz_si = getattr(section, "Iyz", 0.0)/1e12
+    bpts = getattr(section, "_pts_c", None)
+    if bpts:
+        corners = tuple((y/1e3, zc/1e3) for y, zc in bpts)
+    elif getattr(section, "_circle_r_out", 0.0):
+        r = section._circle_r_out/1e3
+        corners = tuple((r*math.cos(t), r*math.sin(t))
+                        for t in np.linspace(0, 2*math.pi, 24, endpoint=False))
+    else:
+        zt, zb = section.z_top/1e3, section.z_bot/1e3
+        yl, yr = getattr(section, "y_left", 0.0)/1e3, getattr(section, "y_right", 0.0)/1e3
+        corners = ((yl, zt), (yr, zt), (yl, zb), (yr, zb))
+    return StressInfluence(z, c_sN, c_sM, c_tV, c_tT,
+                           Iy_si=Iy_si, Iz_si=Iz_si, Iyz_si=Iyz_si, corners=corners)
 
 
-def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, combine=False):
+def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False):
     """Max |σ|, |τ|, σ_red [MPa] z předpočítaných koeficientů. Vektorizováno.
 
     combine=False → σ_red = skutečné maximum von Mises po řezu (špička σ a špička
     τ jsou obecně v RŮZNÝCH bodech, proto σ_red může = max(|σ|), když ohyb vyhrává).
     combine=True  → konzervativní σ_red = √(σ_max²+3·τ_max²) (špičky sečteny na
     povrchu; vhodné pro čepy/šrouby, kde nosníková teorie τ=0 na okraji je sporná).
+
+    `Mz` (N·mm, ohyb kolem z) → biaxiál: normálové napětí se vyhodnotí i v rozích
+    bounding boxu plným vzorcem nesymetrického ohybu (Iy, Iz, Iyz). Pro Mz=0 a
+    Iyz=0 (symetrický řez) se biaxiální větev přeskočí → identické s uniaxiálem.
     """
     My = M/1e3      # N·mm → N·m
+    Mz_nm = Mz/1e3
     Mk_nm = Mk/1e3
-    sigma = N*infl.c_sN + My*infl.c_sM            # Pa
+    sigma = N*infl.c_sN + My*infl.c_sM            # Pa (z-scan po ose, jen My)
     tau = V*infl.c_tV + Mk_nm*infl.c_tT           # Pa
+
     def _maxabs(a):
         a = a[~np.isnan(a)]
         return float(np.max(np.abs(a)))/1e6 if a.size else 0.0
     sg, tu = _maxabs(sigma), _maxabs(tau)
+
+    # biaxiální normálové napětí v rozích (M_z a/nebo Iyz) – jinak přeskoč
+    if infl.corners and (abs(Mz_nm) > 1e-12 or abs(infl.Iyz_si) > 1e-40):
+        Iy, Iz, Iyz = infl.Iy_si, infl.Iz_si, infl.Iyz_si
+        denom = Iy*Iz - Iyz*Iyz
+        if denom > 1e-40:
+            cN = N*infl.c_sN
+            sb = 0.0
+            for yc, zc in infl.corners:
+                s = cN - ((My*Iz - Mz_nm*Iyz)*zc + (Mz_nm*Iy - My*Iyz)*yc)/denom
+                sb = max(sb, abs(s))
+            sg = max(sg, sb/1e6)
+            # von Mises v rohu: τ_V≈0 na krajním vlákně, zůstává torzní τ_t
+            tt = abs(Mk_nm) * _maxabs_raw(infl.c_tT)      # Pa
+            mz_corner = math.sqrt((sg*1e6)**2 + 3*tt**2)/1e6
+        else:
+            mz_corner = 0.0
+    else:
+        mz_corner = 0.0
+
     if combine:
         mz = math.sqrt(sg**2 + 3*tu**2)
     else:
-        mz = _maxabs(np.sqrt(sigma**2 + 3*tau**2))
+        mz = max(_maxabs(np.sqrt(sigma**2 + 3*tau**2)), mz_corner)
     return sg, tu, mz
+
+
+def _maxabs_raw(a):
+    a = np.asarray(a)
+    a = a[~np.isnan(a)]
+    return float(np.max(np.abs(a))) if a.size else 0.0
 
 
 def peak_locations(infl: StressInfluence, N, V, M, Mk):
@@ -235,7 +292,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
                                          ca["critical"]))
                 continue
         infl, alpha, Re, Rm = data_at(p.x)
-        sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk, combine=combine)
+        sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk,
+                                       Mz=getattr(p, "M_z", 0.0), combine=combine)
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
         RF_u = (alpha*Rm/mz) if mz > 1e-9 else float("inf")
@@ -254,10 +312,11 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     return out
 
 
-def _assess(section, mat, state, N, V, M, Mk, seg=None):
+def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0):
     """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
     Vrací dílčí dict (bez x/VVÚ). Pro složený PID z různých materiálů (seg s
-    property_id) vrátí per-materiálové posouzení (normálové, B1)."""
+    property_id) vrátí per-materiálové posouzení (normálové, B1). `Mz` = ohyb
+    kolem osy z (biaxiál)."""
     if seg is not None:
         pid = getattr(seg, "property_id", None)
         if pid:
@@ -275,7 +334,7 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None):
     combine = getattr(state, "sigma_red_mode", "exact") == "combined"
     if section is not None and getattr(section, "valid", False):
         infl = build_influence(section, n=80)
-        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk, combine=combine)
+        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk, Mz=Mz, combine=combine)
         z_sg, z_tu = peak_locations(infl, N, V, M, Mk)
 
     from .section import ALPHA_PL_TABLE
@@ -336,8 +395,10 @@ def values_at_x(result, state, x):
     else:
         section = result.section
         mat = state.material()
+    Mz = float(np.interp(x, [p.x for p in result.points],
+                         [getattr(p, "M_z", 0.0) for p in result.points]))
     d = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
-    d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg))
+    d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz))
     return d
 
 
@@ -351,6 +412,8 @@ def values_at_x_multi(result, state, x, tol=1e-3):
                                  material_for_segment, normalized_segments)
     from .section import build_section
     x, N, V, M, Mk, w, phi, theta = _interp_forces(result, x)
+    Mz = float(np.interp(x, [p.x for p in result.points],
+                         [getattr(p, "M_z", 0.0) for p in result.points]))
     base = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
 
     all_segs = normalized_segments(state)
@@ -363,7 +426,7 @@ def values_at_x_multi(result, state, x, tol=1e-3):
             section = None
         mat = material_for_segment(state, seg)
         d = dict(base)
-        d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg))
+        d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz))
         try:
             d["seg_index"] = all_segs.index(seg)
         except ValueError:
