@@ -2,6 +2,58 @@
 
 Version format: **X.XX**
 
+## 1.27
+
+**Critical fix (wrong results for assemblies with a rotated PID):**
+- **The section resolver cached the section by the `id()` of a transient copy.**
+  When several segments referenced a PID with rotation/taper, `eff_defs`
+  returned a temporary copy of the definition; after that copy was
+  garbage-collected its `id()` could be reused for a neighbouring segment, so a
+  **foreign section** was substituted into the cut → wrong (and
+  non-deterministic) reserve factors. It surfaced with a profile rotated by 90°
+  in the PID across two segments. The `id()`-based cache was removed; the
+  resolver now builds the section directly. (The bug was also present in 1.26.)
+
+New features (approved roadmap — quick wins):
+- **Envelope over load combinations.** The core computes the internal-force and
+  RF envelope across all combinations; the Load Case Builder gains an
+  **Envelope plot** (min/max internal forces over combinations) and an
+  **ENVELOPE** row with the worst RF.
+- **Conservative envelope check** (hand-analysis style): sums the beam-wide
+  maxima |N|, |V|, |M|, |Mk| into a single cut → an upper-bound RF. In the
+  report export.
+- **Column buckling (phase 1).** Johnson–Euler per compressed segment (weak axis
+  I_min, buckling length L = μ·L_segment; μ is editable). RF_buckling in the
+  report; evaluated over the N envelope.
+- **Elastic supports and prescribed support behaviour.** New **spring** type
+  (vertical stiffness k_z). For rigid supports, a vertical-bond choice:
+  **rigid** / **clearance** (the node moves freely within ±g, then seats — a
+  non-linear active-set contact) / **settlement** (a prescribed drop Δ).
+- **Thermal load (phase 1):** uniform ΔT over a segment → equivalent axial
+  forces, N corrected by −EA·α·ΔT. Thermal-expansion coefficient α in the
+  material editor.
+- **Distributed load from a curve:** paste `x, q` text (point pairs) → a
+  piecewise-linear distributed load.
+- **Direct section** with independently entered properties A, Iy, Iz, IT
+  (no geometry — for tabulated/standard profiles).
+- **Show/hide loads and supports** in the schematic (choices are remembered).
+- **DOCX calculation report** (export for substantiation; schematic and
+  diagram images).
+
+UI:
+- **Support panel on two rows** per support (1: number, x, type; 2:
+  angle/stiffness/vertical bond + delete) — the six-column table was narrow and
+  the controls cramped.
+- Unit shown directly next to the support value (mm vs N/mm).
+
+Internal (branch audit, fixes A1–A6):
+- Thermal boundaries added to the discretisation (previously ~2.4 % N error at a
+  ΔT boundary).
+- Conservative check and buckling moved out of the live Results tab (export
+  only) — the live tab stays fast.
+- Buckling computed from the N envelope (not just the displayed combination).
+- `composite_assess` takes the loading as a parameter (no state mutation).
+
 ## 1.26
 
 UI and usability:

@@ -42,8 +42,9 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
   (including tapered transitions). The solver uses per-segment *E*, *G* and
   material strengths (*Re*, *Rm*).
 - **Cross-section library** — rectangle, hollow rectangle (RHS), circle, tube
-  (CHS), I, T, L, U/C, an arbitrary **polygonal** section, and a section defined
-  directly by its moment of inertia *Iy*.
+  (CHS), I, T, L, U/C, an arbitrary **polygonal** section, and a **direct**
+  section defined by its properties *A*, *Iy*, *Iz*, *IT* (for tabulated
+  profiles).
 - **Composite (multi-body) sections** — a section may contain several separate
   bodies, each with its own outline and any number of holes. The whole assembly
   is evaluated as one section (composite *A*, *Iy*, *Iz*, *IT*).
@@ -55,10 +56,18 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 - **Stress & assessment** — normal and shear stress, von Mises equivalent
   stress, and the **reserve factor (RF)** against yield and ultimate strength
   along the entire beam (RF ≥ 1 means the section passes).
+- **Supports & loads** — pin / roller (at an angle) / fixed, plus **elastic
+  springs** and, for rigid supports, a **clearance** (unilateral contact) or a
+  **prescribed settlement**. Point forces, moments, torsion, distributed loads
+  (including from a pasted *x, q* curve) and **thermal** ΔT.
+- **Load combinations & envelope** — an **envelope** of internal forces and RF
+  across all combinations, plus a **conservative** hand-analysis-style check.
+- **Column buckling** — Johnson–Euler check per compressed segment (weak axis,
+  editable buckling-length factor μ), evaluated over the force envelope.
 - **Material library** — common aerospace alloys and steel; custom materials
   with arbitrary *E*, *G*, *ν*, *Re*, *Rm*, *ρ*.
-- **Files & export** — human-readable JSON projects, text report export and PNG
-  export of the diagrams.
+- **Files & export** — human-readable JSON projects, text and **DOCX** report
+  export, and PNG export of the diagrams.
 - **Bilingual UI** — English / Czech (switchable in Settings).
 
 ---

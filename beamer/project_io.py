@@ -86,6 +86,7 @@ def dict_to_state(d: dict) -> ProjectState:
                 sec1_id=s.get("sec1_id"), sec2_id=s.get("sec2_id"),
                 E=s.get("E"), material_id=s.get("material_id"),
                 property_id=s.get("property_id"),
+                buckling_mu=s.get("buckling_mu", 1.0),
             ) for s in d.get("section_segments", [])
         ],
         properties=[

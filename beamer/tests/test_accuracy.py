@@ -618,6 +618,319 @@ def test_xval_composite_vs_sectionproperties():
     assert _rel(w.z_NA, cz_sp) < 1e-6
 
 
+def test_envelope_over_combinations():
+    """Obálka přes kombinace: dvě proporcionální kombinace (1× a 2×). Řídicí je
+    2× (nižší RF); crit RF obálky = min RF přes kombinace; VVÚ obálka lineárně
+    škáluje (M_max při 2× = 2·M_max při 1×), min RF obálky = polovina RF při 1×."""
+    from beamer.analysis import envelope_over_combinations, reserves_along_beam
+    seg = SectionSegment(0.0, 2000.0, CrossSectionDef(type="rectangle",
+                         params={"b": 40, "h": 80}), None)
+    st = ProjectState(
+        length=2000.0, materials=[MAT], selected_material_id="m_steel",
+        cross_section=CrossSectionDef(type="rectangle", params={"b": 40, "h": 80}),
+        section_segments=[seg],
+        supports=[Support("a", 0, "pin", 0), Support("b", 2000, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-5000.0)],
+        load_combinations=[
+            LoadCombination(id="c1", name="1x", factors={"f": 1.0}),
+            LoadCombination(id="c2", name="2x", factors={"f": 2.0})],
+        additional_factor=1.0)
+    env = envelope_over_combinations(st)
+    assert env is not None and env.n_combos == 2
+    assert env.crit_combo == "2x"                       # 2× řídí (nižší RF)
+    # M obálka: max při 2× = 2× max při 1×
+    from beamer.solver import solve_beam
+    r1 = solve_beam(st, factors={"f": 1.0})
+    m1 = max(abs(p.M) for p in r1.points)
+    assert _rel(max(abs(min(env.M_min)), abs(max(env.M_max))), 2 * m1) < 1e-6
+    # crit RF obálky = min RF přes kombinace
+    rf1 = min(r.RF for r in reserves_along_beam(r1, st))
+    assert _rel(env.crit_rf, rf1 / 2.0) < 5e-3          # RF ~ 1/zatížení
+
+
+def test_load_curve_parse_and_generate():
+    """Spojité z křivky: parser (komentáře, oddělovače, desetinná čárka) +
+    po částech lineární segmenty; výslednice = lichoběžníková integrace."""
+    from beamer.loadgen import parse_xq_curve, loads_from_curve
+    txt = ("# hlavicka\n0 -2.0\n500  -3,5\n1000 ; -1.0\n2000\t0\n"
+           "; komentar\n1000 -1.0\n")   # duplicitní x=1000 → sloučí
+    pts = parse_xq_curve(txt)
+    assert pts == [(0.0, -2.0), (500.0, -3.5), (1000.0, -1.0), (2000.0, 0.0)]
+    loads = loads_from_curve(pts, "lc", "q")
+    assert len(loads) == 3 and all(l.type == "distributed" for l in loads)
+    assert loads[0].x1 == 0 and loads[0].q2 == -3.5 and loads[1].q1 == -3.5
+    R = sum((l.q1 + l.q2) / 2 * (l.x2 - l.x1) for l in loads)
+    assert _rel(R, -3000.0) < 1e-9      # ∫q dx přes lichoběžníky
+
+
+def test_direct_section_independent_chars():
+    """Direct profil: nezávislé A, Iy, Iz, IT se přenesou přesně; legacy (jen Iy)
+    odvodí A ze čtverce (zpětná kompatibilita); solver bere EI (prohyb konzoly)."""
+    d = CrossSectionDef(type="direct",
+                        params={"A": 2500.0, "Iy": 5.2e6, "Iz": 1.3e6, "IT": 3.1e6})
+    cs = build_section(d, fem=False)
+    assert _rel(cs.A, 2500.0) < 1e-9 and _rel(cs.Iy, 5.2e6) < 1e-9
+    assert _rel(cs.Iz, 1.3e6) < 1e-9 and _rel(cs.IT, 3.1e6) < 1e-9
+    assert _rel(cs.iy, (5.2e6 / 2500.0) ** 0.5) < 1e-9
+    # legacy: jen Iy → A ze čtverce h⁴/12=Iy
+    cl = build_section(CrossSectionDef(type="direct", params={"Iy": 5.2e6}), fem=False)
+    h = (12 * 5.2e6) ** 0.25
+    assert _rel(cl.A, h * h) < 1e-6 and _rel(cl.Iy, 5.2e6) < 1e-6
+    # solver: konzola P na konci → w = P·L³/(3·E·Iy)
+    seg = SectionSegment(0.0, 1000.0, d, None)
+    st = ProjectState(
+        length=1000, materials=[MAT], selected_material_id="m_steel",
+        cross_section=d, section_segments=[seg],
+        supports=[Support("a", 0, "fixed", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-1000.0)],
+        load_combinations=[LoadCombination(id="c", name="c", factors={"f": 1.0})],
+        additional_factor=1.0)
+    res = solve_beam(st)
+    w_tip = min(p.w for p in res.points)
+    assert _rel(w_tip, -1000 * 1000**3 / (3 * 210000 * 5.2e6)) < 1e-6
+
+
+def test_conservative_check_is_upper_bound():
+    """Konzervativní obálková kontrola (G): σ_red z maxim ≥ přesné σ_red, tedy
+    RF_konz ≤ RF_přesný. Maxima obálky = max |N|,|V|,|M|,|Mk| přes kombinace;
+    dosazena naráz do kritického řezu (√(σ_max²+3τ_max²))."""
+    from beamer.analysis import (conservative_check, envelope_over_combinations)
+    seg = SectionSegment(0.0, 2000.0, CrossSectionDef(type="rectangle",
+                         params={"b": 40, "h": 80}), None)
+    st = ProjectState(
+        length=2000.0, materials=[MAT], selected_material_id="m_steel",
+        cross_section=CrossSectionDef(type="rectangle", params={"b": 40, "h": 80}),
+        section_segments=[seg],
+        supports=[Support("a", 0, "pin", 0), Support("b", 2000, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-5000.0)],
+        load_combinations=[
+            LoadCombination(id="c1", name="1x", factors={"f": 1.0}),
+            LoadCombination(id="c2", name="1.6x", factors={"f": 1.6})],
+        additional_factor=1.0, rf_basis="yield")
+    cc = conservative_check(st, basis="yield")
+    env = envelope_over_combinations(st)
+    assert cc is not None and cc.n_combos == 2
+    # maxima = 1.6× kombinace
+    assert _rel(cc.M_max, 1.6 * 5000.0 * 2000.0 / 4) < 1e-6      # prostý nosník: M=PL/4
+    # ruční σ = M/W + N/A, W = b·h²/6; τ = 1.5 V/A; σ_red = √(σ²+3τ²)
+    A = 40 * 80; W = 40 * 80**2 / 6
+    sig = cc.M_max / W
+    tau = 1.5 * cc.V_max / A
+    import math
+    assert _rel(cc.rows[0]["sred"], math.sqrt(sig**2 + 3 * tau**2)) < 2e-2
+    # konzervativní RF ≤ přesný RF (horní odhad napětí)
+    assert cc.rf_min <= env.crit_rf + 1e-6
+
+
+def _ss_state(supports, loads=None):
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+    return ProjectState(
+        length=2000.0, materials=[MAT], selected_material_id="m_steel",
+        cross_section=rect, section_segments=[SectionSegment(0.0, 2000.0, rect, None)],
+        supports=supports, load_cases=[LoadCase("lc", "LC", False)],
+        loads=loads or [], additional_factor=1.0)
+
+
+def test_spring_support_stiff_limit_and_reaction():
+    """Pružná podpora (8): velmi tuhá pružina = tuhá podpora; měkká pružina má
+    reakci R = k·w (síla pružiny)."""
+    P = Load("f", "point_force", "P", "lc", x=1000, Fz=-5000.0)
+    r0 = solve_beam(_ss_state([Support("a", 0, "pin", 0), Support("b", 2000, "pin", 0)], [P]))
+    w0 = min(p.w for p in r0.points)
+    stiff = Support("b", 2000, "spring", 0); stiff.spring_z = 1e9
+    r1 = solve_beam(_ss_state([Support("a", 0, "pin", 0), stiff], [P]))
+    assert _rel(min(p.w for p in r1.points), w0) < 1e-4        # tuhá pružina = pin
+    soft = Support("b", 2000, "spring", 0); soft.spring_z = 500.0
+    r2 = solve_beam(_ss_state([Support("a", 0, "pin", 0), soft], [P]))
+    w_supp = [p.w for p in r2.points if abs(p.x - 2000) < 1][0]
+    Rz = [rc.Rz for rc in r2.reactions][-1]
+    assert _rel(abs(Rz), abs(500.0 * w_supp)) < 1e-3           # reakce = k·w
+
+
+def test_support_gap_contact():
+    """Vůle podpory (nelineární kontakt, aktivní množina): střední podpora s
+    vůlí g nechá uzel volný v ±g. Malé zatížení (průhyb < g) → nedosedne
+    (reakce 0, chová se jako 2-podporový nosník); velké (průhyb > g) → dosedne
+    (w = −g, reakce > 0). g=0 = tuhá podpora (regrese)."""
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+
+    def mk(P, gap):
+        smid = Support("mid", 1000, "roller", 0); smid.gap = gap
+        return ProjectState(
+            length=2000, materials=[MAT], selected_material_id="m_steel",
+            cross_section=rect, section_segments=[SectionSegment(0.0, 2000.0, rect, None)],
+            supports=[Support("a", 0, "pin", 0), smid, Support("b", 2000, "roller", 0)],
+            load_cases=[LoadCase("lc", "LC", False)],
+            loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-P)],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"f": 1.0})],
+            additional_factor=1.0)
+
+    def wmid(res):
+        return [p.w for p in res.points if abs(p.x - 1000) < 1][0]
+
+    def rmid(res):
+        return [rc.Rz for rc in res.reactions if abs(rc.x - 1000) < 1][0]
+
+    # 2-podporový průhyb (bez střední): w = P·L³/(48EI); P=1000 dá |w|<1, P=5000 >1
+    EI = 210000 * (40 * 80**3 / 12)
+    w_2supp = 5000 * 2000**3 / (48 * EI)
+    assert w_2supp > 1.0                       # velké zatížení překročí vůli 1 mm
+    # malé zatížení: nedosedne
+    rA = solve_beam(mk(1000, 1.0))
+    assert abs(wmid(rA)) < 1.0 and abs(rmid(rA)) < 1.0
+    # velké: dosedne přesně na vůli, reakce tlačí
+    rB = solve_beam(mk(5000, 1.0))
+    assert _rel(wmid(rB), -1.0) < 1e-6 and rmid(rB) > 100.0
+    # regrese: g=0 == tuhá střední podpora (w_mid ≈ 0)
+    assert abs(wmid(solve_beam(mk(5000, 0.0)))) < 1e-6
+
+
+def test_support_settlement():
+    """Předepsaný posun podpory (8): pravá podpora prostého nosníku klesne o Δ,
+    bez zatížení → nosník se lineárně nakloní, w(0)=0, w(L)=Δ."""
+    sb = Support("b", 2000, "pin", 0); sb.settlement = -3.0
+    r = solve_beam(_ss_state([Support("a", 0, "pin", 0), sb], []))
+    wa = [p.w for p in r.points if abs(p.x - 0) < 1][0]
+    wm = [p.w for p in r.points if abs(p.x - 1000) < 1][0]
+    wb = [p.w for p in r.points if abs(p.x - 2000) < 1][0]
+    assert abs(wa) < 1e-6 and _rel(wm, -1.5) < 1e-3 and _rel(wb, -3.0) < 1e-3
+
+
+def test_buckling_euler_and_johnson():
+    """Vzpěr fáze 1 (A): štíhlý tlačený sloup (μ=1) → Euler P_cr=π²·E·I_min/L²,
+    RF_vzpěr=P_cr/|N|; krátký sloup → Johnson (σ_cr<Euler, σ_cr≤Re)."""
+    import math
+    from beamer.analysis import buckling_check, _johnson_euler_sigma_cr
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+    seg = SectionSegment(0.0, 2000.0, rect, None); seg.buckling_mu = 1.0
+    st = ProjectState(
+        length=2000, materials=[MAT], selected_material_id="m_steel",
+        cross_section=rect, section_segments=[seg],
+        supports=[Support("a", 0, "pin", 0), Support("b", 2000, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("f", "point_force", "P", "lc", x=2000, Fx=-50000.0)],
+        load_combinations=[LoadCombination(id="c", name="c", factors={"f": 1.0})],
+        additional_factor=1.0)
+    res = solve_beam(st)
+    bc = buckling_check(st, res)
+    assert bc is not None
+    Iz = 80 * 40**3 / 12
+    P_euler = math.pi**2 * 210000 * Iz / 2000**2
+    assert _rel(bc.rows[0]["P_cr"], P_euler) < 1e-6
+    assert _rel(bc.rf_min, P_euler / 50000.0) < 1e-6
+    # Johnson: krátká štíhlost < λ_cr → σ_cr menší než Euler i než Re
+    lam_short = 50.0
+    lam_cr = math.pi * math.sqrt(2 * 210000 / 235)
+    assert lam_short < lam_cr
+    sig_j = _johnson_euler_sigma_cr(210000, 235, lam_short)
+    assert sig_j < 235 and sig_j < math.pi**2 * 210000 / lam_short**2
+    # A5: vzpěr přes OBÁLKU kombinací – přidaná 2× kombinace řídí (RF/2),
+    # i když je zobrazená 1×
+    from beamer.analysis import envelope_over_combinations
+    st.load_combinations.append(LoadCombination(id="c2", name="2x", factors={"f": 2.0}))
+    env = envelope_over_combinations(st)
+    bc_env = buckling_check(st, res, env=env)
+    assert _rel(bc_env.rf_min, bc.rf_min / 2.0) < 1e-6
+
+
+def test_docx_report_builds():
+    """Protokol DOCX (C): sestaví se, má nadpisy a tabulky (vstupy/úseky/reakce)."""
+    import pytest, os, tempfile
+    pytest.importorskip("docx")
+    from beamer.report_docx import build_docx
+    from beamer.analysis import reserves_along_beam
+    seg = SectionSegment(0.0, 2000.0, CrossSectionDef(type="rectangle",
+                         params={"b": 40, "h": 80}), None)
+    st = ProjectState(
+        length=2000.0, materials=[MAT], selected_material_id="m_steel",
+        cross_section=CrossSectionDef(type="rectangle", params={"b": 40, "h": 80}),
+        section_segments=[seg],
+        supports=[Support("a", 0, "pin", 0), Support("b", 2000, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-5000.0)],
+        load_combinations=[LoadCombination(id="c", name="1x", factors={"f": 1.0})],
+        selected_active_combination_id="c", additional_factor=1.0)
+    res = solve_beam(st)
+    rsv = reserves_along_beam(res, st)
+    path = os.path.join(tempfile.gettempdir(), "beamer_test_report.docx")
+    build_docx(st, res, rsv, path)
+    from docx import Document
+    d = Document(path)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    assert any("Nosník" in h for h in heads) and any("Posouzení" in h for h in heads)
+    assert len(d.tables) >= 3
+    os.remove(path)
+
+
+def test_resolver_rotated_pid_multi_segment():
+    """Regrese (kritická): u nosníku s VÍCE úseky a NATOČENÝMI PID (rotation≠0)
+    resolver dřív cachoval podle id() přechodné kopie definice → po recyklaci id
+    (GC) dostal úsek průřez SOUSEDNÍHO úseku (špatné Iy → špatné VVÚ/RF,
+    nedeterministicky). Test: každý úsek musí dát SVŮJ Iy."""
+    from beamer.model import Property
+    from beamer.sections_along import SectionResolver
+    import gc
+    secA = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80}, id="sa", name="A")
+    secB = CrossSectionDef(type="rectangle", params={"b": 60, "h": 120}, id="sb", name="B")
+    pA = Property(id="pa", pid=1, name="A", sec1_id="sa", material_id="m_steel", rotation=90)
+    pB = Property(id="pb", pid=2, name="B", sec1_id="sb", material_id="m_steel", rotation=90)
+    seg1 = SectionSegment(0.0, 100.0, CrossSectionDef(), None, property_id="pa")
+    seg2 = SectionSegment(100.0, 160.0, CrossSectionDef(), None, property_id="pb")
+    st = ProjectState(length=160.0, materials=[MAT], selected_material_id="m_steel",
+                      sections=[secA, secB], properties=[pA, pB],
+                      section_segments=[seg1, seg2])
+    # očekávané Iy po natočení 90° (prohodí b,h): rect(b,h) rot90 → Iy = h·b³/12
+    IyA = 80 * 40**3 / 12
+    IyB = 120 * 60**3 / 12
+    r = SectionResolver(st)
+    for x in range(2, 160, 3):
+        gc.collect()                      # vynuť recyklaci id (spouštěč staré chyby)
+        iy = r.at(float(x)).Iy
+        expect = IyA if x < 100 else IyB
+        assert _rel(iy, expect) < 1e-9, f"x={x}: Iy={iy} != {expect}"
+
+
+def test_thermal_axial_load():
+    """Teplotní zatížení (D): volná dilatace → N=0 (bez pnutí); plně osově vázaný
+    nosník (fixed-fixed) při ohřevu ΔT → tlak N=−E·A·α·ΔT."""
+    matT = Material("mt", "St", E=210000.0, G=81000.0, nu=0.3, rho=7.85,
+                    Re=235.0, Rm=360.0, alpha=12e-6)
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+
+    def mk(supports):
+        th = Load("t", "thermal", "dT", "lc"); th.x1 = 0; th.x2 = 2000; th.dT = 50.0
+        return ProjectState(
+            length=2000, materials=[matT], selected_material_id="mt",
+            cross_section=rect, section_segments=[SectionSegment(0.0, 2000.0, rect, None)],
+            supports=supports, load_cases=[LoadCase("lc", "LC", False)], loads=[th],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"t": 1.0})],
+            additional_factor=1.0)
+
+    r_free = solve_beam(mk([Support("a", 0, "fixed", 0)]))
+    assert abs(r_free.points[len(r_free.points) // 2].N) < 1e-3     # volný → bez pnutí
+    r_fix = solve_beam(mk([Support("a", 0, "fixed", 0), Support("b", 2000, "fixed", 0)]))
+    N = r_fix.points[len(r_fix.points) // 2].N
+    assert _rel(N, -210000 * 3200 * 12e-6 * 50.0) < 1e-6           # tlak = −EA·α·ΔT
+    assert N < 0                                                    # ohřev vázaný → tlak
+    # A1: hranice teploty MIMO pravidelnou mřížku (x2=1025) musí být uzel →
+    # ohřátá část fixed-fixed: N = −EA·α·ΔT·(L_teplá/L) přesně
+    def mk2(x2):
+        th = Load("t", "thermal", "dT", "lc"); th.x1 = 0; th.x2 = x2; th.dT = 50.0
+        return ProjectState(
+            length=2000, materials=[matT], selected_material_id="mt",
+            cross_section=rect, section_segments=[SectionSegment(0.0, 2000.0, rect, None)],
+            supports=[Support("a", 0, "fixed", 0), Support("b", 2000, "fixed", 0)],
+            load_cases=[LoadCase("lc", "LC", False)], loads=[th],
+            load_combinations=[LoadCombination(id="c", name="c", factors={"t": 1.0})],
+            additional_factor=1.0)
+    r2 = solve_beam(mk2(1025.0))
+    N2 = r2.points[len(r2.points) // 2].N
+    assert _rel(N2, -210000 * 3200 * 12e-6 * 50.0 * (1025 / 2000)) < 1e-6
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

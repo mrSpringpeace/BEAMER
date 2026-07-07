@@ -174,13 +174,24 @@ class SectionEditorDialog(QDialog):
             ed.changed.connect(self._changed)
             self.form.addRow(ed)
             return
+        # legacy „direct" (jen Iy, starší projekt): chybějící A/Iz/IT zobraz
+        # z POSTAVENÉHO průřezu (syntetizovaný čtverec), ne z defaultů – jinak
+        # dialog ukazuje jiná čísla, než s jakými jádro počítá
+        derived = {}
+        if t == "direct" and any(k not in (self.sdef.params or {})
+                                 for k, _, _ in self._PARAMS.get(t, [])):
+            try:
+                _cs = build_section(self.sdef, fem=False)
+                derived = {"A": _cs.A, "Iy": _cs.Iy, "Iz": _cs.Iz, "IT": _cs.IT}
+            except Exception:
+                pass
         for key, label, default in self._PARAMS.get(t, []):
-            val = float(self.sdef.params.get(key, default))
+            val = float(self.sdef.params.get(key, derived.get(key, default)))
             sp = NoWheelDoubleSpinBox()
-            if t == "direct":            # přímý moment setrvačnosti Iy [mm⁴]
+            if t == "direct":            # přímé charakteristiky (A [mm²], I [mm⁴])
                 sp.setRange(0.0, 1e12)
                 sp.setDecimals(1)
-                sp.setSuffix(" mm⁴")
+                sp.setSuffix(" mm²" if key == "A" else " mm⁴")
             else:
                 sp.setRange(0.01, 1e5)
                 sp.setDecimals(2)

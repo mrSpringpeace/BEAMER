@@ -21,6 +21,8 @@ class Settings:
     decimals: int = 2               # počet desetinných míst
     vvu_combined: bool = False      # VVÚ v jednom grafu
     vvu_show_deform: bool = True    # ve sloučeném VVÚ zobrazit průhyb a pootočení
+    schema_show_loads: bool = True      # zobrazit zatížení ve schématu
+    schema_show_supports: bool = True   # zobrazit podpory a reakce ve schématu
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
     last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
     theme: str = "system"           # vzhled: "system" | "light" | "dark"
@@ -52,7 +54,8 @@ def _load() -> Settings:
             d = json.load(f)
         s = Settings()
         for k in ("language", "number_format", "decimals", "vvu_combined",
-                  "vvu_show_deform", "shared_library_dir", "last_dir",
+                  "vvu_show_deform", "schema_show_loads", "schema_show_supports",
+                  "shared_library_dir", "last_dir",
                   "theme", "recent_files", "panel_expanded"):
             if k in d:
                 setattr(s, k, d[k])

@@ -10,6 +10,7 @@ Sjednocený model A+B:
 from __future__ import annotations
 
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QLabel, QLineEdit, QInputDialog, QFileDialog,
@@ -45,16 +46,75 @@ class LoadCaseBuilderDialog(QDialog):
         b_csv = QPushButton(tr("⤒ Export CSV…")); b_csv.clicked.connect(self._export_csv)
         b_clip = QPushButton(tr("⧉ Kopírovat (Excel)")); b_clip.clicked.connect(self._copy_clipboard)
         b_show = QPushButton(tr("Zobrazit vybranou v hlavním okně")); b_show.clicked.connect(self._show_selected)
+        b_env = QPushButton(tr("◆ Graf obálky"))
+        b_env.setCheckable(True)
+        b_env.toggled.connect(self._toggle_envelope)
+        self._b_env = b_env
         tbar.addWidget(b_calc); tbar.addWidget(b_csv); tbar.addWidget(b_clip)
+        tbar.addWidget(b_env)
         tbar.addStretch(1); tbar.addWidget(b_show)
         root.addLayout(tbar)
 
+        from PySide6.QtWidgets import QSplitter
+        from PySide6.QtCore import Qt as _Qt
+        split = QSplitter(_Qt.Vertical)
         self.table = QTableWidget(0, 0)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        root.addWidget(self.table, 1)
+        split.addWidget(self.table)
+        from .plots import EnvelopeCanvas
+        from PySide6.QtWidgets import QScrollArea, QWidget as _QW, QVBoxLayout as _VB
+        env_wrap = _QW()
+        ev = _VB(env_wrap)
+        ev.setContentsMargins(0, 0, 0, 0)
+        self._cons_lbl = QLabel("")     # konzervativní obálková kontrola (text)
+        self._cons_lbl.setWordWrap(True)
+        self._cons_lbl.setStyleSheet("background:#fff3d6; padding:4px; font-size:11px;")
+        ev.addWidget(self._cons_lbl)
+        self.env_canvas = EnvelopeCanvas()
+        env_scroll = QScrollArea()
+        env_scroll.setWidgetResizable(True)
+        env_scroll.setWidget(self.env_canvas)
+        env_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
+                                 "{ background:#ffffff; }")
+        ev.addWidget(env_scroll, 1)
+        self._env_wrap = env_wrap
+        env_wrap.setVisible(False)
+        split.addWidget(env_wrap)
+        split.setSizes([420, 380])
+        root.addWidget(split, 1)
 
         self._reload_all()
+
+    def _toggle_envelope(self, on):
+        self._env_wrap.setVisible(on)
+        if on:
+            # obálka se počítá JEDNOU a sdílí (graf + konzervativní text) –
+            # je to n_kombinací × (solve+reserves)
+            from ..analysis import envelope_over_combinations
+            try:
+                env = envelope_over_combinations(self.state)
+            except Exception:
+                env = None
+            self.env_canvas.plot(env)
+            self._cons_lbl.setText(self._conservative_text(env))
+
+    def _conservative_text(self, env):
+        """Text konzervativní obálkové kontroly (ruční styl: maxima → σ_red);
+        `env` = už spočítaná obálka (nepočítá se znovu)."""
+        from ..analysis import conservative_check
+        try:
+            cc = conservative_check(self.state, env=env) if env is not None else None
+        except Exception:
+            cc = None
+        if cc is None:
+            return tr("Konzervativní kontrola: nedostupná (žádné kombinace).")
+        exact = " · " + tr("přesný RF_min = %.2f") % env.crit_rf
+        return (tr("◆ Konzervativní obálková kontrola (maxima naráz v řezu): ")
+                + tr("|N|=%.0f  |V|=%.0f  |M|=%.0f  |Mk|=%.0f N/N·mm  →  ")
+                % (cc.N_max, cc.V_max, cc.M_max, cc.Mk_max)
+                + tr("RF_konz = %.2f (řídí %s)") % (cc.rf_min, cc.crit_label)
+                + exact)
 
     # ── set_state (po načtení projektu) ──
     def set_state(self, state):
@@ -69,9 +129,10 @@ class LoadCaseBuilderDialog(QDialog):
 
     def _load_label(self, ld):
         """Krátký popisek zatížení pro hlavičku sloupce kombinace."""
-        ab = {"point_force": "F", "distributed": "q", "moment": "M", "torsion": "Mk"}
+        ab = {"point_force": "F", "distributed": "q", "moment": "M",
+              "torsion": "Mk", "thermal": "ΔT"}
         base = ld.name or tr(ab.get(ld.type, "?"))
-        if ld.type == "distributed":
+        if ld.type in ("distributed", "thermal"):
             return f"{base} ({ld.x1:.0f}–{ld.x2:.0f})"
         return f"{base} @{ld.x:.0f}"
 
@@ -201,7 +262,39 @@ class LoadCaseBuilderDialog(QDialog):
                     col_order.append(name)
             d["_combo_id"] = comb.id
             rows.append(d)
+        env = self._envelope_row(col_order, rows)
+        if env is not None:
+            rows.append(env)
         return col_order, rows
+
+    def _envelope_row(self, col_order, rows):
+        """Řádek OBÁLKA přes všechny kombinace: u „…min" a RF sloupců minimum,
+        jinak maximum. x(RFmin) a název řídicí kombinace se berou od kombinace
+        s celkově nejnižším RF (min přes kombinace = min přes stanice i kombinace,
+        protože každý řádek už nese své minimum přes stanice)."""
+        num_rows = [d for d in rows if not d.get("_envelope")]
+        if len(num_rows) < 2:                 # obálka má smysl až od 2 kombinací
+            return None
+        env = {"Kombinace": "◆ OBÁLKA", "_combo_id": None, "_envelope": True}
+        for col in col_order:
+            if col == "Kombinace":
+                continue
+            vals = [d[col] for d in num_rows if isinstance(d.get(col), (int, float))]
+            if not vals:
+                continue
+            low = ("min" in col) or col.startswith("RF") or "RF" in col
+            env[col] = min(vals) if low else max(vals)
+        # řídicí kombinace (nejnižší RF min) → její x a název
+        gov = None
+        rf_pairs = [(d.get("RF min"), d) for d in num_rows
+                    if isinstance(d.get("RF min"), (int, float))]
+        if rf_pairs:
+            gov = min(rf_pairs, key=lambda t: t[0])[1]
+            env["RF min"] = gov.get("RF min")
+            if "x(RFmin) [mm]" in col_order:
+                env["x(RFmin) [mm]"] = gov.get("x(RFmin) [mm]")
+            env["Kombinace"] = "◆ OBÁLKA · řídí " + str(gov.get("Kombinace", ""))
+        return env
 
     def _rebuild_table(self):
         col_order, rows = self._compute_rows()
@@ -211,10 +304,15 @@ class LoadCaseBuilderDialog(QDialog):
         self.table.setHorizontalHeaderLabels(col_order)
         self.table.setRowCount(len(rows))
         for i, d in enumerate(rows):
+            is_env = bool(d.get("_envelope"))
             for j, col in enumerate(col_order):
                 v = d.get(col, "")
                 txt = v if isinstance(v, str) else fmt(v)
-                self.table.setItem(i, j, QTableWidgetItem(txt))
+                it = QTableWidgetItem(txt)
+                if is_env:                     # zvýrazni řádek obálky
+                    f = QFont(); f.setBold(True); it.setFont(f)
+                    it.setBackground(QColor("#fff3d6"))
+                self.table.setItem(i, j, it)
         self.table.resizeColumnsToContents()
         self._col_order = col_order
 
@@ -265,4 +363,10 @@ class LoadCaseBuilderDialog(QDialog):
             QMessageBox.information(self, tr("Load Case Builder"),
                                    tr("Vyberte řádek (kombinaci) v tabulce."))
             return
-        self.show_combination.emit(self._rows[r]["_combo_id"])
+        row = self._rows[r]
+        if row.get("_envelope") or not row.get("_combo_id"):
+            QMessageBox.information(self, tr("Load Case Builder"),
+                                   tr("Řádek OBÁLKA je souhrn přes všechny "
+                                      "kombinace, nelze ho zobrazit jako jednu."))
+            return
+        self.show_combination.emit(row["_combo_id"])

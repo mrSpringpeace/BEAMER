@@ -82,6 +82,16 @@ class MainWindow(QMainWindow):
         self.vvu_deform_cb.setChecked(SETTINGS.vvu_show_deform)
         self.vvu_deform_cb.toggled.connect(self._on_vvu_deform)
         bar.addWidget(self.vvu_deform_cb)
+        self.show_loads_cb = QCheckBox(tr("Zatížení"))
+        self.show_loads_cb.setToolTip(tr("Zobrazit zatížení ve schématu"))
+        self.show_loads_cb.setChecked(getattr(SETTINGS, "schema_show_loads", True))
+        self.show_loads_cb.toggled.connect(self._on_schema_vis)
+        bar.addWidget(self.show_loads_cb)
+        self.show_sup_cb = QCheckBox(tr("Podpory"))
+        self.show_sup_cb.setToolTip(tr("Zobrazit podpory a reakce ve schématu"))
+        self.show_sup_cb.setChecked(getattr(SETTINGS, "schema_show_supports", True))
+        self.show_sup_cb.toggled.connect(self._on_schema_vis)
+        bar.addWidget(self.show_sup_cb)
         bar.addWidget(QLabel(tr("RF k:")))
         self.rf_basis_cb = NoWheelComboBox()
         self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
@@ -246,6 +256,7 @@ class MainWindow(QMainWindow):
         self._a_nos = QAction(self); self._a_nos.triggered.connect(self.import_nos); m.addAction(self._a_nos)
         m.addSeparator()
         self._a_exp = QAction(self); self._a_exp.triggered.connect(self.export_report); m.addAction(self._a_exp)
+        self._a_docx = QAction(self); self._a_docx.triggered.connect(self.export_report_docx); m.addAction(self._a_docx)
         self._a_png = QAction(self); self._a_png.triggered.connect(self.export_png); m.addAction(self._a_png)
         self._a_csv = QAction(self); self._a_csv.triggered.connect(self.export_csv); m.addAction(self._a_csv)
         m.addSeparator()
@@ -264,6 +275,7 @@ class MainWindow(QMainWindow):
         self._a_saveas.setText(tr("Uložit jako…"))
         self._a_nos.setText(tr("Importovat Ministatik (*.nos)…"))
         self._a_exp.setText(tr("Export protokolu (TXT)…"))
+        self._a_docx.setText(tr("Export protokolu (DOCX)…"))
         self._a_png.setText(tr("Export VVÚ (PNG)…"))
         self._a_csv.setText(tr("Export křivek (CSV)…"))
         self._a_quit.setText(tr("Konec"))
@@ -510,7 +522,7 @@ class MainWindow(QMainWindow):
         self.dirty_lbl.setText("● " + tr("změněno – stiskněte Spočítat"))
         self.results_panel.clear_analysis()
         try:
-            self.schema_canvas.plot(self.state)   # živý náhled zadání (bez reakcí)
+            self._plot_schema()                   # živý náhled zadání (bez reakcí)
         except Exception:
             pass
         # Load Case Builder (pokud je otevřený): sloupce kombinací = zatížení,
@@ -590,9 +602,24 @@ class MainWindow(QMainWindow):
         self.progress.setValue(100)
         self._refresh_views()
 
+    def _plot_schema(self, result=None):
+        """Vykreslí schéma nosníku s respektováním přepínačů viditelnosti
+        zatížení / podpor (horní lišta). `result` (reakce/deformace) jen po
+        výpočtu; při živé editaci se nepředává (None)."""
+        self.schema_canvas.plot(
+            self.state, result,
+            show_loads=self.show_loads_cb.isChecked(),
+            show_supports=self.show_sup_cb.isChecked())
+
+    def _on_schema_vis(self, _=None):
+        SETTINGS.schema_show_loads = self.show_loads_cb.isChecked()
+        SETTINGS.schema_show_supports = self.show_sup_cb.isChecked()
+        SETTINGS.save()
+        self._plot_schema(None if getattr(self, "_dirty", True) else self.result)
+
     def _refresh_views(self):
         self._update_combo_label()
-        self.schema_canvas.plot(self.state, self.result)   # schéma + reakce
+        self._plot_schema(self.result)                     # schéma + reakce
         self.beam_canvas.plot(self.state, self.result)
         # kritický řez/napětí na každém úseku → přepínač úseku
         from ..analysis import critical_per_part
@@ -629,7 +656,7 @@ class MainWindow(QMainWindow):
         Jen překreslíme schéma (značky) a přegenerujeme kartu Výsledky."""
         self._modified = True
         try:
-            self.schema_canvas.plot(self.state, self.result)
+            self._plot_schema(self.result)
         except Exception:
             pass
         self._refresh_results_text()
@@ -881,10 +908,36 @@ class MainWindow(QMainWindow):
         from ..report import build_report
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(build_report(self.state, self.result, self.reserves))
+                f.write(build_report(self.state, self.result, self.reserves,
+                                     include_conservative=True))
             self.statusBar().showMessage(tr("Protokol uložen: ") + path)
         except Exception as e:
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat: ") + str(e))
+
+    def export_report_docx(self):
+        path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu (DOCX)"),
+                                              self._start("protokol.docx"), "Word (*.docx)")
+        if not path:
+            return
+        self._remember(path)
+        import io
+        images = {}
+        for key, canvas in (("schema", self.schema_canvas),
+                            ("vvu", self.beam_canvas),
+                            ("margin", self.margin_canvas)):
+            try:
+                buf = io.BytesIO()
+                canvas.fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+                images[key] = buf.getvalue()
+            except Exception:
+                pass
+        try:
+            from ..report_docx import build_docx
+            build_docx(self.state, self.result, self.reserves, path, images=images,
+                       project_name=os.path.basename(self._current_file or ""))
+            self.statusBar().showMessage(tr("Protokol (DOCX) uložen: ") + path)
+        except Exception as e:
+            QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat protokol: ") + str(e))
 
     def export_png(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("Export VVÚ"), self._start("vvu.png"), "PNG (*.png)")

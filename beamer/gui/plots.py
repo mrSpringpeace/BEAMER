@@ -59,9 +59,10 @@ class MplCanvas(FigureCanvasQTAgg):
         super().__init__(self.fig)
 
 
-def _draw_schema(ax, state, result=None):
+def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True):
     """Schéma nosníku: nosník, číslované podpory, klouby, zatížení (+popisky)
-    a – je-li `result` – grafické reakce."""
+    a – je-li `result` – grafické reakce. `show_loads`/`show_supports` skryjí
+    zatížení, resp. podpory a reakce (přehlednost složitých modelů)."""
     L = state.length
     _title = tr("Schéma nosníku")
     try:
@@ -97,15 +98,28 @@ def _draw_schema(ax, state, result=None):
     C_REAC = "#0a7d4f"
 
     # podpory + čísla
-    for i, s in enumerate(state.supports):
+    for i, s in enumerate(state.supports if show_supports else []):
         if s.type == "fixed":
             ax.plot([s.x, s.x], [-8, 8], color="#444", lw=4)
             ax.plot(s.x, 0, "s", color="#444", ms=8)
         elif s.type == "pin":
             ax.plot(s.x, 0, "^", color="#1565c0", ms=12)
+        elif s.type == "spring":
+            # pružina: klikatá čára pod uzlem + patka
+            amp = max(L * 0.008, 4.0)
+            zs = np.linspace(0, -14, 9)
+            xs_z = s.x + np.array([0, 1, -1, 1, -1, 1, -1, 0, 0]) * amp
+            ax.plot(xs_z, zs, color="#8e24aa", lw=1.3)
+            ax.plot([s.x - amp, s.x + amp], [-15, -15], color="#8e24aa", lw=2)
         else:
             ax.plot(s.x, 0, "o", color="#2e7d32", ms=10)
             ax.plot(s.x, -6, "_", color="#2e7d32", ms=14)
+        if abs(getattr(s, "settlement", 0.0)) > 1e-9:   # předepsaný posun
+            ax.annotate(f"Δ={s.settlement:.2g}", xy=(s.x, 0), textcoords="offset points",
+                        xytext=(6, -22), fontsize=6.5, color="#8e24aa")
+        if abs(getattr(s, "gap", 0.0)) > 1e-9:          # vůle (kontakt)
+            ax.annotate(f"vůle ±{s.gap:.2g}", xy=(s.x, 0), textcoords="offset points",
+                        xytext=(6, -22), fontsize=6.5, color="#00838f")
         ax.annotate(str(i + 1), xy=(s.x, 0), textcoords="offset points",
                     xytext=(0, -16), ha="center", va="center",
                     fontsize=8, fontweight="bold", color="#1565c0",
@@ -147,7 +161,7 @@ def _draw_schema(ax, state, result=None):
     cnt = {"F": 0, "q": 0, "M": 0, "T": 0}
 
     # zatížení – šipka KONČÍ (hrot) v působišti na nosníku; +Fz míří nahoru
-    for ld in state.loads:
+    for ld in (state.loads if show_loads else []):
         if ld.type == "point_force" and (abs(ld.Fz) > 1e-9 or abs(ld.Fx) > 1e-9):
             cnt["F"] += 1; code = f"F{cnt['F']}"
         elif ld.type == "distributed":
@@ -206,6 +220,12 @@ def _draw_schema(ax, state, result=None):
         elif ld.type == "torsion":
             ax.plot(ld.x, 0, "D", color=C_TOR, ms=6)
             ax.text(ld.x, 6, f"{code}  Mk={ld.Mx:.0f}", ha="center", fontsize=6.5, color=C_TOR)
+        elif ld.type == "thermal":
+            # teplota: barevný pás těsně nad nosníkem (červená ohřev / modrá chladnutí)
+            c_th = "#d84315" if ld.dT >= 0 else "#1565c0"
+            ax.fill_between([ld.x1, ld.x2], 2.0, 5.0, color=c_th, alpha=0.35, lw=0)
+            ax.text((ld.x1 + ld.x2) / 2, 6.5, f"ΔT={ld.dT:+.0f} °C",
+                    ha="center", fontsize=6.5, color=c_th)
 
     # deformovaný tvar (po výpočtu) – w(x) škálované na čitelnou amplitudu
     if result is not None and getattr(result, "is_stable", False) and result.points:
@@ -218,8 +238,8 @@ def _draw_schema(ax, state, result=None):
                     label=tr("deformovaný tvar"))
             ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
-    # reakce (po výpočtu)
-    if result is not None and getattr(result, "is_stable", False):
+    # reakce (po výpočtu) – patří k podporám, skryjí se s nimi
+    if show_supports and result is not None and getattr(result, "is_stable", False):
         for rc in result.reactions:
             if abs(rc.Rz) > 1e-6:
                 up = rc.Rz > 0
@@ -267,13 +287,14 @@ class SchemaCanvas(MplCanvas):
     def __init__(self):
         super().__init__(figsize=(6, 2.4))
 
-    def plot(self, state, result=None):
+    def plot(self, state, result=None, show_loads=True, show_supports=True):
         self.fig.clear()
         # pevné okraje (shodné s VVÚ grafy) → nosník lícuje s křivkami;
         # None odebere layout engine (umožní subplots_adjust)
         self.fig.set_layout_engine(None)
         ax = self.fig.add_subplot(111)
-        _draw_schema(ax, state, result)
+        _draw_schema(ax, state, result, show_loads=show_loads,
+                     show_supports=show_supports)
         ax.set_xlabel("x [mm]", fontsize=8)
         self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
                                  top=0.80, bottom=0.28)
@@ -463,6 +484,72 @@ class StressAlongCanvas(MplCanvas):
         axes[-1].set_xlabel("x [mm]", fontsize=8)
         self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
                                  top=0.96, bottom=0.06, hspace=0.42)
+        self.draw()
+
+
+class EnvelopeCanvas(MplCanvas):
+    """Obálka přes všechny kombinace: nahoře min RF(x) (řídicí, s linkou RF=1),
+    pod tím pásy VVÚ (M a V min–max). Data z analysis.EnvelopeResult."""
+
+    def __init__(self):
+        super().__init__(figsize=(6, 8))
+
+    def plot(self, env):
+        self.fig.clear()
+        if env is None:
+            self.fig.set_layout_engine("constrained")
+            ax = self.fig.add_subplot(111)
+            ax.text(0.5, 0.5, tr("Žádné kombinace k obálce"),
+                    ha="center", va="center", color="#888")
+            ax.axis("off")
+            self.draw()
+            return
+        self.fig.set_layout_engine(None)
+        xs = np.array(env.xs)
+        xv = np.array(env.xv)
+        axes = self.fig.subplots(3, 1)
+        xL = float(xv[-1]) if len(xv) else 1.0
+
+        # 1) min RF podél nosníku
+        ax = axes[0]
+        rf = np.array(env.rf_min)
+        ax.plot(xs, rf, color="#c62828", lw=1.6)
+        ax.axhline(1.0, color="#c62828", lw=1.0, ls="--", alpha=0.7)
+        ax.fill_between(xs, rf, 1.0, where=(rf < 1.0), color="#c62828", alpha=0.25)
+        i = int(np.argmin(rf))
+        ax.plot(xs[i], rf[i], "o", color="#c62828", ms=6)
+        ax.annotate(f"RF_min={rf[i]:.2f} @ x={xs[i]:.0f}\n{tr('řídí')}: {env.crit_combo}",
+                    (xs[i], rf[i]), textcoords="offset points", xytext=(6, 8),
+                    fontsize=7, color="#c62828")
+        ax.set_title(tr("min RF podél nosníku (obálka přes %d kombinací)") % env.n_combos,
+                     fontsize=8, loc="left")
+        top = max(float(np.nanmax(rf)) * 1.1, 1.3)
+        ax.set_ylim(0, top)
+
+        # 2) M obálka (pás min–max), 3) V obálka
+        for ax, (title, lo, hi, color) in zip(
+                axes[1:],
+                [(tr("M – ohybový moment [N·mm] (obálka)"),
+                  np.array(env.M_min), np.array(env.M_max), "#c62828"),
+                 (tr("V – posouvající síla [N] (obálka)"),
+                  np.array(env.V_min), np.array(env.V_max), "#2e7d32")]):
+            ax.axhline(0, color="#999", lw=0.8)
+            ax.fill_between(xv, lo, hi, color=color, alpha=0.20)
+            ax.plot(xv, lo, color=color, lw=1.0)
+            ax.plot(xv, hi, color=color, lw=1.0)
+            ax.set_title(title, fontsize=8, loc="left")
+            lo_v = min(float(np.nanmin(lo)), 0.0)
+            hi_v = max(float(np.nanmax(hi)), 0.0)
+            span = (hi_v - lo_v) or 1.0
+            ax.set_ylim(lo_v - 0.12 * span, hi_v + 0.18 * span)
+
+        for ax in axes:
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=7)
+            ax.set_xlim(-X_PAD * xL, (1 + X_PAD) * xL)
+        axes[-1].set_xlabel("x [mm]", fontsize=8)
+        self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
+                                 top=0.95, bottom=0.06, hspace=0.42)
         self.draw()
 
 

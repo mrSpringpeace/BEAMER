@@ -202,24 +202,21 @@ class SectionResolver:
         return self._wcache[key]
 
     def at(self, x: float) -> CrossSection:
+        # POZOR: NEcachovat podle id(sec1)! eff_defs vrací u natočeného/tapered
+        # PID KOPII definice (nové id každé volání), kterou Python po návratu
+        # uvolní a její id RECYKLUJE pro kopii jiného úseku → cache dle id() pak
+        # vrátí průřez CIZÍHO úseku (nedeterministicky, dle GC). Projevilo se to
+        # u nosníku s více úseky a rotací PID: úsek dostal Iy sousedního úseku,
+        # tedy špatné VVÚ/RF. build_section má správnou OBSAHOVOU cache (signatura
+        # vč. rotace/params/bodies), takže stačí volat ji přímo.
         seg = segment_at(self.state, x)
         sec1, sec2 = eff_defs(self.state, seg)
         if sec2 is None:
-            key = id(sec1)
-            cs = self._cache.get(key)
-            if cs is None:
-                cs = build_section(sec1)
-                self._cache[key] = cs
-            return cs
-        # tapered – kvantizuj x na ~1 mm kvůli cache
+            return build_section(sec1)
+        # tapered – kvantizuj x na ~1 mm (build_section obsahově cachuje výsledek)
         span = seg.x2 - seg.x1
         t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1)/span))
-        key = (id(seg), id(sec1), id(sec2), round(t, 3))
-        cs = self._cache.get(key)
-        if cs is None:
-            cs = build_section(interp_def(sec1, sec2, t))
-            self._cache[key] = cs
-        return cs
+        return build_section(interp_def(sec1, sec2, t))
 
     def is_tapered_region(self, x: float) -> bool:
         _, sec2 = eff_defs(self.state, segment_at(self.state, x))

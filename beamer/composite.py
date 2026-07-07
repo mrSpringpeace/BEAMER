@@ -214,7 +214,7 @@ def section_by_id_(state, sid):
     return section_by_id(state, sid)
 
 
-def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0):
+def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None):
     """Posouzení složeného PID PER MATERIÁL. B2: plný von Mises přes FEM pole
     (σ v rozích elementů + τ_t z variabilní-G torze + τ_V E-vážený Žuravskij).
     Režim σ_red „combined" (state.sigma_red_mode) se aplikuje per materiál:
@@ -226,7 +226,8 @@ def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0):
     w = composite_weighted(state, prop)
     if w is None or not w.multi_material:
         return None
-    combine = getattr(state, "sigma_red_mode", "exact") == "combined"
+    if combine is None:      # explicitní parametr má přednost (bez mutace state)
+        combine = getattr(state, "sigma_red_mode", "exact") == "combined"
 
     rows = None
     fallback = False

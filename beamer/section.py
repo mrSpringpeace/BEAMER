@@ -1369,7 +1369,20 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
         cs.torsion_model = "solid_rect"      # τ = Mk/(α·a·b²), Roark
         cs.torsion_ab = (max(b_, h_), min(b_, h_))
     elif t == "direct":
-        hh = (12.0 * max(gv("Iy", 1000.0), 1e-9)) ** 0.25
+        # Přímé zadání charakteristik. Zpětná kompatibilita: starý projekt měl
+        # jen Iy (params bez A/Iz/IT) → A/Iz/IT zůstanou ze syntetizovaného
+        # čtverce (dřívější chování). Nový direct (klíče A/Iz/IT přítomné) je
+        # přepíše nezávisle – solver pak bere EA=E·A, EIy=E·Iy, GJ=G·IT přesně.
+        if "A" in p and gv("A", 0.0) > 0:
+            cs.A = gv("A", cs.A)
+        if "Iz" in p and gv("Iz", 0.0) > 0:
+            cs.Iz = gv("Iz", cs.Iz)
+        if "IT" in p and gv("IT", 0.0) > 0:
+            cs.IT = gv("IT", cs.IT)
+        if cs.A > 1e-12:                       # přepočet poloměrů setrvačnosti
+            cs.iy = (cs.Iy / cs.A) ** 0.5
+            cs.iz = (cs.Iz / cs.A) ** 0.5
+        hh = (12.0 * max(cs.Iy, 1e-9)) ** 0.25
         cs.torsion_model = "solid_rect"
         cs.torsion_ab = (hh, hh)
     return cs

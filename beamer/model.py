@@ -8,8 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Literal, Optional
 
-SupportType = Literal["fixed", "pin", "roller"]
-LoadType = Literal["point_force", "moment", "torsion", "distributed"]
+SupportType = Literal["fixed", "pin", "roller", "spring"]
+LoadType = Literal["point_force", "moment", "torsion", "distributed", "thermal"]
 SectionType = Literal[
     "rectangle", "box", "circle", "tube",
     "i_section", "c_section", "t_section", "l_section", "u_section",
@@ -29,6 +29,7 @@ class Material:
     Re: float       # mez kluzu (MPa)
     Rm: float       # mez pevnosti (MPa)
     is_custom: bool = False
+    alpha: float = 12e-6   # součinitel teplotní roztažnosti [1/°C] (ocel ~12e-6)
 
 
 @dataclass
@@ -37,6 +38,10 @@ class Support:
     x: float                 # poloha podél nosníku (mm)
     type: SupportType
     angle: float = 0.0       # natočení rolny (°)
+    spring_z: float = 0.0    # tuhost svislé pružiny [N/mm] (typ "spring")
+    spring_ry: float = 0.0   # tuhost rotační (ohybové) pružiny [N·mm/rad] (typ "spring")
+    settlement: float = 0.0  # předepsaný svislý posun podpory [mm] (kladné = nahoru)
+    gap: float = 0.0         # vůle podpory [mm]: uzel volný v ±gap, pak dosedne (kontakt)
 
 
 @dataclass
@@ -73,6 +78,8 @@ class Load:
     x2: float = 0.0
     q1: float = 0.0          # N/mm (svislé, +nahoru)
     q2: float = 0.0
+    # teplotní zatížení (type "thermal"): rovnoměrné ΔT na [x1,x2]
+    dT: float = 0.0          # změna teploty [°C] (+ = ohřev)
 
 
 @dataclass
@@ -134,6 +141,7 @@ class SectionSegment:
     E: Optional[float] = None          # přímý modul E (MPa) – override (.nos); None = z materiálu
     material_id: Optional[str] = None  # odkaz na materiál v knihovně; None = globální
     property_id: Optional[str] = None  # odkaz na Property (PID); None = inline (sec1/material_id)
+    buckling_mu: float = 1.0           # součinitel vzpěrné délky μ (L_vzpěr = μ·L_úseku)
 
     @property
     def tapered(self) -> bool:

@@ -78,13 +78,16 @@ SECTION_PARAMS = {
                   ("tw", "stojina tw", 8), ("tf", "pásnice tf", 12)],
     "l_section": [("h", "výška h", 100), ("b", "šířka b", 100), ("t", "tloušťka t", 10)],
     "c_section": [("h", "výška h", 200), ("b", "šířka b", 80), ("t", "tloušťka t", 8)],
-    "direct": [("Iy", "moment setrvačnosti Iy", 1.0e6)],
+    "direct": [("A", "plocha A [mm²]", 1000.0),
+               ("Iy", "moment setrvačnosti Iy [mm⁴]", 1.0e6),
+               ("Iz", "moment setrvačnosti Iz [mm⁴]", 1.0e6),
+               ("IT", "torzní konstanta IT [mm⁴]", 1.0e6)],
 }
 SECTION_LABELS = {
     "rectangle": "Obdélník", "box": "Dutý obdélník (RHS)", "circle": "Kruh",
     "tube": "Trubka (CHS)", "i_section": "I-profil", "t_section": "T-profil",
     "l_section": "L-profil", "c_section": "U/C-profil",
-    "polygon": "Vlastní (polygon)", "direct": "Přímé Iy (EI model)",
+    "polygon": "Vlastní (polygon)", "direct": "Přímé zadání (A, Iy, Iz, IT)",
     "construction": "Konstrukční tvar (boolean)",
 }
 
@@ -314,6 +317,12 @@ class InputPanel(QWidget):
                 lambda val, a=attr, mm=m: (setattr(mm, a, val),
                                            setattr(mm, "is_custom", True), self._emit()))
             self.mat_edit_form.addRow(tr(label) + ":", sp)
+        # součinitel teplotní roztažnosti α [1/°C] (μstrain/°C ×1e-6)
+        asp = _spin(getattr(m, "alpha", 12e-6) * 1e6, 0, 1e3, 0.5, 2, " ×10⁻⁶/°C")
+        asp.valueChanged.connect(
+            lambda val, mm=m: (setattr(mm, "alpha", val * 1e-6),
+                               setattr(mm, "is_custom", True), self._emit()))
+        self.mat_edit_form.addRow(tr("α (roztažnost):"), asp)
         if len(self.state.materials) > 1:
             db = QPushButton(tr("Smazat tento materiál"))
             db.clicked.connect(lambda _, mm=m: self._del_material(mm))
@@ -806,6 +815,12 @@ class InputPanel(QWidget):
         lsp = _spin(seg.length, 0.01, 1e6, 50, 1, " mm")
         lsp.valueChanged.connect(lambda val, s=seg, b=box: self._set_part_length(s, val, b))
         f.addRow(tr("Délka:"), lsp)
+        # součinitel vzpěrné délky μ (L_vzpěr = μ·L); posouzení vzpěru fáze 1
+        musp = _spin(getattr(seg, "buckling_mu", 1.0), 0.1, 10.0, 0.1, 2)
+        musp.setToolTip(tr("Součinitel vzpěrné délky μ: kloub-kloub 1.0, "
+                           "vetknutí-volný 2.0, vetknutí-kloub 0.7, vetknutí-vetknutí 0.5"))
+        musp.valueChanged.connect(lambda val, s=seg: (setattr(s, "buckling_mu", val), self._emit()))
+        f.addRow(tr("Vzpěr μ:"), musp)
         # PID volba: (inline) nebo některá vlastnost
         pidcb = NoWheelComboBox()
         pidcb.addItem(tr("(inline – vlastní)"), None)
@@ -1059,13 +1074,11 @@ class InputPanel(QWidget):
     def _build_supports(self):
         box = self._group(tr("Podpory"), expanded=True, persist_key="supports")
         v = box.content_layout
-        self.sup_table = QTableWidget(0, 5)
-        self.sup_table.setHorizontalHeaderLabels(["#", "x [mm]", tr("typ"), tr("úhel [°]"), ""])
-        self.sup_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.sup_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.sup_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.sup_table.verticalHeader().setVisible(False)
-        v.addWidget(self.sup_table)
+        self.sup_host = QWidget()
+        self.sup_layout = QVBoxLayout(self.sup_host)
+        self.sup_layout.setContentsMargins(0, 0, 0, 0)
+        self.sup_layout.setSpacing(4)
+        v.addWidget(self.sup_host)
         btn = QPushButton(tr("+ Přidat podporu"))
         btn.clicked.connect(self._add_support)
         v.addWidget(btn)
@@ -1073,31 +1086,101 @@ class InputPanel(QWidget):
         self._refresh_supports()
 
     def _refresh_supports(self):
-        self.sup_table.setRowCount(0)
+        self._clear_layout(self.sup_layout)
         for i, sup in enumerate(self.state.supports):
-            r = self.sup_table.rowCount()
-            self.sup_table.insertRow(r)
-            num = QTableWidgetItem(str(i + 1))
-            num.setTextAlignment(Qt.AlignCenter)
-            num.setFlags(Qt.ItemIsEnabled)
-            self.sup_table.setItem(r, 0, num)
-            xsp = _spin(sup.x, 0, 1e6, 50, 1)
-            xsp.valueChanged.connect(lambda val, s=sup: (setattr(s, "x", val), self._emit()))
-            self.sup_table.setCellWidget(r, 1, xsp)
-            cb = NoWheelComboBox()
-            for tp, lbl in [("pin", "kloub"), ("roller", "rolna"), ("fixed", "vetknutí")]:
-                cb.addItem(tr(lbl), tp)
-            cb.setCurrentIndex(cb.findData(sup.type))
-            cb.currentIndexChanged.connect(lambda _, s=sup, c=cb: (setattr(s, "type", c.currentData()), self._emit()))
-            self.sup_table.setCellWidget(r, 2, cb)
-            asp = _spin(sup.angle, -180, 180, 5, 0)
+            self.sup_layout.addWidget(self._support_row(i, sup))
+
+    def _support_row(self, i, sup):
+        """Jedna podpora na DVĚ řádky (aby se vešly všechny ovládací prvky):
+        1) číslo, poloha x, typ; 2) úhel (rolna) / tuhost (pružina) / svislá
+        vazba (tuhé) + smazat."""
+        fr = QFrame()
+        fr.setObjectName("supportRow")
+        fr.setStyleSheet("#supportRow{border:1px solid palette(mid);border-radius:4px;}")
+        outer = QVBoxLayout(fr)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setSpacing(3)
+
+        r1 = QHBoxLayout(); r1.setSpacing(4)
+        num = QLabel(f"{i + 1}."); num.setStyleSheet("font-weight:bold;")
+        r1.addWidget(num)
+        r1.addWidget(QLabel(tr("x:")))
+        xsp = _spin(sup.x, 0, 1e6, 50, 1, " mm")
+        xsp.valueChanged.connect(lambda val, s=sup: (setattr(s, "x", val), self._emit()))
+        r1.addWidget(xsp, 1)
+        r1.addWidget(QLabel(tr("typ:")))
+        cb = NoWheelComboBox()
+        for tp, lbl in [("pin", "kloub"), ("roller", "rolna"),
+                        ("fixed", "vetknutí"), ("spring", "pružina")]:
+            cb.addItem(tr(lbl), tp)
+        cb.setCurrentIndex(cb.findData(sup.type))
+        cb.currentIndexChanged.connect(
+            lambda _, s=sup, c=cb: (setattr(s, "type", c.currentData()),
+                                    self._refresh_supports(), self._emit()))
+        r1.addWidget(cb, 1)
+        outer.addLayout(r1)
+
+        r2 = QHBoxLayout(); r2.setSpacing(4)
+        if sup.type == "roller":
+            r2.addWidget(QLabel(tr("úhel:")))
+            asp = _spin(sup.angle, -180, 180, 5, 0, " °")
             asp.valueChanged.connect(lambda val, s=sup: (setattr(s, "angle", val), self._emit()))
-            self.sup_table.setCellWidget(r, 3, asp)
-            db = QPushButton("✕")
-            db.setMaximumWidth(30)
-            db.clicked.connect(lambda _, s=sup: self._del_support(s))
-            self.sup_table.setCellWidget(r, 4, db)
-        _fit_table(self.sup_table)
+            r2.addWidget(asp)
+        if sup.type == "spring":
+            r2.addWidget(QLabel(tr("tuhost:")))
+            ksp = _spin(getattr(sup, "spring_z", 0.0), 0, 1e12, 100, 1, " N/mm")
+            ksp.setToolTip(tr("Tuhost svislé pružiny k_z [N/mm] – měkčí = menší reakce"))
+            ksp.valueChanged.connect(lambda val, s=sup: (setattr(s, "spring_z", val), self._emit()))
+            r2.addWidget(ksp, 1)
+        else:
+            r2.addWidget(QLabel(tr("vazba:")))
+            r2.addWidget(self._vertical_bond_cell(sup), 1)
+        db = QPushButton("✕"); db.setMaximumWidth(30)
+        db.setToolTip(tr("Smazat podporu"))
+        db.clicked.connect(lambda _, s=sup: self._del_support(s))
+        r2.addWidget(db)
+        outer.addLayout(r2)
+        return fr
+
+    def _vertical_bond_cell(self, sup):
+        """Buňka svislé vazby tuhé podpory: combo {tuhá / vůle / posun} + hodnota
+        [mm]. Vůle (gap) = volný pohyb ±g, pak dosedne (kontakt). Posun
+        (settlement) = vnucený pokles. Vzájemně se vylučují."""
+        cont = QWidget()
+        hb = QHBoxLayout(cont)
+        hb.setContentsMargins(0, 0, 0, 0); hb.setSpacing(2)
+        mode = NoWheelComboBox()
+        mode.setMaximumWidth(66)
+        for key, lbl in (("rigid", "tuhá"), ("gap", "vůle"), ("settle", "posun")):
+            mode.addItem(tr(lbl), key)
+        cur = ("gap" if float(getattr(sup, "gap", 0) or 0) > 1e-12
+               else "settle" if abs(float(getattr(sup, "settlement", 0) or 0)) > 1e-12
+               else "rigid")
+        mode.setCurrentIndex(max(0, mode.findData(cur)))
+        init = (getattr(sup, "gap", 0.0) if cur == "gap"
+                else getattr(sup, "settlement", 0.0))
+        val = _spin(init, -1e6, 1e6, 1, 3, " mm")
+        val.setEnabled(cur != "rigid")
+        if cur == "gap":
+            val.setMinimum(0.0)
+        mode.setToolTip(tr("tuhá = drží na místě; vůle = volný pohyb ±hodnota, pak "
+                           "dosedne (kontakt); posun = vnucený pokles [mm]"))
+
+        def _apply(s=sup, m=mode, v=val):
+            key = m.currentData()
+            s.gap = v.value() if key == "gap" else 0.0
+            s.settlement = v.value() if key == "settle" else 0.0
+            self._emit()
+
+        def _on_mode(_i, m=mode, v=val, ap=_apply):
+            key = m.currentData()
+            v.setEnabled(key != "rigid")
+            v.setMinimum(0.0 if key == "gap" else -1e6)
+            ap()
+        mode.currentIndexChanged.connect(_on_mode)
+        val.valueChanged.connect(lambda _v, ap=_apply: ap())
+        hb.addWidget(mode); hb.addWidget(val, 1)
+        return cont
 
     def _add_support(self):
         self.state.supports.append(Support(new_id("sup"), 0, "pin", 0))
@@ -1216,7 +1299,8 @@ class InputPanel(QWidget):
         v.addWidget(self.loads_host)
         row = QHBoxLayout()
         for tp, lbl in [("point_force", "+ Síla"), ("distributed", "+ Spojité"),
-                        ("moment", "+ Moment"), ("torsion", "+ Krut")]:
+                        ("moment", "+ Moment"), ("torsion", "+ Krut"),
+                        ("thermal", "+ Teplota")]:
             b = QPushButton(tr(lbl))
             b.clicked.connect(lambda _, t=tp: self._add_load(t))
             row.addWidget(b)
@@ -1224,8 +1308,49 @@ class InputPanel(QWidget):
         gen = QPushButton(tr("↦ Generovat spojité ze síly…"))
         gen.clicked.connect(lambda: self._open_loadgen(None))
         v.addWidget(gen)
+        curv = QPushButton(tr("↹ Spojité z křivky (text x,q)…"))
+        curv.clicked.connect(self._load_curve)
+        v.addWidget(curv)
         self.layout.addWidget(box)
         self._refresh_loads()
+
+    def _load_curve(self):
+        """Načte dvojice (x, q) z textového souboru a vytvoří po částech lineární
+        spojité zatížení (série 'distributed' segmentů)."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("Spojité zatížení z křivky (x, q)"), "",
+            "Text/CSV (*.txt *.csv *.dat);;Všechny soubory (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception as e:
+            QMessageBox.critical(self, tr("Chyba"), tr("Nelze číst soubor: ") + str(e))
+            return
+        from ..loadgen import parse_xq_curve, loads_from_curve
+        pts = parse_xq_curve(text)
+        if len(pts) < 2:
+            QMessageBox.warning(self, tr("Křivka zatížení"),
+                                tr("Soubor musí obsahovat aspoň 2 dvojice (x, q). "
+                                   "Dvě čísla na řádek, oddělené mezerou/tab/středníkem "
+                                   "(desetinná tečka i čárka); # nebo ; = komentář."))
+            return
+        lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
+        import os
+        nm = os.path.splitext(os.path.basename(path))[0][:20] or "q(x)"
+        new_loads = loads_from_curve(pts, lc_id, nm)
+        self.state.loads.extend(new_loads)
+        if new_loads:
+            self._expand_obj = new_loads[-1]
+        self._refresh_loads()
+        self._emit()
+        R = sum((l.q1 + l.q2) / 2 * (l.x2 - l.x1) for l in new_loads)
+        QMessageBox.information(
+            self, tr("Křivka zatížení"),
+            tr("Načteno %d bodů → %d spojitých úseků.\nVýslednice R = %.1f N.")
+            % (len(pts), len(new_loads), R))
 
     def _refresh_loads(self):
         while self.loads_layout.count():
@@ -1239,7 +1364,7 @@ class InputPanel(QWidget):
 
     def _load_title(self, ld):
         labels = {"point_force": "Bodová síla", "distributed": "Spojité",
-                  "moment": "Ohyb. moment", "torsion": "Krut"}
+                  "moment": "Ohyb. moment", "torsion": "Krut", "thermal": "Teplota"}
         base = tr(labels.get(ld.type, ld.type))
         nm = f" · {ld.name}" if ld.name else ""
         if ld.type == "point_force":
@@ -1248,6 +1373,8 @@ class InputPanel(QWidget):
             v = f"  q={ld.q1:.1f}→{ld.q2:.1f} ({ld.x1:.0f}–{ld.x2:.0f})"
         elif ld.type == "moment":
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
+        elif ld.type == "thermal":
+            v = f"  ΔT={ld.dT:.0f} °C ({ld.x1:.0f}–{ld.x2:.0f})"
         else:
             v = f"  Mx={ld.Mx:.0f} @ x={ld.x:.0f}"
         return f"{base}{nm}{v}"
@@ -1301,6 +1428,14 @@ class InputPanel(QWidget):
         elif ld.type == "torsion":
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow("Mx:", bind("Mx", " N·mm"))
+        elif ld.type == "thermal":
+            f.addRow("x1:", bind("x1", " mm", 1, 50))
+            f.addRow("x2:", bind("x2", " mm", 1, 50))
+            f.addRow(tr("ΔT [°C]:"), bind("dT", " °C", 1, 5))
+            hint = QLabel(tr("Rovnoměrný ohřev úseku. Osové pnutí vzniká jen při "
+                             "vazbě (α z materiálu). Ohyb od gradientu zatím ne."))
+            hint.setWordWrap(True); hint.setObjectName("hint")
+            cl.addWidget(hint)
 
         cl.addLayout(self._dup_del_row(
             tr("Duplikovat zatížení"), lambda: self._dup_load(ld),
@@ -1323,6 +1458,10 @@ class InputPanel(QWidget):
         elif tp == "torsion":
             ld.x = self.state.length/2
             ld.Mx = 1e5
+        elif tp == "thermal":
+            ld.x1 = 0
+            ld.x2 = self.state.length
+            ld.dT = 50.0
         self.state.loads.append(ld)
         self._expand_obj = ld
         self._refresh_loads()

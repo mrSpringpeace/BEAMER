@@ -377,6 +377,268 @@ def values_at_x_multi(result, state, x, tol=1e-3):
     return out
 
 
+@dataclass
+class EnvelopeResult:
+    """Obálka přes VŠECHNY kombinace. VVÚ = min/max v každé poloze; RF = minimum
+    (nejnepříznivější) v každé stanici + řídicí kombinace. Diskretizace je stejná
+    napříč kombinacemi (uzly závisí na polohách zatížení/podpor/úseků, ne na
+    faktorech), přesto se hodnoty pro robustnost interpolují na společnou mřížku."""
+    xv: list                       # x pro VVÚ [mm]
+    N_min: list; N_max: list
+    V_min: list; V_max: list
+    M_min: list; M_max: list
+    Mk_min: list; Mk_max: list
+    w_min: list; w_max: list
+    xs: list                       # x pro RF (stanice) [mm]
+    rf_min: list                   # min RF přes kombinace v každé stanici
+    rf_gov: list                   # název řídicí (nejnižší RF) kombinace / stanice
+    sred_max: list                 # max σ_red přes kombinace / stanice
+    crit_rf: float                 # celkové minimum RF
+    crit_x: float
+    crit_combo: str
+    n_combos: int                  # počet stabilně spočtených kombinací
+
+
+def envelope_over_combinations(state, n_stations=120, progress=None):
+    """Spočte obálku VVÚ a RF přes všechny definované kombinace. Vrací
+    EnvelopeResult, nebo None (žádné kombinace / žádná stabilní). `progress`
+    callback 0..1."""
+    from .solver import solve_beam
+    combos = getattr(state, "load_combinations", None) or []
+    if not combos:
+        return None
+
+    xv = None
+    Nmn = Nmx = Vmn = Vmx = Mmn = Mmx = Kmn = Kmx = wmn = wmx = None
+    xs = None
+    rf_min = None
+    rf_gov = None
+    sred_max = None
+    n_ok = 0
+    for ci, comb in enumerate(combos):
+        res = solve_beam(state, factors=comb.factors)
+        if not res.is_stable or not res.points:
+            continue
+        n_ok += 1
+        xc = np.array([p.x for p in res.points])
+
+        def col(attr):
+            return np.array([getattr(p, attr) for p in res.points])
+
+        if xv is None:
+            xv = xc
+            Nmn = col("N").copy(); Nmx = Nmn.copy()
+            Vmn = col("V").copy(); Vmx = Vmn.copy()
+            Mmn = col("M").copy(); Mmx = Mmn.copy()
+            Kmn = col("Mk").copy(); Kmx = Kmn.copy()
+            wmn = col("w").copy(); wmx = wmn.copy()
+        else:
+            def env(mn, mx, attr):
+                y = np.interp(xv, xc, col(attr)) if len(xc) != len(xv) \
+                    or not np.allclose(xc, xv) else col(attr)
+                return np.minimum(mn, y), np.maximum(mx, y)
+            Nmn, Nmx = env(Nmn, Nmx, "N")
+            Vmn, Vmx = env(Vmn, Vmx, "V")
+            Mmn, Mmx = env(Mmn, Mmx, "M")
+            Kmn, Kmx = env(Kmn, Kmx, "Mk")
+            wmn, wmx = env(wmn, wmx, "w")
+
+        rsv = reserves_along_beam(res, state, n_stations)
+        if rsv:
+            rx = np.array([r.x for r in rsv])
+            rrf = np.array([r.RF for r in rsv])
+            rsr = np.array([r.mises_max for r in rsv])
+            if xs is None:
+                xs = rx
+                rf_min = rrf.copy()
+                rf_gov = [comb.name] * len(rx)
+                sred_max = rsr.copy()
+            else:
+                if len(rx) != len(xs) or not np.allclose(rx, xs):
+                    rrf = np.interp(xs, rx, rrf)
+                    rsr = np.interp(xs, rx, rsr)
+                for i in range(len(xs)):
+                    if rrf[i] < rf_min[i]:
+                        rf_min[i] = rrf[i]
+                        rf_gov[i] = comb.name
+                    if rsr[i] > sred_max[i]:
+                        sred_max[i] = rsr[i]
+        if progress:
+            progress((ci + 1) / len(combos))
+
+    if xv is None or xs is None:
+        return None
+    ci = int(np.argmin(rf_min))
+    return EnvelopeResult(
+        list(xv), list(Nmn), list(Nmx), list(Vmn), list(Vmx),
+        list(Mmn), list(Mmx), list(Kmn), list(Kmx), list(wmn), list(wmx),
+        list(xs), list(rf_min), list(rf_gov), list(sred_max),
+        float(rf_min[ci]), float(xs[ci]), rf_gov[ci], n_ok)
+
+
+@dataclass
+class ConservativeResult:
+    """Konzervativní obálková kontrola (styl ruční analýzy): maxima vnitřních sil
+    přes CELÝ nosník a všechny kombinace se dosadí na každý průřez, jako by
+    působila naráz v jednom řezu. σ_red = √(σ_max²+3·τ_max²) ze špiček (σ=N/A+M/W,
+    τ=V·Q/(Iy·b)+Mk·t/IT). RF_konz = min přes průřezy. Vždy horní odhad vůči
+    přesnému řezovému RF."""
+    N_max: float; V_max: float; M_max: float; Mk_max: float
+    rows: list                    # [{seg, label, material, sigma, tau, sred, RF}]
+    rf_min: float
+    crit_label: str
+    crit_material: str
+    n_combos: int
+
+
+def conservative_check(state, basis=None, env=None):
+    """Konzervativní obálková kontrola. `basis` (min/yield/ultimate) jinak
+    state.rf_basis. `env` = předpočítaná obálka (envelope_over_combinations) –
+    předávat, kde už existuje; jinak se spočítá (n_kombinací × solve+reserves,
+    DRAHÉ – nevolat v horké cestě). Vrací ConservativeResult, nebo None."""
+    if env is None:
+        env = envelope_over_combinations(state)
+    if env is None:
+        return None
+    import numpy as np
+    def _amax(lo, hi):
+        return max(max(abs(v) for v in lo), max(abs(v) for v in hi))
+    N_max = _amax(env.N_min, env.N_max)
+    V_max = _amax(env.V_min, env.V_max)
+    M_max = _amax(env.M_min, env.M_max)
+    Mk_max = _amax(env.Mk_min, env.Mk_max)
+
+    from .sections_along import (normalized_segments, def_for_segment,
+                                 material_for_segment, property_by_id)
+    from .section import build_section
+    basis = basis or getattr(state, "rf_basis", "min")
+    inf = float("inf")
+    rows = []
+    for i, seg in enumerate(normalized_segments(state)):
+        xm = (seg.x1 + seg.x2) / 2.0
+        mat = material_for_segment(state, seg)
+        Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
+        pid = getattr(seg, "property_id", None)
+        p = property_by_id(state, pid)
+        # složený PID → per-materiálové posouzení (konzervativně kombinované;
+        # combine=True parametrem, bez mutace state – bezpečné vůči workeru)
+        if p is not None and getattr(p, "composite_parts", None):
+            from .composite import composite_assess
+            ca = composite_assess(state, p, N_max, M_max, basis,
+                                  Mk=Mk_max, V=V_max, combine=True)
+            if ca:
+                rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1} (kompozit)",
+                             "material": "—", "sigma": ca["sigma_max"],
+                             "tau": ca["tau_max"], "sred": ca["mises_max"],
+                             "RF": ca["RF"]})
+            continue
+        try:
+            section = build_section(def_for_segment(state, seg, xm))
+        except Exception:
+            continue
+        if section is None or not getattr(section, "valid", False):
+            continue
+        infl = build_influence(section, n=80)
+        sg, tu, mz = max_stresses_fast(infl, N_max, V_max, M_max, Mk_max, combine=True)
+        RF_y = (Re / mz) if mz > 1e-9 else inf
+        RF_u = (Rm / mz) if mz > 1e-9 else inf   # bez plast. rezervy (konzervativní)
+        if basis == "yield":
+            RF = RF_y
+        elif basis == "ultimate":
+            RF = RF_u
+        else:
+            RF = min(RF_y, RF_u)
+        tp = getattr(section, "section_type", "?")
+        rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1} · {tp}",
+                     "material": getattr(mat, "name", "?"),
+                     "sigma": sg, "tau": tu, "sred": mz, "RF": RF})
+    if not rows:
+        return None
+    crit = min(rows, key=lambda r: r["RF"])
+    return ConservativeResult(N_max, V_max, M_max, Mk_max, rows,
+                              crit["RF"], crit["label"], crit["material"], env.n_combos)
+
+
+@dataclass
+class BucklingResult:
+    """Posouzení vzpěrné stability (fáze 1: Johnson-Euler sloup per úsek).
+    Tlačené úseky (N<0): kritické napětí σ_cr dle štíhlosti λ=μ·L/i_min,
+    Euler pro štíhlé, Johnson parabola pro krátké; RF_vzpěr = σ_cr·A/|N|."""
+    rows: list                     # [{seg, label, N, lam, sigma_cr, P_cr, RF}]
+    rf_min: float
+    crit_label: str
+
+
+def _johnson_euler_sigma_cr(E, Fcy, lam):
+    """Kritické napětí sloupu [MPa] dle štíhlosti λ. Euler pro λ≥λ_cr, Johnson
+    parabola pro λ<λ_cr (tečné napojení při σ=Fcy/2). λ = μ·L/i_min."""
+    import math
+    if lam <= 1e-9 or E <= 0 or Fcy <= 0:
+        return Fcy
+    lam_cr = math.pi * math.sqrt(2.0 * E / Fcy)
+    if lam >= lam_cr:
+        return math.pi**2 * E / lam**2                 # Euler
+    return Fcy * (1.0 - Fcy * lam**2 / (4.0 * math.pi**2 * E))   # Johnson
+
+
+def buckling_check(state, result, env=None):
+    """Vzpěr per úsek (fáze 1). Bere tlakovou osovou sílu (min N v úseku), slabou
+    osu (I_min), μ z úseku (buckling_mu). `env` = obálka přes kombinace: pak se
+    tlak bere z OBÁLKY N (nejnepříznivější kombinace per úsek), jinak jen ze
+    zobrazeného výsledku. Vrací BucklingResult nebo None."""
+    import math
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return None
+    from .sections_along import (normalized_segments, def_for_segment,
+                                 material_for_segment)
+    from .section import build_section
+    pts = result.points
+    env_x = env_N = None
+    if env is not None:
+        env_x = np.asarray(env.xv)
+        env_N = np.asarray(env.N_min)            # min N po délce přes kombinace
+    rows = []
+    for i, seg in enumerate(normalized_segments(state)):
+        if env_N is not None:
+            m = (env_x >= seg.x1 - 1e-6) & (env_x <= seg.x2 + 1e-6)
+            if not m.any():
+                continue
+            N_c = float(env_N[m].min())          # obálkový tlak (přes kombinace)
+        else:
+            seg_pts = [p for p in pts if seg.x1 - 1e-6 <= p.x <= seg.x2 + 1e-6]
+            if not seg_pts:
+                continue
+            N_c = min(p.N for p in seg_pts)      # nejzápornější = největší tlak
+        if N_c >= 0:                             # jen tah → vzpěr neřešíme
+            continue
+        xm = (seg.x1 + seg.x2) / 2.0
+        try:
+            sec = build_section(def_for_segment(state, seg, xm), fem=False)
+        except Exception:
+            continue
+        if sec is None or not getattr(sec, "valid", False) or sec.A <= 1e-9:
+            continue
+        I_min = min(sec.Iy, sec.Iz)
+        i_min = math.sqrt(I_min / sec.A) if I_min > 0 else 0.0
+        if i_min <= 1e-9:
+            continue
+        mat = material_for_segment(state, seg)
+        E = getattr(seg, "E", None) or getattr(mat, "E", 210000.0)
+        Fcy = getattr(mat, "Re", 235.0)
+        mu = float(getattr(seg, "buckling_mu", 1.0) or 1.0)
+        Lb = mu * (seg.x2 - seg.x1)
+        lam = Lb / i_min
+        sigma_cr = _johnson_euler_sigma_cr(E, Fcy, lam)
+        P_cr = sigma_cr * sec.A
+        RF = P_cr / abs(N_c) if abs(N_c) > 1e-9 else float("inf")
+        rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1}", "N": N_c,
+                     "lam": lam, "sigma_cr": sigma_cr, "P_cr": P_cr, "RF": RF})
+    if not rows:
+        return None
+    crit = min(rows, key=lambda r: r["RF"])
+    return BucklingResult(rows, crit["RF"], crit["label"])
+
+
 def load_case_summary(state, factors, label=""):
     """Souhrnný řádek pro jednu kombinaci (faktory lc_id→faktor) pro Load Case
     Builder. Vrací (cols, result), kde cols = [(název_sloupce, hodnota), …]

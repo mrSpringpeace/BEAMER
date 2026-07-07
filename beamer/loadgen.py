@@ -91,3 +91,51 @@ def make_loads(state, a: float, b: float, src: Load, x_F: float,
         tq.x, tq.Mx = x_F, mk
         extras.append(tq)
     return dist, extras
+
+
+# ── spojité zatížení z křivky (dvojice x,q z textu) ──────────────────────────
+def parse_xq_curve(text):
+    """Rozparsuje text s dvojicemi (x, q) na řádek → [(x, q), …] setříděné dle x.
+    Kontrakt: dvě čísla na řádek, oddělovač mezera / tabulátor / středník;
+    desetinná tečka i čárka. Řádky prázdné nebo začínající #, ;, //, % se berou
+    jako komentář/hlavička a přeskočí. x [mm], q [N/mm]."""
+    import re
+    pts = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s[0] in "#%" or s[:2] == "//" or s[0] == ";":
+            continue
+        vals = []
+        for t in re.split(r"[\s;]+", s):
+            if not t:
+                continue
+            try:
+                vals.append(float(t.replace(",", ".")))
+            except ValueError:
+                pass
+        if len(vals) >= 2:
+            pts.append((vals[0], vals[1]))
+    pts.sort(key=lambda p: p[0])
+    # slouč duplicitní x (ponech poslední) – jinak by vznikl nulový úsek
+    out = []
+    for x, q in pts:
+        if out and abs(x - out[-1][0]) < 1e-9:
+            out[-1] = (x, q)
+        else:
+            out.append((x, q))
+    return out
+
+
+def loads_from_curve(points, lc_id, name="q(x)"):
+    """Z (x, q) dvojic vytvoří PO ČÁSTECH LINEÁRNÍ spojité zatížení = seznam
+    `distributed` Load segmentů: každý úsek [x_i, x_{i+1}] má q1=q_i, q2=q_{i+1}.
+    Prázdné nebo jednoprvkové vstupy → []."""
+    loads = []
+    for i in range(len(points) - 1):
+        (x1, q1), (x2, q2) = points[i], points[i + 1]
+        if x2 - x1 <= 1e-9:
+            continue
+        ld = Load(new_id("load"), "distributed", f"{name} [{i + 1}]", lc_id)
+        ld.x1, ld.x2, ld.q1, ld.q2 = x1, x2, q1, q2
+        loads.append(ld)
+    return loads

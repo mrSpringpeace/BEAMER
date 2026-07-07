@@ -122,7 +122,9 @@ def solve_beam(state, factors=None) -> SolverResult:
         if 0 <= h.x <= length:
             xs.add(float(h.x))
     for ld in state.loads:
-        if ld.type == "distributed":
+        if ld.type in ("distributed", "thermal"):
+            # hranice oblasti MUSÍ být uzly – element nesmí přeskakovat rozhraní
+            # (u teploty by dostal ΔT dle svého středu → chyba N až ~2 %)
             if 0 <= ld.x1 <= length:
                 xs.add(float(ld.x1))
             if 0 <= ld.x2 <= length:
@@ -185,12 +187,15 @@ def solve_beam(state, factors=None) -> SolverResult:
         has_hinge = any(abs(h.x - ns["x"]) < 1e-3 for h in state.hinges)
         x_mid = (ns["x"] + ne["x"]) / 2
         EA_e, EIy_e, GJ_e, GAs_e, cs_e = elem_props(x_mid)
+        mat_e = resolver.material_at(x_mid)
+        alpha_e = float(getattr(mat_e, "alpha", 0.0) or 0.0)
         elements.append({
             "id": i, "ns": ns, "ne": ne,
             "L": ne["x"] - ns["x"],
             "release_start": has_hinge, "release_end": False,
             "xs": ns["x"], "xe": ne["x"],
             "EA": EA_e, "EIy": EIy_e, "GJ": GJ_e, "GAs": GAs_e, "section": cs_e,
+            "alpha": alpha_e,
         })
 
     K = np.zeros((num_dof, num_dof))
@@ -282,23 +287,70 @@ def solve_beam(state, factors=None) -> SolverResult:
                     F[elem["ne"]["dof"]+1] += (L_e/20)*(3*qA+7*qB)*mult
                     F[elem["ne"]["dof"]+2] += -(L_e**2/60)*(2*qA+3*qB)*mult
 
+    # ── teplotní zatížení (rovnoměrné ΔT): ekvivalentní osové uzlové síly ──
+    # Volná teplotní dilatace ε_th=α·ΔT; při vazbě vzniká osová síla. Load vektor
+    # baru = EA·α·ΔT·[−1,+1]; recovery odečte teplotní přetvoření z N.
+    def dT_at(sg):
+        v = 0.0
+        for ld in state.loads:
+            if ld.type != "thermal":
+                continue
+            if ld.x1 - 1e-9 <= sg <= ld.x2 + 1e-9:
+                lm = _load_multiplier(state, ld, factors)
+                v += float(getattr(ld, "dT", 0.0) or 0.0) * lm
+        return v
+    for elem in elements:
+        dT_e = dT_at((elem["xs"] + elem["xe"]) / 2.0)
+        elem["dT"] = dT_e
+        if abs(dT_e) < 1e-12:
+            continue
+        N_th = elem["EA"] * elem["alpha"] * dT_e     # EA·α·ΔT
+        F[elem["ns"]["dof"]+0] += -N_th
+        F[elem["ne"]["dof"]+0] += +N_th
+
     # ── okrajové podmínky ──
-    constrained = set()
+    constrained = set()    # DOF držené na NULE (tuhé podpory)
+    prescribed = {}        # DOF → nenulový předepsaný posun (settlement)
+    springs = []           # (dof, tuhost) – pružné podpory
     skew_rollers = []      # (dof_u, sinα, cosα) – šikmé rolny přes penaltu
+    gap_supports = []      # (dof_w, vůle) – podpora s vůlí (nelineární kontakt)
     for sup in state.supports:
         nd = node_at(sup.x)
         if not nd:
             continue
         d = nd["dof"]
+        if sup.type == "spring":
+            kz = float(getattr(sup, "spring_z", 0.0) or 0.0)
+            kry = float(getattr(sup, "spring_ry", 0.0) or 0.0)
+            if kz > 0:
+                springs.append((d+1, kz))     # svislá pružina (w)
+            if kry > 0:
+                springs.append((d+2, kry))    # rotační pružina (φ)
+            continue
+        # tuhé typy – svislý DOF: vůle (gap, nelineární) > předepsaný posun
+        # (settlement) > tuhý (0). Vůle a settlement se vylučují (gap má přednost).
+        settle = float(getattr(sup, "settlement", 0.0) or 0.0)
+        gap = float(getattr(sup, "gap", 0.0) or 0.0)
+
+        def _hold_vertical(dv, settle=settle, gap=gap):
+            if gap > 1e-12:
+                gap_supports.append((dv, gap))
+            elif abs(settle) > 1e-12:
+                prescribed[dv] = settle
+            else:
+                constrained.add(dv)
+
         if sup.type == "fixed":
-            constrained |= {d, d+1, d+2, d+3}
+            constrained |= {d, d+2, d+3}
+            _hold_vertical(d+1)
         elif sup.type == "pin":
-            constrained |= {d, d+1, d+3}
+            constrained |= {d, d+3}
+            _hold_vertical(d+1)
         elif sup.type == "roller":
             rad = np.radians(sup.angle or 0.0)
             s_, c_ = float(np.sin(rad)), float(np.cos(rad))
             if abs(s_) < 1e-5:
-                constrained.add(d+1)          # vodorovná rolna → drží w
+                _hold_vertical(d+1)           # vodorovná rolna → drží w
             elif abs(c_) < 1e-5:
                 constrained.add(d)            # svislá → drží u
             else:
@@ -309,49 +361,76 @@ def solve_beam(state, factors=None) -> SolverResult:
     if not any(dof % 4 == 0 for dof in constrained) and nodes and not skew_rollers:
         constrained.add(nodes[0]["dof"]+0)
 
-    K_solved = K.copy()
-    F_solved = F.copy()
+    def _solve_once(presc):
+        """Sestaví soustavu s danými předepsanými posuny (settlement + aktivní
+        vůle) a vyřeší. Vrací U, nebo None při nestabilitě."""
+        K_s = K.copy()
+        F_s = F.copy()
+        if skew_rollers:
+            kpen = 1e5 * max(float(np.abs(np.diag(K)).max()), 1.0)
+            for d, s_, c_ in skew_rollers:
+                K_s[d, d] += kpen * s_ * s_
+                K_s[d, d+1] += kpen * s_ * c_
+                K_s[d+1, d] += kpen * s_ * c_
+                K_s[d+1, d+1] += kpen * c_ * c_
+        for dof, k in springs:
+            K_s[dof, dof] += k
+        if presc:
+            cols = {dof: K_s[:, dof].copy() for dof in presc}
+            for dof, g in presc.items():
+                F_s -= cols[dof] * g
+            for dof in presc:
+                K_s[:, dof] = 0.0
+        for dof in constrained:
+            K_s[dof, :] = 0; K_s[dof, dof] = 1.0; F_s[dof] = 0.0
+        for dof, g in presc.items():
+            K_s[dof, :] = 0; K_s[dof, dof] = 1.0; F_s[dof] = g
+        try:
+            U = np.linalg.solve(K_s, F_s)
+            if skew_rollers and np.all(np.isfinite(U)):
+                U = U + np.linalg.solve(K_s, F_s - K_s @ U)
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(U)):
+            return None
+        res_tol = 1e-3 if skew_rollers else 1e-6
+        resid = float(np.linalg.norm(K_s @ U - F_s))
+        if resid > res_tol * (float(np.linalg.norm(F_s)) + 1.0):
+            return None
+        return U
 
-    # šikmá rolna: vazba ve směru normály n = (sin α, cos α) penaltovou
-    # pružinou v rovině (u, w). Penalta jde JEN do K_solved – reakce se pak
-    # rekonstruují z původního K: R = K·U − F = −K_pen·U ∥ n.
-    if skew_rollers:
-        # 1e5× max. diagonála: dost tuhé na vazbu (rel. chyba ~1e-5),
-        # ale nezničí podmíněnost soustavy (float64).
-        kpen = 1e5 * max(float(np.abs(np.diag(K)).max()), 1.0)
-        for d, s_, c_ in skew_rollers:
-            K_solved[d, d] += kpen * s_ * s_
-            K_solved[d, d+1] += kpen * s_ * c_
-            K_solved[d+1, d] += kpen * s_ * c_
-            K_solved[d+1, d+1] += kpen * c_ * c_
-    for dof in constrained:
-        K_solved[dof, :] = 0
-        K_solved[dof, dof] = 1.0
-        F_solved[dof] = 0.0
-
-    try:
-        U = np.linalg.solve(K_solved, F_solved)
-        # Penalta šikmé rolny dělá soustavu tuhou/špatně podmíněnou → reziduum
-        # řešení pak závisí na LAPACK backendu (lokál vs. CI). Jeden krok
-        # iterativního zjemnění ho srazí o mnoho řádů nezávisle na backendu.
-        if skew_rollers and np.all(np.isfinite(U)):
-            U = U + np.linalg.solve(K_solved, F_solved - K_solved @ U)
-    except np.linalg.LinAlgError:
-        return SolverResult([], [], [], False, rep_section,
-                            "Nestabilní soustava (mechanismus / nedostatečné podepření).")
-    # LAPACK téměř-singulární soustavu „vyřeší" s nesmysly – kontrola
-    # konečnosti a rezidua odhalí mechanismus/nedostatečné podepření.
-    if not np.all(np.isfinite(U)):
-        return SolverResult([], [], [], False, rep_section,
-                            "Nestabilní soustava (mechanismus / nedostatečné podepření).")
-    resid = float(np.linalg.norm(K_solved @ U - F_solved))
-    # Penalta šikmé rolny dělá soustavu záměrně tuhou → hůř podmíněnou, takže
-    # reziduum korektního řešení je větší (~1e-5 rel.) a závisí na BLAS/LAPACK
-    # backendu (jiné číslo lokálně vs. CI). Skutečný mechanismus dá reziduum
-    # řádu ‖F‖ (rel. ~1), proto u penalty stačí volnější práh. Bez penalty se
-    # drží přísný práh (detekce nedostatečného podepření beze změny).
-    res_tol = 1e-3 if skew_rollers else 1e-6
-    if resid > res_tol * (float(np.linalg.norm(F_solved)) + 1.0):
+    # ── řešení s aktivní množinou pro VŮLE (nelineární kontakt) ──
+    # Podpora s vůlí g nechá uzel volný v ±g; teprve při |w|>g „dosedne" (drží
+    # se na ±g). Aktivní množina: řeš, aktivuj překročené, uvolni ty, kde reakce
+    # táhne od stěny (nefyzikální). Bez vůlí je to jediný přímý solve (regrese).
+    U = _solve_once(prescribed)
+    if gap_supports:
+        rscale = float(np.abs(F).max()) + 1.0
+        gap_active = {}
+        for _it in range(30):
+            if U is None:
+                if not gap_active:            # bez kontaktu mechanismus → dosedni vše
+                    for dw, g in gap_supports:
+                        gap_active[dw] = 0.0
+                    U = _solve_once({**prescribed, **gap_active})
+                    continue
+                break
+            R = K @ U - F
+            changed = False
+            for dw, g in gap_supports:
+                if dw in gap_active:
+                    val = gap_active[dw]
+                    if val != 0.0 and ((val > 0 and R[dw] > 1e-6 * rscale) or
+                                       (val < 0 and R[dw] < -1e-6 * rscale)):
+                        del gap_active[dw]; changed = True   # reakce táhne → uvolni
+                else:
+                    w = U[dw]
+                    if abs(w) > g + 1e-9:
+                        gap_active[dw] = math.copysign(g, w); changed = True
+            if not changed:
+                break
+            U = _solve_once({**prescribed, **gap_active})
+    if U is None:
         return SolverResult([], [], [], False, rep_section,
                             "Nestabilní soustava (mechanismus / nedostatečné podepření).")
 
@@ -439,7 +518,8 @@ def solve_beam(state, factors=None) -> SolverResult:
         IL = L_e*A0[-1] - A1[-1]    # ∫(L−s)q ds
         Vi = (Mj - Mi - IL)/L_e if L_e > 1e-12 else 0.0
 
-        N = (EA_e/L_e)*(u2-u1)
+        # osová síla: mechanické přetvoření = celkové − teplotní (α·ΔT)
+        N = (EA_e/L_e)*(u2-u1) - EA_e*elem.get("alpha", 0.0)*elem.get("dT", 0.0)
         Mk = (GJ_e/L_e)*(th2-th1)
 
         local_points = []
