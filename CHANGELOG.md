@@ -2,6 +2,34 @@
 
 Version format: **X.XX**
 
+## 1.30
+Quality and validation (no change to the computation – only verification and
+readability):
+- **Independent cross-validation of the calculations against established
+  tools.** A set of validation tests (dev-only) compares BEAMER with libraries:
+  - **section properties** (A, Iy, Iz, Iyz, IT) against `sectionproperties`,
+  - **planar beam** (internal forces, deflection, reactions – 9 problem types
+    including statically indeterminate) against `IndeterminateBeam`,
+  - **elastic supports** against `IndeterminateBeam`,
+  - **biaxial and skew bending (Iyz)** against the 3D FEA `PyNite`,
+  - **composite** (modulus-weighted) against `sectionproperties`,
+  - **buckling** against exact Euler/transcendental solutions (μ = 1/0.5/2/0.699).
+  Everything agrees; the validation confirmed biaxial bending and the Iyz
+  coupling.
+- **Golden-value snapshot** – a regression capture of the results of a set of
+  reference models; it guards against unintended drift in the calculations.
+- **Solver core refactor** – the element matrices, shape functions and the
+  internal-force recovery were extracted into separate functions (clearer, more
+  auditable); the behaviour is bit-identical (guarded by the golden snapshot).
+- Fix: the schematic-drawing test is skipped in a headless (CI) environment
+  instead of failing.
+
+Known limitation (confirmed by validation): the warping constant Iω and the
+shear-centre position are only approximate for open thin-walled parametric
+sections – this does not affect the internal forces, deflection or reserve
+factor (the solver uses the St-Venant torsion stiffness), only the values shown
+on the Section tab.
+
 ## 1.29
 **Biaxial bending / spatial loading (solver 4 → 6 DOF).** A major core extension:
 the beam can now be loaded in both transverse planes (not only vertically).
