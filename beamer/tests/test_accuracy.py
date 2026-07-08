@@ -10,6 +10,8 @@ import math
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from beamer.model import (
@@ -893,6 +895,10 @@ def test_schema_load_filter_by_combination():
     """Schéma kreslí zatížení v kontextu ZOBRAZENÉ kombinace: jen zatížení s
     nenulovým faktorem, velikost × faktor × dodatečný součinitel. Bez kombinace
     fallback = zadané hodnoty."""
+    # kreslení potřebuje matplotlib + Qt binding (plots.py = QtAgg) → v CI bez GUI
+    # stacku se přeskočí místo selhání
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("PySide6")
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1160,6 +1166,12 @@ def test_buckling_eigen_euler_cases():
     th = Load("t", "thermal", "T", "lc"); th.x1 = 0; th.x2 = L; th.dT = 50.0
     bk = run([Support("a", 0, "fixed", 0), Support("b", L, "fixed", 0)], [th])
     assert _rel(bk.mu_eff, 0.5) < 1e-2 and _rel(bk.P_cr, 4.0 * P_euler) < 1e-2
+
+    # vetknutý-kloub (propped): μ=0.699 – TRANSCENDENTNÍ řešení (tan(kL)=kL),
+    # smíšená OP, ověří eigen-solver na netriviálním případu. P_cr = π²EI/(0.699L)²
+    bk = run([Support("a", 0, "fixed", 0), Support("b", L, "roller", 0)],
+             [Load("f", "point_force", "F", "lc", x=L, Fx=-P)])
+    assert _rel(bk.mu_eff, 0.6992) < 5e-3 and _rel(bk.P_cr, P_euler / 0.6992**2) < 5e-3
 
     # čistý tah → žádné vybočení (None)
     assert run([Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
