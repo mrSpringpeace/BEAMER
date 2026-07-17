@@ -149,7 +149,6 @@ def _apply_palette(app, theme: str) -> None:
     """Nastaví QPalette dle motivu – aby i nestylované plochy (pozadí karet,
     vstupní pole) měly správnou barvu (samotný QSS je neobarví)."""
     from PySide6.QtGui import QPalette, QColor
-    from PySide6.QtCore import Qt
     t = tokens(theme)
     C = lambda h: QColor(h)
     p = QPalette()

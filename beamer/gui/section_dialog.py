@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QGroupBox,
-    QDoubleSpinBox, QLabel, QDialogButtonBox, QWidget, QPushButton,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QLabel, QDialogButtonBox, QWidget, QPushButton,
     QFileDialog, QMessageBox, QSplitter,
 )
 

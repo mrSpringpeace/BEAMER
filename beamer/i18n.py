@@ -12,7 +12,6 @@ EN = {
     # skupiny / panely
     "Nosník": "Beam",
     "Materiál": "Material",
-    "Průřez": "Cross-section",
     "Podpory": "Supports",
     "Klouby": "Hinges",
     "Zatížení": "Loads",
@@ -137,8 +136,6 @@ EN = {
     "Nový": "New",
     "Otevřít…": "Open…",
     "Uložit jako…": "Save as…",
-    "Export protokolu (TXT)…": "Export report (TXT)…",
-    "Export VVÚ (PNG)…": "Export diagrams (PNG)…",
     "Konec": "Quit",
     "Demo nosník": "Demo beam",
     "Nastavení…": "Settings…",
@@ -272,7 +269,6 @@ EN = {
     "Klouby:": "Hinges:",
     "Zatížení:": "Loads:",
     "ÚSEKY NOSNÍKU": "BEAM SEGMENTS",
-    "Úsek": "Segment",
     "délka": "length",
     "Průřez:": "Cross-section:",
     "Kritický řez": "Critical section",
@@ -305,12 +301,10 @@ EN = {
     "— Průřez v řezu —": "— Cross-section at x —",
     "— Napětí —": "— Stress —",
     "— Materiál / posouzení —": "— Material / assessment —",
-    "typ": "type",
     "materiál": "material",
     "w (průhyb) [mm]": "w (deflection) [mm]",
     "φ (ohyb. pootočení) [°]": "φ (bending rotation) [°]",
     "θ (torzní pootočení) [°]": "θ (torsional rotation) [°]",
-    "Počítám…": "Calculating…",
     "změněno – stiskněte Spočítat": "changed – press Calculate",
     "Nelze načíst: ": "Cannot load: ",
     "Importovat Ministatik (*.nos)…": "Import Ministatik (*.nos)…",
@@ -322,6 +316,16 @@ EN = {
     "Obrázek uložen: ": "Image saved: ",
     # plots
     "Schéma nosníku": "Beam scheme",
+    "axonometrie": "axonometry",
+    "Axonometrie": "Axonometry",
+    "Prostorové (axonometrické) schéma – ukáže obě ohybové roviny naráz "
+    "(svislé Fz/q i vodorovné Fy/Mz, krut) a 3D deformovaný tvar.\n"
+    "Vhodné pro biaxiální (mimorovinné) zatížení; boční pohled zůstává "
+    "přesnější pro čistě svislé úlohy.":
+        "Spatial (axonometric) scheme – shows both bending planes at once "
+        "(vertical Fz/q and horizontal Fy/Mz, torsion) and the 3D deformed shape.\n"
+        "Suited to biaxial (out-of-plane) loading; the side view stays more "
+        "accurate for purely vertical problems.",
     "N – osová síla [N]": "N – axial force [N]",
     "V – posouvající síla [N]": "V – shear force [N]",
     "M – ohybový moment [N·mm]": "M – bending moment [N·mm]",
@@ -357,7 +361,6 @@ EN = {
     # poly editor
     "Snap na mřížku 5 mm": "Snap to 5 mm grid",
     "Vymazat vše": "Clear all",
-    "+ Přidat bod": "+ Add point",
     "L-klik: přidat/táhnout bod · P-klik: smazat bod":
         "L-click: add/drag point · R-click: delete point",
     # nastavení

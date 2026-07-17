@@ -99,8 +99,11 @@ class CompositeProps:
     Iy_eq: float     # transformovaný moment  = EIy / E_ref
     Iz_eq: float
     multi_material: bool
-    GJ: float = None     # (GJ)_eff torzní tuhost přes variabilní-G FEM [N·mm²]
-    GA: float = None     # Σ Gᵢ·Aᵢ – pro váženou smykovou tuhost GAs [N]
+    GJ: float | None = None     # (GJ)_eff torzní tuhost přes variabilní-G FEM [N·mm²]
+    GA: float | None = None     # Σ Gᵢ·Aᵢ – pro váženou smykovou tuhost GAs [N]
+    EAalpha: float = 0.0  # Σ Eᵢ·αᵢ·Aᵢ – teplotní osová tuhost (bimetal) [N/°C]
+    ESalpha: float = 0.0  # Σ Eᵢ·αᵢ·(z−z_NA)dA – teplotní moment (bimetal) [N·mm/°C]
+    EIalpha: float = 0.0  # Σ Eᵢ·αᵢ·(z−z_NA)²dA [N·mm²/°C]
 
 
 def _material_by_id(state, mid):
@@ -147,11 +150,15 @@ def composite_weighted(state, prop):
     if not pbodies:
         return None
     bodies_E = [(g, float(m.E) if m else 210000.0,
-                 float(m.G) if m else 81000.0) for g, m in pbodies]
+                 float(m.G) if m else 81000.0,
+                 float(getattr(m, "alpha", 0.0)) if m else 0.0) for g, m in pbodies]
     EM = [0.0] * 6                       # E-vážené momenty M00,M10,M01,M20,M02,M11
     GA = 0.0                             # Σ Gᵢ·Aᵢ (vážená smyková tuhost)
+    EAalpha = 0.0                        # Σ Eᵢ·αᵢ·Aᵢ (teplotní osová tuhost)
+    ESalpha_z = 0.0                      # Σ Eᵢ·αᵢ·∫z dA (před posunem na NA)
+    EIalpha_z = 0.0                      # Σ Eᵢ·αᵢ·∫z² dA (před posunem na NA)
     Es = set()
-    for (outer, holes), E, G in bodies_E:
+    for (outer, holes), E, G, al in bodies_E:
         Es.add(round(E, 6))
         if outer and len(outer) >= 3:
             m = _raw_moments(outer)
@@ -159,6 +166,9 @@ def composite_weighted(state, prop):
             for k in range(6):
                 EM[k] += E * sg * m[k]
             GA += G * sg * m[0]
+            EAalpha += E * al * sg * m[0]
+            ESalpha_z += E * al * sg * m[2]        # m[2] = ∫z dA
+            EIalpha_z += E * al * sg * m[4]        # m[4] = ∫z² dA
         for h in holes:
             if h and len(h) >= 3:
                 hm = _raw_moments(h)
@@ -166,6 +176,9 @@ def composite_weighted(state, prop):
                 for k in range(6):
                     EM[k] -= E * sgh * hm[k]
                 GA -= G * sgh * hm[0]
+                EAalpha -= E * al * sgh * hm[0]
+                ESalpha_z -= E * al * sgh * hm[2]
+                EIalpha_z -= E * al * sgh * hm[4]
     EA = EM[0]
     if EA <= 1e-9:
         return None
@@ -173,30 +186,84 @@ def composite_weighted(state, prop):
     EIy = EM[4] - EA * z_NA**2           # Σ Eᵢ ∫z² dA k NA
     EIz = EM[3] - EA * y_NA**2
     EIyz = EM[5] - EA * y_NA * z_NA
-    E_ref = max(E for _, E, _g in bodies_E)
+    ESalpha = ESalpha_z - z_NA * EAalpha  # teplotní 1. moment k NA (bimetal)
+    EIalpha = EIalpha_z - 2.0*z_NA*ESalpha_z + z_NA*z_NA*EAalpha
+    E_ref = max(E for _, E, _g, _a in bodies_E)
     return CompositeProps(EA, EIy, EIz, EIyz, y_NA, z_NA, E_ref,
                           EA / E_ref, EIy / E_ref, EIz / E_ref, len(Es) > 1,
-                          GA=GA)
+                          GA=GA, EAalpha=EAalpha, ESalpha=ESalpha,
+                          EIalpha=EIalpha)
 
 
-def composite_stress(state, prop, N, M):
+def composite_compression_capacity(state, prop):
+    """Součet tlakových mezních sil částí Σ(Fcy,i·Ai).
+
+    Když materiál nemá samostatnou tlakovou mez ``Fcy``, použije se jeho ``Re``
+    a výsledek je explicitně založen na izotropním fallbacku.
+    """
+    from .section import _raw_moments
+    capacity = 0.0
+    for (outer, holes), mat in _positioned_bodies(state, prop):
+        if mat is None or len(outer) < 3:
+            continue
+        area = abs(_raw_moments(outer)[0])
+        for hole in holes:
+            if len(hole) >= 3:
+                area -= abs(_raw_moments(hole)[0])
+        fcy = getattr(mat, "Fcy", None)
+        if fcy is None or fcy <= 0.0:
+            fcy = getattr(mat, "Re", 0.0)
+        capacity += max(area, 0.0) * float(fcy)
+    return capacity
+
+
+def composite_stress(state, prop, N, M, Mz=0.0, dT=0.0, dT_grad=0.0):
     """Normálové napětí a RF PER MATERIÁL složeného PID (ohyb + osová síla, B1).
-    N [N], M [N·mm]. σ v tělese materiálu i: σ = Eᵢ·(N/EA − M·(z−z_NA)/EIy)
-    (znaménková konvence solveru: M kladný = sagging = tah na dolním vlákně).
-    Vrátí list dict {material, E, sigma_max, RF_yield, RF_ultimate} (per materiál,
-    max přes jeho tělesa), nebo None. Jen normálové – slouží jako B1 fallback,
-    plný von Mises (σ+τ_t+τ_V) počítá composite_fem.composite_stress_field."""
+    N [N], M=My, Mz [N·mm]. σ v tělese materiálu i: σ = Eᵢ·(N/EA − ohyb), kde
+    ohyb je pro Mz≠0 nebo nesymetrický řez (EIyz≠0) plný vzorec nesymetrického
+    ohybu s modulem váženými tuhostmi; jinak uniaxiál M·(z−z_NA)/EIy. Vrátí list
+    dict {material, E, sigma_max, RF_yield, RF_ultimate}, nebo None. Jen normálové
+    – B1 fallback; plný von Mises počítá composite_fem.composite_stress_field."""
     w = composite_weighted(state, prop)
     if w is None:
         return None
+    denom = w.EIy * w.EIz - w.EIyz * w.EIyz
+    biax = (abs(Mz) > 1e-12 or abs(w.EIyz) > 1e-30) and abs(denom) > 1e-30
+    positioned = _positioned_bodies(state, prop)
+    all_z = [z for (outer, holes), _mat in positioned
+             for ring in [outer, *holes] for _y, z in ring]
+    z_mid = 0.5*(min(all_z) + max(all_z)) if all_z else w.z_NA
+    h = (max(all_z) - min(all_z)) if all_z else 0.0
+    grad = dT_grad/h if h > 1e-12 else 0.0
+    nth = (dT*w.EAalpha
+           + grad*(w.ESalpha + (w.z_NA-z_mid)*w.EAalpha))
+    mth = (dT*w.ESalpha
+           + grad*(w.EIalpha + (w.z_NA-z_mid)*w.ESalpha))
+    th = abs(dT) > 1e-12 or abs(dT_grad) > 1e-12
+    eps0 = nth / w.EA if abs(w.EA) > 1e-12 else 0.0
+    kth = mth / w.EIy if abs(w.EIy) > 1e-30 else 0.0
     agg = {}   # material_id -> dict
-    for (outer, holes), mat in _positioned_bodies(state, prop):
+    for (outer, holes), mat in positioned:
         if mat is None or not outer:
             continue
-        zs = [z for _, z in outer]
-        for z in (min(zs), max(zs)):
-            # M kladný = sagging → tah dole (shodně se solverem a section.stress)
-            sig = mat.E * (N / w.EA - M * (z - w.z_NA) / w.EIy)
+        ys = [y for y, _ in outer]; zs = [z for _, z in outer]
+        if biax:                              # rohy bounding boxu tělesa
+            corners = [(min(ys), min(zs)), (max(ys), min(zs)),
+                       (min(ys), max(zs)), (max(ys), max(zs))]
+        else:                                 # jen z-extrémy (uniaxiál)
+            corners = [(0.0, min(zs)), (0.0, max(zs))]
+        for (y, z) in corners:
+            dz = z - w.z_NA
+            if biax:
+                dy = y - w.y_NA
+                sig = mat.E * (N / w.EA - ((M*w.EIz - Mz*w.EIyz)*dz
+                                           + (Mz*w.EIy - M*w.EIyz)*dy)/denom)
+            else:
+                sig = mat.E * (N / w.EA - M * dz / w.EIy)
+            if th:
+                a_i = float(getattr(mat, "alpha", 0.0) or 0.0)
+                temperature = dT + grad*(z-z_mid)
+                sig += mat.E * (eps0 + kth * dz - a_i * temperature)
             a = agg.setdefault(mat.id, {"material": mat.name, "E": mat.E,
                                         "Re": mat.Re, "Rm": mat.Rm, "sigma_max": 0.0})
             a["sigma_max"] = max(a["sigma_max"], abs(sig))
@@ -214,7 +281,8 @@ def section_by_id_(state, sid):
     return section_by_id(state, sid)
 
 
-def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None):
+def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None,
+                     Mz=0.0, dT=0.0, Vy=0.0, dT_grad=0.0):
     """Posouzení složeného PID PER MATERIÁL. B2: plný von Mises přes FEM pole
     (σ v rozích elementů + τ_t z variabilní-G torze + τ_V E-vážený Žuravskij).
     Režim σ_red „combined" (state.sigma_red_mode) se aplikuje per materiál:
@@ -231,16 +299,23 @@ def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None
 
     rows = None
     fallback = False
+    fallback_reason = ""
     try:
         from .composite_fem import composite_stress_field
-        field = composite_stress_field(state, prop, N, M, Mk, V)
-    except Exception:
+        field = composite_stress_field(
+            state, prop, N, M, Mk, V, Mz=Mz, dT=dT, Vy=Vy,
+            dT_grad=dT_grad,
+        )
+    except Exception as exc:
         field = None
+        fallback_reason = f"{type(exc).__name__}: {exc}"
     if field and field.get("materials"):
         rows = list(field["materials"].values())
     if rows is None:                          # B1 fallback (jen normálové)
         fallback = True
-        rows = composite_stress(state, prop, N, M)
+        rows = composite_stress(
+            state, prop, N, M, Mz=Mz, dT=dT, dT_grad=dT_grad,
+        )
         for a in rows or []:
             a.setdefault("tau_max", 0.0)
             a.setdefault("mises_max", a["sigma_max"])
@@ -270,4 +345,5 @@ def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None
     return {"materials": rows, "sigma_max": sigma_max, "tau_max": tau_max,
             "mises_max": mises_max, "RF_yield": rfy, "RF_ultimate": rfu,
             "RF": rf, "critical": crit, "composite": True,
-            "b1_fallback": fallback, "sigma_red_combined": combine}
+            "b1_fallback": fallback, "fallback_reason": fallback_reason,
+            "sigma_red_combined": combine}

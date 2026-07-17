@@ -22,7 +22,7 @@ def build_report(state, result, margins, include_conservative=False) -> str:
     L.append(f"  {tr('Délka L')} = {state.length} mm")
     L.append(f"  {tr('Teorie')} = {state.theory}")
     L.append(f"  {tr('Dodatečný součinitel')} = {state.additional_factor}  "
-             f"({tr('zatížení = početní/ultimate')})")
+             f"({tr('aplikuje se pouze na ne-ULS zatěžovací stavy')})")
     L.append("  " + tr("Podpory:"))
     for s in state.supports:
         extra = ""
@@ -69,6 +69,8 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             sc = build_section(sec1)
             L.append(f"     A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
                      f"IT={fmt(sc.IT)} mm⁴  Iω={fmt(sc.Iw)} mm⁶")
+            if not getattr(sc, "strength_available", True):
+                L.append("     ⚠ " + getattr(sc, "analysis_note", "Posouzení není dostupné."))
             L.append(f"     Wb,y={fmt(getattr(sc,'Wb_y',0))} Wb,z={fmt(getattr(sc,'Wb_z',0))} "
                      f"Wt={fmt(getattr(sc,'Wb_t',0))}   α_pl={fmt(getattr(sc,'alpha_pl',1.0))}")
         except Exception:
@@ -84,20 +86,27 @@ def build_report(state, result, margins, include_conservative=False) -> str:
     if result and result.is_stable and result.points:
         N = [p.N for p in result.points]
         V = [p.V for p in result.points]
+        Vy = [getattr(p, "V_y", 0.0) for p in result.points]
         M = [p.M for p in result.points]
+        Mz = [getattr(p, "M_z", 0.0) for p in result.points]
         Mk = [p.Mk for p in result.points]
         w = [p.w for p in result.points]
+        v = [getattr(p, "v", 0.0) for p in result.points]
         L.append(tr("VNITŘNÍ ÚČINKY (extrémy)"))
         L.append(f"  N : {fmt(min(N))} … {fmt(max(N))} N")
         L.append(f"  V : {fmt(min(V))} … {fmt(max(V))} N")
+        L.append(f"  Vy: {fmt(min(Vy))} … {fmt(max(Vy))} N")
         L.append(f"  M : {fmt(min(M))} … {fmt(max(M))} N·mm")
+        L.append(f"  Mz: {fmt(min(Mz))} … {fmt(max(Mz))} N·mm")
         L.append(f"  Mk: {fmt(min(Mk))} … {fmt(max(Mk))} N·mm")
         L.append(f"  w : {fmt(min(w))} … {fmt(max(w))} mm")
+        L.append(f"  v : {fmt(min(v))} … {fmt(max(v))} mm")
         L.append("")
         L.append(tr("REAKCE"))
         for rc in result.reactions:
-            L.append(f"  x={rc.x:.0f}: Rx={fmt(rc.Rx)} N  Rz={fmt(rc.Rz)} N  "
-                     f"My={fmt(rc.Ry)} N·mm  Mk={fmt(rc.Rx_torsion)} N·mm")
+            L.append(f"  x={rc.x:.0f}: Rx={fmt(rc.Rx)} N  Ry={fmt(rc.Ry_force)} N  "
+                     f"Rz={fmt(rc.Rz)} N  My={fmt(rc.Ry)} N·mm  "
+                     f"Mz={fmt(rc.Rz_moment)} N·mm  Mx={fmt(rc.Rx_torsion)} N·mm")
         L.append("")
 
     if margins:
@@ -155,7 +164,32 @@ def build_report(state, result, margins, include_conservative=False) -> str:
                                    "podmínek – bez ručního μ; osové pole z rovnováhy jedné "
                                    "kombinace; podpory drží příčný posun i v rovině vybočení; "
                                    "bez interakce s ohybem)"))
+                # silná osa (I_max) – ukázat jen když se liší (nesymetrický řez)
+                try:
+                    be_s = buckling_eigen_check(state, result, axis="max")
+                except Exception:
+                    be_s = None
+                if be_s is not None and abs(be_s.lam_cr - be.lam_cr) > 1e-3 * be.lam_cr:
+                    L.append(f"  {tr('silná osa I_max')}: λ_cr = {fmt(be_s.lam_cr)}  "
+                             f"P_cr = {fmt(be_s.P_cr)} N   μ_eff = {fmt(be_s.mu_eff)}  "
+                             f"({tr('řídí slabá osa')})")
                 L.append("")
+
+        # beam-column: interakce tlak + ohyb (Bruhn)
+        from .analysis import beam_column_check
+        try:
+            bcx = beam_column_check(state, result)
+        except Exception:
+            bcx = None
+        if bcx is not None:
+            L.append(tr("INTERAKCE TLAK + OHYB (beam-column, Bruhn)") + f" – {tr('zobrazená kombinace')}")
+            for r in bcx.rows:
+                L.append(f"    {r['label']}: N={fmt(r['N'])} N  P_cr={fmt(r['P_cr'])} N  "
+                         f"R_c={fmt(r['R_c'])}  σ_ohyb={fmt(r['sigma_b'])} MPa  R_b={fmt(r['R_b'])}  "
+                         f"RF={fmt(r['RF'])}  MS={fmt(r['MS'])}")
+            L.append(f"  RF_min = {fmt(bcx.rf_min)} ({tr('řídí')} {bcx.crit_label})")
+            L.append("  " + tr("(R_c + R_b/(1−R_c) ≤ 1; RF = 1/R_int, MS = RF−1; jen tlačené úseky)"))
+            L.append("")
 
         if env is not None:
             try:
@@ -190,8 +224,9 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             nm = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{orig_idx+1}"
             L.append(f"  ── {nm}  (x = {ds[0]['x']:.0f} mm)")
             d0 = ds[0]
-            L.append(f"     N={fmt(d0['N'])} N  V={fmt(d0['V'])} N  "
-                     f"M={fmt(d0['M'])} N·mm  Mk={fmt(d0['Mk'])} N·mm  w={fmt(d0['w'])} mm")
+            L.append(f"     N={fmt(d0['N'])} N  V={fmt(d0['V'])} N  Vy={fmt(d0['V_y'])} N  "
+                     f"M={fmt(d0['M'])} N·mm  Mz={fmt(d0['M_z'])} N·mm  "
+                     f"Mk={fmt(d0['Mk'])} N·mm  w={fmt(d0['w'])} mm  v={fmt(d0['v'])} mm")
             for d in ds:
                 tag = ""
                 if d.get("seg_side"):

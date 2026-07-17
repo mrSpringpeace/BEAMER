@@ -10,7 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QTableWidget,
-    QComboBox, QPushButton, QLabel, QHeaderView, QDialogButtonBox,
+    QPushButton, QLabel, QHeaderView, QDialogButtonBox,
 )
 
 from ..i18n import tr

@@ -1,0 +1,22 @@
+[tool.pytest.ini_options]
+testpaths = ["beamer/tests"]
+addopts = "-ra"
+
+[tool.ruff.lint]
+# F-kódy jsou skutečné defekty (neznámé/duplicitní/nepoužité symboly).
+# Historické E702/E741 jsou evidovaný formátovací dluh, neblokují fyzikální CI.
+select = ["F"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = [
+    "beamer/model.py",
+    "beamer/section.py",
+    "beamer/composite.py",
+    "beamer/composite_fem.py",
+    "beamer/solver.py",
+    "beamer/analysis.py",
+    "beamer/nos_io.py",
+    "beamer/csv_export.py",
+]

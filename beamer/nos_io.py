@@ -17,9 +17,12 @@ podpory dle typu (pin/roller/fixed). Zatížení se importují s velikostmi z .n
 """
 from __future__ import annotations
 
+from typing import cast
+
 from .model import (
     ProjectState, Support, Load, LoadCase, LoadCombination,
     CrossSectionDef, SectionSegment, new_id,
+    SupportType,
 )
 from .defaults import MATERIAL_LIBRARY
 
@@ -81,9 +84,9 @@ def nos_to_state(data: dict) -> ProjectState:
     x_prev = 0.0
     for row in data["segments"]:
         Jx1, Jx2, E, x_end = row[0], row[1], row[2], row[3]
-        sec1 = CrossSectionDef(type="direct", params={"Iy": Jx1})
+        sec1 = CrossSectionDef(type="direct", params={"Iy": Jx1, "stiffness_only": True})
         sec2 = (None if abs(Jx2 - Jx1) < 1e-9
-                else CrossSectionDef(type="direct", params={"Iy": Jx2}))
+                else CrossSectionDef(type="direct", params={"Iy": Jx2, "stiffness_only": True}))
         segs.append(SectionSegment(x1=x_prev, x2=x_end, sec1=sec1, sec2=sec2, E=E))
         x_prev = x_end
     if not L:
@@ -100,7 +103,7 @@ def nos_to_state(data: dict) -> ProjectState:
             stype = "fixed" if idx == 0 else "roller"
         else:  # typ 3: první a poslední vetknuté, mezi rolny
             stype = "fixed" if (idx == 0 or idx == n - 1) else "roller"
-        supports.append(Support(new_id("sup"), float(pos), stype, 0.0))
+        supports.append(Support(new_id("sup"), float(pos), cast(SupportType, stype), 0.0))
 
     LC = "lc_1"
     COMB = "comb_1"
@@ -138,7 +141,10 @@ def nos_to_state(data: dict) -> ProjectState:
         loads=loads,
         materials=materials,
         selected_material_id=mat.id,
-        cross_section=CrossSectionDef(type="direct", params={"Iy": data["segments"][0][0]}),
+        cross_section=CrossSectionDef(
+            type="direct",
+            params={"Iy": data["segments"][0][0], "stiffness_only": True},
+        ),
         section_segments=segs,
         additional_factor=1.0,
         theory="euler-bernoulli",

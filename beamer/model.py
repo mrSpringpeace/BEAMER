@@ -5,7 +5,7 @@ moduly E,G v MPa, hustota g/cm³.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 SupportType = Literal["fixed", "pin", "roller", "spring"]
@@ -30,6 +30,10 @@ class Material:
     Rm: float       # mez pevnosti (MPa)
     is_custom: bool = False
     alpha: float = 12e-6   # součinitel teplotní roztažnosti [1/°C] (ocel ~12e-6)
+    Fcy: Optional[float] = None  # tlaková mez kluzu [MPa]; None => Re
+    Fsu: Optional[float] = None  # mezní smykové napětí [MPa]; None => von Mises z Rm
+    source: str = ""             # původ dat / specifikace
+    allowables_basis: str = ""   # např. nominal, A-basis, B-basis
 
 
 @dataclass
@@ -42,6 +46,12 @@ class Support:
     spring_ry: float = 0.0   # tuhost rotační (ohybové) pružiny [N·mm/rad] (typ "spring")
     settlement: float = 0.0  # předepsaný svislý posun podpory [mm] (kladné = nahoru)
     gap: float = 0.0         # vůle podpory [mm]: uzel volný v ±gap, pak dosedne (kontakt)
+    # Explicitní 3D volby. None zachovává historickou sémantiku typu podpory.
+    restrain_y: Optional[bool] = None       # vodorovný příčný posun v
+    restrain_rz: Optional[bool] = None      # pootočení kolem z
+    restrain_torsion: Optional[bool] = None # pootočení kolem x
+    spring_y: float = 0.0                   # vodorovná pružina [N/mm]
+    spring_rz: float = 0.0                  # pružina kolem z [N·mm/rad]
 
 
 @dataclass
@@ -197,7 +207,7 @@ class ProjectState:
     section_segments: list = field(default_factory=list)   # prázdné = jeden průřez na celý nosník
     sections: list = field(default_factory=list)           # knihovna pojmenovaných průřezů (CrossSectionDef s id)
     properties: list = field(default_factory=list)         # knihovna PID (Property); úseky na ně mohou odkazovat
-    additional_factor: float = 1.0   # dodatečný součinitel – násobí zatížení (ultimate síly)
+    additional_factor: float = 1.0   # násobí jen ne-ULS zatěžovací stavy
     plasticity_enabled: bool = False  # využít součinitel plasticity v RF_ultimate
     plasticity_method: str = "analytic"  # "analytic" | "tabular"
     rf_basis: str = "min"             # řídicí RF: "min" | "yield" (Re) | "ultimate" (Rm)
@@ -241,11 +251,11 @@ def migrate_combinations_to_loads(state) -> None:
     loads = getattr(state, "loads", []) or []
     load_ids = {l.id for l in loads}
     lc_ids = {c.id for c in (getattr(state, "load_cases", []) or [])}
-    loads_by_lc = {}
+    loads_by_lc: dict[str | None, list[str]] = {}
     for l in loads:
         loads_by_lc.setdefault(getattr(l, "load_case_id", None), []).append(l.id)
     for comb in getattr(state, "load_combinations", []) or []:
-        new = {}
+        new: dict[str, float] = {}
         for key, f in (comb.factors or {}).items():
             if key in load_ids:
                 new[key] = new.get(key, 0.0) + f

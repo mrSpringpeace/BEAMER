@@ -9,11 +9,11 @@ Sjednocený model A+B:
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QPushButton, QLabel, QLineEdit, QInputDialog, QFileDialog,
+    QHeaderView, QPushButton, QLabel, QLineEdit, QFileDialog,
     QMessageBox, QApplication, QAbstractItemView,
 )
 

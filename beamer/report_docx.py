@@ -42,7 +42,6 @@ def _img(doc, images, key, width_mm=160):
 def build_docx(state, result, margins, path, images=None, project_name=""):
     """Sestaví a uloží protokol DOCX. Vrací cestu."""
     from docx import Document
-    from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from .sections_along import (normalized_segments, eff_defs,
                                  material_for_segment)
@@ -107,15 +106,19 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         P = result.points
         doc.add_heading(tr("3  Vnitřní účinky (extrémy) a reakce"), 1)
         t = _tbl(doc, [tr("veličina"), tr("min"), tr("max"), tr("jednotka")])
-        for a, unit in (("N", "N"), ("V", "N"), ("M", "N·mm"), ("Mk", "N·mm"), ("w", "mm")):
+        for a, unit in (("N", "N"), ("V", "N"), ("V_y", "N"),
+                        ("M", "N·mm"), ("M_z", "N·mm"), ("Mk", "N·mm"),
+                        ("w", "mm"), ("v", "mm"), ("phi_z", "rad")):
             vals = [getattr(p, a) for p in P]
             _row(t, [a, fmt(min(vals)), fmt(max(vals)), unit])
         _img(doc, images, "vvu")
 
         doc.add_heading(tr("Reakce"), 2)
-        t = _tbl(doc, ["x [mm]", "Rx [N]", "Rz [N]", "My [N·mm]", "Mk [N·mm]"])
+        t = _tbl(doc, ["x [mm]", "Rx [N]", "Ry [N]", "Rz [N]",
+                       "My [N·mm]", "Mz [N·mm]", "Mx [N·mm]"])
         for rc in result.reactions:
-            _row(t, [fmt(rc.x), fmt(rc.Rx), fmt(rc.Rz), fmt(rc.Ry), fmt(rc.Rx_torsion)])
+            _row(t, [fmt(rc.x), fmt(rc.Rx), fmt(rc.Ry_force), fmt(rc.Rz),
+                     fmt(rc.Ry), fmt(rc.Rz_moment), fmt(rc.Rx_torsion)])
 
     # ── 4 Posouzení (RF) ──
     if margins:
@@ -164,7 +167,32 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
                               f"μ_eff = {fmt(be.mu_eff)}")
             doc.add_paragraph(tr("Vzpěrná délka vyplývá z okrajových podmínek (bez ručního "
                                  "μ); slabá osa I_min; osové pole z rovnováhy jedné kombinace."))
+            try:
+                be_s = buckling_eigen_check(state, result, axis="max")
+            except Exception:
+                be_s = None
+            if be_s is not None and abs(be_s.lam_cr - be.lam_cr) > 1e-3 * be.lam_cr:
+                doc.add_paragraph(f"{tr('silná osa I_max')}: λ_cr = {fmt(be_s.lam_cr)}   "
+                                  f"P_cr = {fmt(be_s.P_cr)} N   μ_eff = {fmt(be_s.mu_eff)}   "
+                                  f"({tr('řídí slabá osa')})")
             _img(doc, images, "buckling")
+
+        # beam-column: interakce tlak + ohyb (Bruhn)
+        from .analysis import beam_column_check
+        try:
+            bcx = beam_column_check(state, result)
+        except Exception:
+            bcx = None
+        if bcx is not None:
+            doc.add_heading(tr("Interakce tlak + ohyb (beam-column, Bruhn)")
+                            + f" – {tr('zobrazená kombinace')}", 1)
+            t = _tbl(doc, [tr("Úsek"), "N [N]", "P_cr [N]", "R_c", "σ_ohyb [MPa]",
+                           "R_b", "RF", "MS"])
+            for r in bcx.rows:
+                _row(t, [r["label"], fmt(r["N"]), fmt(r["P_cr"]), fmt(r["R_c"]),
+                         fmt(r["sigma_b"]), fmt(r["R_b"]), fmt(r["RF"]), fmt(r["MS"])])
+            doc.add_paragraph(f"RF_min = {fmt(bcx.rf_min)} ({tr('řídí')} {bcx.crit_label}) — "
+                              + tr("R_c + R_b/(1−R_c) ≤ 1; RF = 1/R_int, MS = RF−1."))
 
         if env is not None:
             try:

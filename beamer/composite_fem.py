@@ -59,7 +59,7 @@ def _tag_elements(nodes, elements, orig_polys):
     return tags
 
 
-_MESH_CACHE = {}
+_MESH_CACHE: dict[tuple, tuple] = {}
 _MESH_CACHE_MAX = 24
 
 
@@ -160,18 +160,22 @@ def _composite_mesh_and_warp_impl(state, prop):
         import numpy as _np
         cents = element_centroids(nodes, elements)
         ne = len(elements)
+        yc = _np.array([c[0] for c in cents])
         zc = _np.array([c[1] for c in cents])
         Ee = _np.array([t[1] for t in tags])
         Ae = _np.zeros(ne)
         be = _np.zeros(ne)
+        he = _np.zeros(ne)
         y0, z0, y1, z1 = comp.bounds
         for ei, elem in enumerate(elements):
             p = nodes[elem[0]]; q = nodes[elem[1]]; r = nodes[elem[2]]
             Ae[ei] = 0.5 * abs((q[0]-p[0])*(r[1]-p[1]) - (r[0]-p[0])*(q[1]-p[1]))
             be[ei] = _chord_length(comp, zc[ei], y0 - 1.0, y1 + 1.0)
+            he[ei] = _vertical_chord_length(comp, yc[ei], z0 - 1.0, z1 + 1.0)
         components.append({"nodes": nodes, "elements": elements, "elem_G": elem_G,
                            "tags": tags, "omega": omega, "cy": cy, "cz": cz, "GJ": GJc,
-                           "zc": zc, "Ee": Ee, "Ae": Ae, "be": be})
+                           "yc": yc, "zc": zc, "Ee": Ee, "Ae": Ae,
+                           "be": be, "he": he})
     return components, GJ, orig
 
 
@@ -201,6 +205,22 @@ def _material_at(orig, y, z):
     return None
 
 
+def _vertical_chord_length(poly, y, z_lo, z_hi):
+    """Length of a vertical chord through ``poly`` at coordinate ``y``."""
+    from shapely.geometry import LineString
+    try:
+        inter = poly.intersection(LineString([(y, z_lo), (y, z_hi)]))
+    except Exception:
+        return 0.0
+    if inter.is_empty:
+        return 0.0
+    if inter.geom_type == "LineString":
+        return inter.length
+    if inter.geom_type in ("MultiLineString", "GeometryCollection"):
+        return float(sum(getattr(g, "length", 0.0) for g in inter.geoms))
+    return 0.0
+
+
 def composite_torsion_GJ(state, prop):
     """Efektivní torzní tuhost (GJ)_eff složeného PID přes variabilní-G FEM
     Saint-Venant. Sečte přes souvislé komponenty geometrie: v každé nasíťuje
@@ -213,7 +233,8 @@ def composite_torsion_GJ(state, prop):
     return res[1]
 
 
-def composite_stress_field(state, prop, N, My, Mk, V=0.0):
+def composite_stress_field(state, prop, N, My, Mk, V=0.0, Mz=0.0, dT=0.0,
+                           Vy=0.0, dT_grad=0.0):
     """Plné per-materiálové napětí složeného PID přes FEM pole: v každém elementu
     kombinuje normálové σ (B1, modulem vážené; konvence M+ = sagging = tah dole,
     tedy σ = E·(N/EA − M·(z−z_NA)/EIy)), torzní smyk τ_t (variabilní-G warping)
@@ -234,6 +255,14 @@ def composite_stress_field(state, prop, N, My, Mk, V=0.0):
     if res is None:
         return None
     components, GJ, orig = res
+    all_z = [float(p[1]) for comp in components for p in comp["nodes"]]
+    z_mid = 0.5*(min(all_z) + max(all_z)) if all_z else w.z_NA
+    h = (max(all_z) - min(all_z)) if all_z else 0.0
+    grad = dT_grad/h if h > 1e-12 else 0.0
+    nth = (dT*w.EAalpha
+           + grad*(w.ESalpha + (w.z_NA-z_mid)*w.EAalpha))
+    mth = (dT*w.ESalpha
+           + grad*(w.EIalpha + (w.z_NA-z_mid)*w.ESalpha))
     thetap = (Mk / GJ) if (GJ and abs(GJ) > 1e-9) else 0.0
     mats = {m.id: m for m in getattr(state, "materials", None) or []}
     agg = {}
@@ -251,17 +280,50 @@ def composite_stress_field(state, prop, N, My, Mk, V=0.0):
             QE[idx] = cum                    # moment plochy STRIKTNĚ nad vláknem
             cum += Ee[idx] * (zc[idx] - w.z_NA) * Ae[idx]
 
-        def _sig(E_e, z):
+        # biaxiál: pro Mz≠0 nebo nesymetrický složený řez (EIyz≠0) plný vzorec
+        # nesymetrického ohybu s modulem váženými tuhostmi; jinak uniaxiál (byte-
+        # identické s dřívějším chováním)
+        yc, he = comp["yc"], comp["he"]
+        order_y = np.argsort(yc)[::-1]
+        QEy = np.zeros(len(yc))
+        cum_y = 0.0
+        for idx in order_y:
+            QEy[idx] = cum_y
+            cum_y += Ee[idx] * (yc[idx] - w.y_NA) * Ae[idx]
+
+        _denom = w.EIy * w.EIz - w.EIyz * w.EIyz
+        _biax = (abs(Mz) > 1e-12 or abs(w.EIyz) > 1e-30) and abs(_denom) > 1e-30
+        # teplotní self-stress (bimetal): σ_th = Eᵢ(ε₀ + κ·(z−z_NA) − αᵢΔT),
+        # ε₀ = ΔT·EAα/EA (volné osové přetvoření), κ = ΔT·ESα/EIy (křivost od
+        # nesymetrie α). Nenulové i u volného prutu (vnitřní samovyrovnané pnutí).
+        _th = abs(dT) > 1e-12 or abs(dT_grad) > 1e-12
+        _eps0 = nth / w.EA if abs(w.EA) > 1e-12 else 0.0
+        _kth = mth / w.EIy if abs(w.EIy) > 1e-30 else 0.0
+
+        def _sig(E_e, a_e, y, z):
             # M kladný = sagging → tah dole (shodně se solverem a section.stress)
-            return E_e * (N / w.EA - My * (z - w.z_NA) / w.EIy)
+            dz = z - w.z_NA
+            if _biax:
+                dy = y - w.y_NA
+                bend = ((My*w.EIz - Mz*w.EIyz)*dz + (Mz*w.EIy - My*w.EIyz)*dy)/_denom
+                sig = E_e * (N / w.EA - bend)
+            else:
+                sig = E_e * (N / w.EA - My * dz / w.EIy)
+            if _th:                          # + teplotní self-stress (bimetal)
+                temperature = dT + grad*(z-z_mid)
+                sig += E_e * (_eps0 + _kth * dz - a_e * temperature)
+            return sig
 
         for ei, (G_e, E_e, mid) in enumerate(comp["tags"]):
+            a_e = float(getattr(mats.get(mid), "alpha", 0.0) or 0.0)
             tau_t = G_e * thetap * float(np.hypot(shear[ei, 0], shear[ei, 1]))
             tau_V = (abs(V * QE[ei] / (w.EIy * be[ei]))
                      if (be[ei] > 1e-9 and abs(w.EIy) > 1e-9) else 0.0)
-            tau = abs(tau_t) + tau_V         # konzervativní součet
+            tau_Vy = (abs(Vy * QEy[ei] / (w.EIz * he[ei]))
+                      if (he[ei] > 1e-9 and abs(w.EIz) > 1e-9) else 0.0)
+            tau = abs(tau_t) + tau_V + tau_Vy
             # σ v rozích elementu (rohové uzly leží i na krajním vláknu)
-            sig = max((abs(_sig(E_e, nodes[ni][1])) for ni in elements[ei][:3]),
+            sig = max((abs(_sig(E_e, a_e, nodes[ni][0], nodes[ni][1])) for ni in elements[ei][:3]),
                       default=0.0)
             mis = float(np.sqrt(sig * sig + 3.0 * tau * tau))
             m = mats.get(mid)

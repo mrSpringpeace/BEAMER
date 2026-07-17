@@ -7,7 +7,7 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTabWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QMessageBox, QStatusBar, QScrollArea, QPushButton,
-    QProgressBar, QLabel, QCheckBox, QComboBox,
+    QProgressBar, QLabel, QCheckBox,
 )
 
 from ..defaults import create_default_state, create_empty_state
@@ -99,6 +99,15 @@ class MainWindow(QMainWindow):
         self.show_all_loads_cb.setChecked(getattr(SETTINGS, "schema_all_loads", False))
         self.show_all_loads_cb.toggled.connect(self._on_schema_vis)
         bar.addWidget(self.show_all_loads_cb)
+        self.schema_axo_cb = QCheckBox(tr("axonometrie"))
+        self.schema_axo_cb.setToolTip(tr(
+            "Prostorové (axonometrické) schéma – ukáže obě ohybové roviny naráz "
+            "(svislé Fz/q i vodorovné Fy/Mz, krut) a 3D deformovaný tvar.\n"
+            "Vhodné pro biaxiální (mimorovinné) zatížení; boční pohled zůstává "
+            "přesnější pro čistě svislé úlohy."))
+        self.schema_axo_cb.setChecked(getattr(SETTINGS, "schema_axo", False))
+        self.schema_axo_cb.toggled.connect(self._on_schema_vis)
+        bar.addWidget(self.schema_axo_cb)
         bar.addWidget(QLabel(tr("RF k:")))
         self.rf_basis_cb = NoWheelComboBox()
         self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
@@ -394,8 +403,7 @@ class MainWindow(QMainWindow):
         txt = QLabel(
             f"<h3>BEAMER&nbsp;&nbsp;v{__version__}</h3>"
             f"<p>{desc}</p>"
-            f"<p><a href='https://github.com/mrSpringpeace/BEAMER'>"
-            f"github.com/mrSpringpeace/BEAMER</a></p>")
+            f"<p>© mrSpringpeace</p>")
         txt.setOpenExternalLinks(True)
         txt.setWordWrap(True)
         top.addWidget(txt, 1)
@@ -639,12 +647,14 @@ class MainWindow(QMainWindow):
             self.state, result,
             show_loads=self.show_loads_cb.isChecked(),
             show_supports=self.show_sup_cb.isChecked(),
-            filter_by_combination=not self.show_all_loads_cb.isChecked())
+            filter_by_combination=not self.show_all_loads_cb.isChecked(),
+            axo=self.schema_axo_cb.isChecked())
 
     def _on_schema_vis(self, _=None):
         SETTINGS.schema_show_loads = self.show_loads_cb.isChecked()
         SETTINGS.schema_show_supports = self.show_sup_cb.isChecked()
         SETTINGS.schema_all_loads = self.show_all_loads_cb.isChecked()
+        SETTINGS.schema_axo = self.schema_axo_cb.isChecked()
         SETTINGS.save()
         self._plot_schema(None if getattr(self, "_dirty", True) else self.result)
 
@@ -793,7 +803,11 @@ class MainWindow(QMainWindow):
                             assess = _assess(sec_forced, mat, self.state,
                                              pcrit.N, pcrit.V, pcrit.M, pcrit.Mk, seg=sg)
                             self.section_canvas.plot(sec_forced)
-                            self.stress_canvas.plot(sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+                            self.stress_canvas.plot(
+                                sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
+                                Vy=getattr(pcrit, "V_y", 0.0),
+                                Mz=getattr(pcrit, "M_z", 0.0),
+                            )
                             self.results_panel.set_section(sec_forced, title, assess)
                             return
                         except Exception:
@@ -821,7 +835,11 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self.section_canvas.plot(sec_crit)
-            self.stress_canvas.plot(sec_crit, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk)
+            self.stress_canvas.plot(
+                sec_crit, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
+                Vy=getattr(pcrit, "V_y", 0.0),
+                Mz=getattr(pcrit, "M_z", 0.0),
+            )
             self.results_panel.set_section(sec_crit, title, assess)
         else:
             self.section_canvas.plot(sec)

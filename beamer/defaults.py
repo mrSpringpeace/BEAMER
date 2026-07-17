@@ -4,16 +4,26 @@ from __future__ import annotations
 import copy as _copy
 
 from .model import (
-    Material, Support, Hinge, Load, LoadCase, LoadCombination,
+    Material, Support, Load, LoadCase, LoadCombination,
     CrossSectionDef, SectionSegment, ProjectState,
 )
 
 MATERIAL_LIBRARY = [
-    Material("mat_al2024", "Al 2024-T3", 73100, 28000, 0.33, 2.78, 345, 483),
-    Material("mat_al7075", "Al 7075-T6", 71700, 26900, 0.33, 2.81, 503, 572),
-    Material("mat_al6061", "Al 6061-T6", 68900, 26000, 0.33, 2.70, 276, 310),
-    Material("mat_ti6al4v", "Ti-6Al-4V", 113800, 44000, 0.342, 4.43, 828, 896),
-    Material("mat_4130", "Ocel 4130", 200000, 77000, 0.29, 7.83, 435, 670),
+    Material("mat_al2024", "Al 2024-T3", 73100, 28000, 0.33, 2.78, 345, 483,
+             alpha=23.2e-6, source="Legacy BEAMER nominal library",
+             allowables_basis="nominal; verify against governing specification"),
+    Material("mat_al7075", "Al 7075-T6", 71700, 26900, 0.33, 2.81, 503, 572,
+             alpha=23.6e-6, source="Legacy BEAMER nominal library",
+             allowables_basis="nominal; verify against governing specification"),
+    Material("mat_al6061", "Al 6061-T6", 68900, 26000, 0.33, 2.70, 276, 310,
+             alpha=23.6e-6, source="Legacy BEAMER nominal library",
+             allowables_basis="nominal; verify against governing specification"),
+    Material("mat_ti6al4v", "Ti-6Al-4V", 113800, 44000, 0.342, 4.43, 828, 896,
+             alpha=8.6e-6, source="Legacy BEAMER nominal library",
+             allowables_basis="nominal; verify against governing specification"),
+    Material("mat_4130", "Ocel 4130", 200000, 77000, 0.29, 7.83, 435, 670,
+             alpha=11.7e-6, source="Legacy BEAMER nominal library",
+             allowables_basis="nominal; verify against governing specification"),
 ]
 
 

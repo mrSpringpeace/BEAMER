@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel,
-    QDoubleSpinBox, QComboBox, QPushButton, QScrollArea, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
+    QPushButton, QScrollArea, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QLineEdit,
     QCheckBox, QToolButton, QMessageBox, QStackedWidget, QListWidget,
     QListWidgetItem,
@@ -58,8 +58,7 @@ class CollapsibleBox(QWidget):
         self.toggle.setText(t)
 
 from ..model import (
-    Material, Support, Hinge, ControlPoint, Load, LoadCase, LoadCombination,
-    CrossSectionDef, SectionSegment, Property, new_id,
+    Material, Support, Hinge, ControlPoint, Load, CrossSectionDef, SectionSegment, Property, new_id,
 )
 from ..i18n import tr
 from ..settings import fmt, SETTINGS
@@ -1140,6 +1139,32 @@ class InputPanel(QWidget):
         db.clicked.connect(lambda _, s=sup: self._del_support(s))
         r2.addWidget(db)
         outer.addLayout(r2)
+
+        r3 = QHBoxLayout(); r3.setSpacing(8)
+        r3.addWidget(QLabel(tr("3D vazby:")))
+        defaults = {
+            "restrain_y": True,
+            "restrain_rz": sup.type == "fixed",
+            "restrain_torsion": sup.type in ("fixed", "pin"),
+        }
+        for attr, label in (("restrain_y", "y"), ("restrain_rz", "Rz"),
+                            ("restrain_torsion", "torze")):
+            chk = QCheckBox(tr(label))
+            current = getattr(sup, attr, None)
+            chk.setChecked(defaults[attr] if current is None else bool(current))
+            chk.toggled.connect(
+                lambda on, s=sup, a=attr: (setattr(s, a, bool(on)), self._emit())
+            )
+            r3.addWidget(chk)
+        if sup.type == "spring":
+            r3.addWidget(QLabel("k_y:"))
+            ky = _spin(getattr(sup, "spring_y", 0.0), 0, 1e12, 100, 1, " N/mm")
+            ky.valueChanged.connect(
+                lambda val, s=sup: (setattr(s, "spring_y", val), self._emit())
+            )
+            r3.addWidget(ky, 1)
+        r3.addStretch(1)
+        outer.addLayout(r3)
         return fr
 
     def _vertical_bond_cell(self, sup):
@@ -1337,9 +1362,9 @@ class InputPanel(QWidget):
                                    "Dvě čísla na řádek, oddělené mezerou/tab/středníkem "
                                    "(desetinná tečka i čárka); # nebo ; = komentář."))
             return
-        lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         import os
         nm = os.path.splitext(os.path.basename(path))[0][:20] or "q(x)"
+        lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         new_loads = loads_from_curve(pts, lc_id, nm)
         self.state.loads.extend(new_loads)
         if new_loads:
@@ -1357,7 +1382,6 @@ class InputPanel(QWidget):
             w = self.loads_layout.takeAt(0).widget()
             if w:
                 w.deleteLater()
-        lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         for ld in self.state.loads:
             self.loads_layout.addWidget(self._load_row(ld))
         self._expand_obj = None
@@ -1656,12 +1680,17 @@ class ResultsPanel(QWidget):
             title = tr("— Průřez —")
         # posouzení vybraného řezu
         prows = []
-        if assess is not None and assess.get("materials"):
+        if assess is not None and not assess.get("assessment_available", True):
+            prows.append((tr("⚠ Posouzení není dostupné"),
+                          tr(assess.get("assessment_note", ""))))
+        elif assess is not None and assess.get("materials"):
             # složený PID z různých materiálů → napětí a RF per materiál
             # (σ modulem vážené + τ z variabilní-G torze → von Mises)
             prows.append((tr("Složený průřez – napětí per materiál (σ, τ, σ_red):"), ""))
             if assess.get("b1_fallback"):
                 prows.append((tr("  ⚠ FEM pole selhalo – jen normálové σ (τ=0)!"), ""))
+                if assess.get("fallback_reason"):
+                    prows.append((tr("  Důvod"), assess["fallback_reason"]))
             if assess.get("sigma_red_combined"):
                 prows.append((tr("  σ_red = konzervativní σ⊕τ (špičky sečteny)"), ""))
             for m in assess["materials"]:

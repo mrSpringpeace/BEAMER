@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from beamer.model import (
     Material, Support, Hinge, Load, LoadCase, LoadCombination,
-    CrossSectionDef, SectionSegment, ProjectState, Body,
+    CrossSectionDef, SectionSegment, ProjectState, Body, Property,
 )
 from beamer.section import build_section
 from beamer.solver import solve_beam
@@ -470,6 +470,80 @@ def test_composite_assessment_wired():
            d["RF"] == min(min(m["RF_yield"], m["RF_ultimate"]) for m in d["materials"])
     marg = reserves_along_beam(res, st)
     assert marg and all(m.RF > 0 for m in marg)
+
+
+def test_bimetal_thermal_self_stress():
+    """Bimetal (ocel+hliník, různá α) při rovnoměrném ΔT: i bez vnějšího zatížení
+    vzniká samovyrovnané vnitřní pnutí (N=0, M=0), protože vrstvy se chtějí
+    roztáhnout různě. Ověřuje EAα/ESα i vzorec σᵢ=Eᵢ(ε₀+κ·dz−αᵢΔT) proti ruční
+    referenci a self-equilibraci (ΣσᵢAᵢ=0)."""
+    from beamer.model import Property
+    from beamer.composite import composite_weighted, composite_stress
+    steel = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85,
+                     Re=235, Rm=360, alpha=12e-6)
+    alu = Material("al", "Hliník", E=70000, G=27000, nu=0.33, rho=2.7,
+                   Re=200, Rm=300, alpha=23e-6)
+    r = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20}, id="s", name="R")
+    prop = Property(id="p", pid=1, name="bimetal", composite_parts=[
+        {"section_id": "s", "material_id": "st", "dy": 0, "dz": 10, "angle": 0},
+        {"section_id": "s", "material_id": "al", "dy": 0, "dz": -10, "angle": 0}])
+    st = ProjectState(length=100.0, sections=[r], materials=[steel, alu],
+                      selected_material_id="st", properties=[prop])
+    w = composite_weighted(st, prop)
+    # sekční charakteristiky proti ruční referenci
+    assert _rel(w.z_NA, 5.0) < 1e-9
+    assert _rel(w.EAalpha, 3304.0) < 1e-9          # ΣEᵢαᵢAᵢ
+    assert _rel(w.ESalpha, -9240.0) < 1e-9         # ΣEᵢαᵢAᵢ(zᵢ−z_NA)
+
+    dT = 50.0
+    eps0 = dT * w.EAalpha / w.EA
+    kth = dT * w.ESalpha / w.EIy
+    ref = {"Ocel": 210000*abs(eps0 + kth*(0-w.z_NA) - 12e-6*dT),
+           "Hliník": 70000*abs(eps0 + kth*(0-w.z_NA) - 23e-6*dT)}
+    rows = composite_stress(st, prop, N=0.0, M=0.0, dT=dT)
+    by = {x["material"]: x for x in rows}
+    assert _rel(by["Ocel"]["sigma_max"], ref["Ocel"]) < 1e-3
+    assert _rel(by["Hliník"]["sigma_max"], ref["Hliník"]) < 1e-3
+    assert by["Ocel"]["sigma_max"] > 40.0          # nezanedbatelné pnutí
+    # bez ΔT žádné samovyrovnané pnutí
+    rows0 = composite_stress(st, prop, N=0.0, M=0.0, dT=0.0)
+    assert max(x["sigma_max"] for x in rows0) < 1e-6
+
+
+def test_bimetal_thermal_free_bar_end_to_end():
+    """Volně uložený (staticky určitý) bimetalový nosník při ΔT: reakce/N/M≈0,
+    ale posouzení podél nosníku nese nenulové samovyrovnané pnutí v obou
+    materiálech (protažení celým řetězcem solver→analýza→kompozit)."""
+    from beamer.model import Property
+    from beamer.analysis import values_at_x_multi
+    steel = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85,
+                     Re=235, Rm=360, alpha=12e-6)
+    alu = Material("al", "Hliník", E=70000, G=27000, nu=0.33, rho=2.7,
+                   Re=200, Rm=300, alpha=23e-6)
+    r = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20}, id="s", name="R")
+    L = 2000.0
+    seg = SectionSegment(0.0, L, CrossSectionDef(), None, property_id="p")
+    th = Load("t", "thermal", "dT", "lc"); th.x1 = 0; th.x2 = L; th.dT = 50.0
+    st = ProjectState(
+        length=L, supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        load_combinations=[LoadCombination("c", "C", {"t": 1.0})],
+        loads=[th],
+        materials=[steel, alu], selected_material_id="st", sections=[r],
+        properties=[Property(id="p", pid=1, name="bimetal", composite_parts=[
+            {"section_id": "s", "material_id": "st", "dy": 0, "dz": 10, "angle": 0},
+            {"section_id": "s", "material_id": "al", "dy": 0, "dz": -10, "angle": 0}])],
+        cross_section=CrossSectionDef(type="rectangle", params={"b": 40, "h": 20}),
+        section_segments=[seg], additional_factor=1.0, selected_active_combination_id="c")
+    res = solve_beam(st)
+    assert res.is_stable
+    # staticky určitý → vnitřní síly ≈ 0 (volná dilatace)
+    assert max(abs(p.N) for p in res.points) < 1e-3
+    assert max(abs(p.M) for p in res.points) < 1e-3
+    d = values_at_x_multi(res, st, L/2)[0]
+    assert d.get("composite")
+    smax = {m["material"]: m["sigma_max"] for m in d["materials"]}
+    assert smax["Ocel"] > 40.0 and smax["Hliník"] > 15.0   # self-stress se objeví
 
 
 def test_composite_torsion_end_to_end():
@@ -1130,6 +1204,77 @@ def test_thermal_axial_load():
     assert _rel(N2, -210000 * 3200 * 12e-6 * 50.0 * (1025 / 2000)) < 1e-6
 
 
+def test_composite_biaxial_stress():
+    """Kompozit biaxiálně (fáze D): svislé + vodorovné zatížení symetrického
+    složeného průřezu (ocel. trubka + dural. jádro). Pro symetrický řez a stejné
+    Fz=Fy je výsledný ohyb √2× → napětí v rohu = √2 × jednoosé. Ověří biaxiální
+    člen v composite_stress_field. Uniaxiál (Fy=0) zůstává beze změny."""
+    from beamer.analysis import reserves_along_beam
+    stl = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85, Re=235, Rm=360)
+    alu = Material("al", "Dural", E=72000, G=27000, nu=0.33, rho=2.78, Re=280, Rm=440)
+    tube = CrossSectionDef(id="t", name="t", type="tube", params={"Do": 60, "t": 6})
+    core = CrossSectionDef(id="c", name="c", type="circle", params={"D": 48})
+    prop = Property(id="p", pid=1, name="k", material_id="st",
+                   composite_parts=[{"section_id": "t", "material_id": "st", "dy": 0, "dz": 0, "angle": 0},
+                                    {"section_id": "c", "material_id": "al", "dy": 0, "dz": 0, "angle": 0}])
+
+    def mk(fy):
+        seg = SectionSegment(0.0, 1000.0, tube, None); seg.property_id = "p"
+        loads = [Load("fz", "point_force", "sv", "lc", x=500, Fz=-4000)]
+        if fy:
+            loads.append(Load("fy", "point_force", "vo", "lc", x=500, Fy=-4000))
+        return ProjectState(
+            length=1000.0, materials=[stl, alu], selected_material_id="st",
+            sections=[tube, core], properties=[prop], section_segments=[seg],
+            supports=[Support("a", 0, "pin"), Support("b", 1000, "roller")],
+            load_cases=[LoadCase("lc", "LC")], loads=loads,
+            load_combinations=[LoadCombination(id="cc", name="cc",
+                               factors={l.id: 1.0 for l in loads})], additional_factor=1.0)
+
+    st1 = mk(False); s1 = max(x.sigma_max for x in reserves_along_beam(solve_beam(st1), st1))
+    st2 = mk(True); s2 = max(x.sigma_max for x in reserves_along_beam(solve_beam(st2), st2))
+    assert _rel(s2 / s1, math.sqrt(2.0)) < 1e-2      # symetrický řez, Fz=Fy → √2×
+
+
+def test_beam_column_bruhn_interaction():
+    """Interakce tlak+ohyb (beam-column) leteckou interakční rovnicí Bruhna:
+    R_c + R_b/(1−R_c) ≤ 1, RF = 1/R_int. Ověření proti ručnímu výpočtu na
+    tlačené vzpěře s boční silou (sprajc)."""
+    from beamer.analysis import beam_column_check
+    from beamer.section import build_section
+    matB = Material("mb", "Dural", E=72000.0, G=27000.0, nu=0.33, rho=2.78,
+                    Re=280.0, Rm=440.0)
+    tube = CrossSectionDef(type="tube", params={"Do": 40, "t": 3})
+    P, Plat, L = 5000.0, 200.0, 1000.0
+    st = ProjectState(
+        length=L, materials=[matB], selected_material_id="mb", cross_section=tube,
+        section_segments=[SectionSegment(0.0, L, tube, None)],
+        supports=[Support("a", 0, "pin"), Support("b", L, "roller")],
+        load_cases=[LoadCase("lc", "LC", False)],
+        loads=[Load("fx", "point_force", "tlak", "lc", x=L, Fx=-P),
+               Load("fz", "point_force", "bocni", "lc", x=L/2, Fz=-Plat)],
+        load_combinations=[LoadCombination(id="c", name="c",
+                           factors={"fx": 1.0, "fz": 1.0})], additional_factor=1.0)
+    bc = beam_column_check(st, solve_beam(st))
+    assert bc is not None and len(bc.rows) == 1
+    row = bc.rows[0]
+
+    # ruční Bruhn
+    sec = build_section(tube, fem=False)
+    P_cr = math.pi**2 * 72000.0 * sec.Iy / L**2          # Euler, μ=1
+    R_c = P / P_cr
+    sig_b = (Plat*L/4) * 20.0 / sec.Iy                   # M·c/I, c=Do/2
+    R_b = sig_b / min(280.0, 440.0)
+    R_int = R_c + R_b / (1.0 - R_c)
+    assert _rel(row["R_c"], R_c) < 5e-3
+    assert _rel(row["R_b"], R_b) < 5e-3
+    assert _rel(row["RF"], 1.0/R_int) < 5e-3
+    assert _rel(row["MS"], 1.0/R_int - 1.0) < 5e-3
+    # čistý tah → žádný beam-column (None)
+    st.loads[0].Fx = +P
+    assert beam_column_check(st, solve_beam(st)) is None
+
+
 def test_buckling_eigen_euler_cases():
     """Vzpěr fáze 2 (vlastní čísla): kritický násobitel λ_cr celé soustavy pro
     tři klasické Eulerovy případy → odvozený součinitel vzpěrné délky μ musí
@@ -1453,7 +1598,6 @@ def test_composite_field_sigma_reaches_fiber():
 def test_composite_mesh_cache_sees_polygon_edit():
     """Signatura cache kompozitní sítě (N4): editace polygon_points knihovního
     profilu musí zneplatnit cache – GJ se přepočítá (dřív zůstal starý)."""
-    import math
     from beamer.composite_fem import composite_torsion_GJ
     steel = Material("st", "Ocel", E=210000, G=81000, nu=0.3, rho=7.85, Re=235, Rm=360)
     alu = Material("al", "Hliník", E=70000, G=27000, nu=0.33, rho=2.7, Re=200, Rm=300)

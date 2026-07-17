@@ -48,13 +48,14 @@ class StressInfluence:
     Iz_si: float = 0.0
     Iyz_si: float = 0.0
     corners: tuple = ()  # ((y,z), …) [m] – 4 rohy bounding boxu od těžiště
+    y_mm: np.ndarray | None = None
+    c_tVy: np.ndarray | None = None
 
 
 def build_influence(section: CrossSection, n=60) -> StressInfluence:
     """Spočítá vlivové koeficienty pro daný průřez (jednou). Drahá scanline část."""
     A_si = section.A/1e6
     Iy_si = section.Iy/1e12
-    IT_si = section.IT/1e12
 
     z = np.linspace(section.z_bot*0.9999, section.z_top*0.9999, n)
     c_sM = np.zeros(n)
@@ -91,11 +92,25 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
         zt, zb = section.z_top/1e3, section.z_bot/1e3
         yl, yr = getattr(section, "y_left", 0.0)/1e3, getattr(section, "y_right", 0.0)/1e3
         corners = ((yl, zt), (yr, zt), (yl, zb), (yr, zb))
+    # Vodorovný smyk Vy: analogický scan po šířce průřezu. Dříve se V_y v RF
+    # zcela ignoroval, přestože jej 6-DOF solver počítá.
+    y = np.linspace(section.y_left*0.9999, section.y_right*0.9999, n)
+    c_tVy = np.zeros(n)
+    for i, yi in enumerate(y):
+        h_mm = section.height_at_y(yi)
+        if h_mm < 1e-10:
+            c_tVy[i] = np.nan
+            continue
+        Qy_si = section.Q_Vy_at_y(yi)/1e9
+        h_si = h_mm/1e3
+        c_tVy[i] = Qy_si/(Iz_si*h_si) if (Iz_si > 1e-30 and h_si > 1e-15) else 0.0
     return StressInfluence(z, c_sN, c_sM, c_tV, c_tT,
-                           Iy_si=Iy_si, Iz_si=Iz_si, Iyz_si=Iyz_si, corners=corners)
+                           Iy_si=Iy_si, Iz_si=Iz_si, Iyz_si=Iyz_si, corners=corners,
+                           y_mm=y, c_tVy=c_tVy)
 
 
-def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False):
+def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False,
+                      Vy=0.0):
     """Max |σ|, |τ|, σ_red [MPa] z předpočítaných koeficientů. Vektorizováno.
 
     combine=False → σ_red = skutečné maximum von Mises po řezu (špička σ a špička
@@ -111,12 +126,22 @@ def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False)
     Mz_nm = Mz/1e3
     Mk_nm = Mk/1e3
     sigma = N*infl.c_sN + My*infl.c_sM            # Pa (z-scan po ose, jen My)
-    tau = V*infl.c_tV + Mk_nm*infl.c_tT           # Pa
+    # Smyk od V a torze je v prostoru vektorové pole. Jednorozměrný scan nemá
+    # informaci o straně průřezu, na které se složky sčítají; algebraický součet
+    # proto při změně znaménka Mk vedl k nefyzikálnímu rušení. Použijeme bezpečnou
+    # horní mez součtem lokálních velikostí. Pro Vy přidáme maximum druhého scanu.
+    tau_z = np.abs(V*infl.c_tV) + np.abs(Mk_nm*infl.c_tT)
+    tau_y_peak = 0.0
+    if infl.c_tVy is not None and abs(Vy) > 0.0:
+        tau_y_peak = _maxabs_raw(Vy*infl.c_tVy)
+    tau = tau_z
 
     def _maxabs(a):
         a = a[~np.isnan(a)]
         return float(np.max(np.abs(a)))/1e6 if a.size else 0.0
-    sg, tu = _maxabs(sigma), _maxabs(tau)
+    sg = _maxabs(sigma)
+    tu_z = _maxabs(tau)
+    tu = tu_z + tau_y_peak/1e6
 
     # biaxiální normálové napětí v rozích (M_z a/nebo Iyz) – jinak přeskoč
     if infl.corners and (abs(Mz_nm) > 1e-12 or abs(infl.Iyz_si) > 1e-40):
@@ -141,6 +166,10 @@ def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False)
         mz = math.sqrt(sg**2 + 3*tu**2)
     else:
         mz = max(_maxabs(np.sqrt(sigma**2 + 3*tau**2)), mz_corner)
+        if tau_y_peak > 0.0:
+            # Bez plného 2D pole nelze bezpečně určit společné místo špiček obou
+            # smykových rovin. Konzervativně použijeme jejich horní mez.
+            mz = max(mz, math.sqrt(sg**2 + 3*tu**2))
     return sg, tu, mz
 
 
@@ -179,14 +208,47 @@ class StressProfile:
     mises: list
 
 
-def stress_profile(section: CrossSection, N, V, M, Mk, n=160) -> StressProfile:
+def stress_profile(section: CrossSection, N, V, M, Mk, n=160, Mz=0.0,
+                   Vy=0.0) -> StressProfile:
     """Detailní průběh napětí po výšce (pro diagram). Výstup MPa.
     Používá rychlé vlivové koeficienty (vektorizováno)."""
     infl = build_influence(section, n=n)
     My = M/1e3
     Mk_nm = Mk/1e3
-    sigma = (N*infl.c_sN + My*infl.c_sM)/1e6
-    tau = (V*infl.c_tV + Mk_nm*infl.c_tT)/1e6
+    sigma_pa = N*infl.c_sN + My*infl.c_sM
+    if abs(Mz) > 1e-12 or abs(infl.Iyz_si) > 1e-40:
+        from .section import _scan_intersections
+        denom = infl.Iy_si*infl.Iz_si - infl.Iyz_si**2
+        if denom > 1e-40:
+            for i, z_mm in enumerate(infl.z_mm):
+                if getattr(section, "bodies_c", None):
+                    ys = []
+                    for outer, holes in section.bodies_c:
+                        ys.extend(_scan_intersections(outer, z_mm))
+                        for hole in holes:
+                            ys.extend(_scan_intersections(hole, z_mm))
+                elif getattr(section, "_pts_c", None):
+                    ys = _scan_intersections(section._pts_c, z_mm)
+                elif getattr(section, "_circle_r_out", 0.0):
+                    dy = math.sqrt(max(section._circle_r_out**2-z_mm**2, 0.0))
+                    ys = [-dy, dy]
+                else:
+                    ys = [section.y_left, section.y_right]
+                candidates = []
+                for y_mm in ys:
+                    y, z = y_mm/1e3, z_mm/1e3
+                    candidates.append(
+                        N*infl.c_sN
+                        - ((My*infl.Iz_si-(Mz/1e3)*infl.Iyz_si)*z
+                           + ((Mz/1e3)*infl.Iy_si-My*infl.Iyz_si)*y)/denom
+                    )
+                if candidates:
+                    sigma_pa[i] = max(candidates, key=abs)
+    tau_pa = np.abs(V*infl.c_tV) + np.abs(Mk_nm*infl.c_tT)
+    if infl.c_tVy is not None and abs(Vy) > 0.0:
+        tau_pa += _maxabs_raw(Vy*infl.c_tVy)
+    sigma = sigma_pa/1e6
+    tau = tau_pa/1e6
     mises = np.sqrt((sigma)**2 + 3*(tau)**2)
     return StressProfile(list(infl.z_mm), list(sigma), list(tau), list(mises))
 
@@ -213,6 +275,84 @@ class ReserveResult:
     critical: str
 
 
+def _principal_inertia_min(section):
+    """Menší hlavní moment setrvačnosti včetně Iyz vazby."""
+    i1 = float(getattr(section, "I1", 0.0) or 0.0)
+    i2 = float(getattr(section, "I2", 0.0) or 0.0)
+    if i1 > 0.0 and i2 > 0.0:
+        return min(i1, i2)
+    iy = float(getattr(section, "Iy", 0.0) or 0.0)
+    iz = float(getattr(section, "Iz", 0.0) or 0.0)
+    iyz = float(getattr(section, "Iyz", 0.0) or 0.0)
+    return 0.5 * (iy + iz) - math.sqrt((0.5 * (iy - iz))**2 + iyz**2)
+
+
+def _principal_value_min(yy, zz, yz):
+    return 0.5*(yy + zz) - math.sqrt((0.5*(yy-zz))**2 + yz**2)
+
+
+def _stability_properties(state, seg, x, section, material):
+    """Homogenní ekvivalent pro Johnson/Euler, se zachováním kompozitního EI."""
+    if not getattr(section, "stability_available", True):
+        return None
+    from .sections_along import property_by_id
+    prop = property_by_id(state, getattr(seg, "property_id", None))
+    if prop is not None and getattr(prop, "composite_parts", None):
+        from .composite import composite_compression_capacity, composite_weighted
+        weighted = composite_weighted(state, prop)
+        if weighted is None or weighted.E_ref <= 0.0 or weighted.A_eq <= 0.0:
+            return None
+        ei_min = _principal_value_min(
+            weighted.EIy, weighted.EIz, weighted.EIyz,
+        )
+        if ei_min <= 0.0:
+            return None
+        area = weighted.A_eq
+        inertia = ei_min / weighted.E_ref
+        squash = composite_compression_capacity(state, prop)
+        fcy = squash / area if squash > 0.0 else 0.0
+        return area, inertia, weighted.E_ref, fcy, ei_min, prop
+    area = float(getattr(section, "A", 0.0) or 0.0)
+    inertia = _principal_inertia_min(section)
+    e_mod = getattr(seg, "E", None) or getattr(material, "E", 0.0)
+    fcy = getattr(material, "Fcy", None)
+    if fcy is None or fcy <= 0.0:
+        fcy = getattr(material, "Re", 0.0)
+    return area, inertia, float(e_mod), float(fcy), float(e_mod)*inertia, None
+
+
+def _plastic_capacity_factor(alpha, enabled, N, V, M, Mk, Mz=0.0, Vy=0.0):
+    """Tvarový součinitel platí pouze pro čistý ohyb kolem své definované osy.
+
+    Pro kombinaci s osovou silou, smykem, torzí či biaxiálním ohybem nelze
+    násobit celé von Misesovo napětí hodnotou Wpl/Wel. Dokud není implementována
+    plná plastická interakce, je bezpečná hodnota 1.0.
+    """
+    if not enabled or alpha <= 1.0 or abs(M) <= 1e-12:
+        return 1.0
+    other = max(abs(N), abs(V), abs(Mk), abs(Mz), abs(Vy))
+    scale = max(abs(M), 1.0)
+    return alpha if other <= 1e-10 * scale else 1.0
+
+
+def _thermal_at(state, x):
+    """Efektivní (rovnoměrné ΔT, gradient ΔT) v poloze x."""
+    from .solver import _load_multiplier
+    v = vg = 0.0
+    for ld in getattr(state, "loads", None) or []:
+        if getattr(ld, "type", None) != "thermal":
+            continue
+        if ld.x1 - 1e-9 <= x <= ld.x2 + 1e-9:
+            v += float(getattr(ld, "dT", 0.0) or 0.0) * _load_multiplier(state, ld)
+            vg += float(getattr(ld, "dT_grad", 0.0) or 0.0) * _load_multiplier(state, ld)
+    return v, vg
+
+
+def _thermal_dT_at(state, x):
+    """Kompatibilní wrapper vracející pouze rovnoměrnou složku."""
+    return _thermal_at(state, x)[0]
+
+
 def reserves_along_beam(result, state, n_stations=120, progress=None):
     """Posouzení RF (reserve factor) podél nosníku – zatížení = početní (ultimate).
     RF_yield = Re/σ_red, RF_ultimate = Rm/σ_red. `progress(frac)` callback 0..1.
@@ -222,6 +362,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         return []
     basis = getattr(state, "rf_basis", "min")
     combine = getattr(state, "sigma_red_mode", "exact") == "combined"
+    plast = getattr(state, "plasticity_enabled", False)
     g_mat = state.material()
     resolver = getattr(result, "resolver", None)
 
@@ -232,7 +373,6 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
 
     # tvarový součinitel plasticity – zohlední se jen v RF_ultimate
     from .section import ALPHA_PL_TABLE
-    plast = getattr(state, "plasticity_enabled", False)
     method = getattr(state, "plasticity_method", "analytic")
 
     def alpha_pl_for(cs):
@@ -250,7 +390,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     # několik unikátních průřezů; pro tapered na omezené reprezentativní mřížce
     # (margins-scan nepotřebuje řez v každém bodě). build_influence je drahé.
     if resolver is None:
-        base_infl = build_influence(section, n=60)
+        base_infl = (build_influence(section, n=60)
+                     if getattr(section, "strength_available", True) else None)
         base_alpha = alpha_pl_for(section)
         def data_at(x):
             return base_infl, base_alpha, g_mat.Re, g_mat.Rm
@@ -268,7 +409,9 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
             mat = resolver.material_at(x)
             key = (id(cs), id(mat))
             if key not in seen:
-                seen[key] = (build_influence(cs, n=50), alpha_pl_for(cs), mat.Re, mat.Rm)
+                infl = (build_influence(cs, n=50)
+                        if getattr(cs, "strength_available", True) else None)
+                seen[key] = (infl, alpha_pl_for(cs), mat.Re, mat.Rm)
             return seen[key]
 
     if progress:
@@ -285,18 +428,29 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         pr = property_by_id(state, getattr(seg, "property_id", None))
         if pr is not None and getattr(pr, "composite_parts", None):
             from .composite import composite_assess
-            ca = composite_assess(state, pr, p.N, p.M, basis, Mk=p.Mk, V=p.V)
+            dtemp, dtemp_grad = _thermal_at(state, p.x)
+            ca = composite_assess(state, pr, p.N, p.M, basis, Mk=p.Mk, V=p.V,
+                                  Vy=getattr(p, "V_y", 0.0),
+                                  Mz=getattr(p, "M_z", 0.0),
+                                  dT=dtemp, dT_grad=dtemp_grad)
             if ca is not None:
                 out.append(ReserveResult(p.x, ca["sigma_max"], ca["tau_max"], ca["mises_max"],
                                          ca["RF_yield"], ca["RF_ultimate"], ca["RF"],
                                          ca["critical"]))
                 continue
         infl, alpha, Re, Rm = data_at(p.x)
+        if infl is None:
+            continue
+        vy = getattr(p, "V_y", 0.0)
+        mz_b = getattr(p, "M_z", 0.0)
         sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk,
-                                       Mz=getattr(p, "M_z", 0.0), combine=combine)
+                                       Mz=mz_b, combine=combine, Vy=vy)
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
-        RF_u = (alpha*Rm/mz) if mz > 1e-9 else float("inf")
+        alpha_eff = _plastic_capacity_factor(
+            alpha, plast, p.N, p.V, p.M, p.Mk, Mz=mz_b, Vy=vy
+        )
+        RF_u = (alpha_eff*Rm/mz) if mz > 1e-9 else float("inf")
         if basis == "yield":
             RF, crit = RF_y, "yield"
         elif basis == "ultimate":
@@ -312,7 +466,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     return out
 
 
-def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0):
+def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
+            Vy=0.0, dT_grad=0.0):
     """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
     Vrací dílčí dict (bez x/VVÚ). Pro složený PID z různých materiálů (seg s
     property_id) vrátí per-materiálové posouzení (normálové, B1). `Mz` = ohyb
@@ -324,17 +479,33 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0):
             p = property_by_id(state, pid)
             if p is not None and getattr(p, "composite_parts", None):
                 from .composite import composite_assess
-                ca = composite_assess(state, p, N, M, getattr(state, "rf_basis", "min"), Mk=Mk, V=V)
+                ca = composite_assess(state, p, N, M, getattr(state, "rf_basis", "min"),
+                                      Mk=Mk, V=V, Vy=Vy, Mz=Mz, dT=dT,
+                                      dT_grad=dT_grad)
                 if ca is not None:
                     ca.update({"section": section, "material": mat, "alpha_pl": 1.0,
                                "sigma_z": None, "tau_z": None})
                     return ca
+    if section is not None and not getattr(section, "strength_available", True):
+        return {
+            "section": section, "material": mat,
+            "assessment_available": False,
+            "assessment_note": getattr(
+                section, "analysis_note", "Napětí a RF nejsou pro tento průřez dostupné.",
+            ),
+            "sigma_max": None, "tau_max": None, "mises_max": None,
+            "sigma_z": None, "tau_z": None,
+            "RF_yield": None, "RF_ultimate": None, "RF": None,
+            "critical": "unavailable", "alpha_pl": 1.0,
+        }
     sg = tu = mz = 0.0
     z_sg = z_tu = 0.0
     combine = getattr(state, "sigma_red_mode", "exact") == "combined"
     if section is not None and getattr(section, "valid", False):
         infl = build_influence(section, n=80)
-        sg, tu, mz = max_stresses_fast(infl, N, V, M, Mk, Mz=Mz, combine=combine)
+        sg, tu, mz = max_stresses_fast(
+            infl, N, V, M, Mk, Mz=Mz, combine=combine, Vy=Vy
+        )
         z_sg, z_tu = peak_locations(infl, N, V, M, Mk)
 
     from .section import ALPHA_PL_TABLE
@@ -348,7 +519,11 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0):
 
     Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
     RF_y = (Re / mz) if mz > 1e-9 else float("inf")
-    RF_u = (alpha * Rm / mz) if mz > 1e-9 else float("inf")
+    alpha_eff = _plastic_capacity_factor(
+        alpha, getattr(state, "plasticity_enabled", False),
+        N, V, M, Mk, Mz=Mz, Vy=Vy,
+    )
+    RF_u = (alpha_eff * Rm / mz) if mz > 1e-9 else float("inf")
     basis = getattr(state, "rf_basis", "min")
     if basis == "yield":
         RF, crit = RF_y, "yield"
@@ -397,8 +572,18 @@ def values_at_x(result, state, x):
         mat = state.material()
     Mz = float(np.interp(x, [p.x for p in result.points],
                          [getattr(p, "M_z", 0.0) for p in result.points]))
-    d = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
-    d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz))
+    Vy = float(np.interp(x, [p.x for p in result.points],
+                         [getattr(p, "V_y", 0.0) for p in result.points]))
+    v_y = float(np.interp(x, [p.x for p in result.points],
+                          [getattr(p, "v", 0.0) for p in result.points]))
+    phi_z = float(np.interp(x, [p.x for p in result.points],
+                            [getattr(p, "phi_z", 0.0) for p in result.points]))
+    d = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
+         "Mk": Mk, "w": w, "v": v_y, "phi": phi, "phi_z": phi_z,
+         "theta": theta}
+    dtemp, dtemp_grad = _thermal_at(state, x)
+    d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
+                     dT=dtemp, dT_grad=dtemp_grad, Vy=Vy))
     return d
 
 
@@ -414,7 +599,15 @@ def values_at_x_multi(result, state, x, tol=1e-3):
     x, N, V, M, Mk, w, phi, theta = _interp_forces(result, x)
     Mz = float(np.interp(x, [p.x for p in result.points],
                          [getattr(p, "M_z", 0.0) for p in result.points]))
-    base = {"x": x, "N": N, "V": V, "M": M, "Mk": Mk, "w": w, "phi": phi, "theta": theta}
+    Vy = float(np.interp(x, [p.x for p in result.points],
+                         [getattr(p, "V_y", 0.0) for p in result.points]))
+    v_y = float(np.interp(x, [p.x for p in result.points],
+                          [getattr(p, "v", 0.0) for p in result.points]))
+    phi_z = float(np.interp(x, [p.x for p in result.points],
+                            [getattr(p, "phi_z", 0.0) for p in result.points]))
+    base = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
+            "Mk": Mk, "w": w, "v": v_y, "phi": phi, "phi_z": phi_z,
+            "theta": theta}
 
     all_segs = normalized_segments(state)
     segs = segments_at(state, x, tol)
@@ -426,7 +619,9 @@ def values_at_x_multi(result, state, x, tol=1e-3):
             section = None
         mat = material_for_segment(state, seg)
         d = dict(base)
-        d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz))
+        dtemp, dtemp_grad = _thermal_at(state, x)
+        d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
+                         dT=dtemp, dT_grad=dtemp_grad, Vy=Vy))
         try:
             d["seg_index"] = all_segs.index(seg)
         except ValueError:
@@ -563,7 +758,6 @@ def conservative_check(state, basis=None, env=None):
         env = envelope_over_combinations(state)
     if env is None:
         return None
-    import numpy as np
     def _amax(lo, hi):
         return max(max(abs(v) for v in lo), max(abs(v) for v in hi))
     N_max = _amax(env.N_min, env.N_max)
@@ -679,20 +873,21 @@ def buckling_check(state, result, env=None):
             sec = build_section(def_for_segment(state, seg, xm), fem=False)
         except Exception:
             continue
-        if sec is None or not getattr(sec, "valid", False) or sec.A <= 1e-9:
-            continue
-        I_min = min(sec.Iy, sec.Iz)
-        i_min = math.sqrt(I_min / sec.A) if I_min > 0 else 0.0
-        if i_min <= 1e-9:
+        if sec is None or not getattr(sec, "valid", False):
             continue
         mat = material_for_segment(state, seg)
-        E = getattr(seg, "E", None) or getattr(mat, "E", 210000.0)
-        Fcy = getattr(mat, "Re", 235.0)
+        props = _stability_properties(state, seg, xm, sec, mat)
+        if props is None:
+            continue
+        area, I_min, E, Fcy, _ei_min, _prop = props
+        i_min = math.sqrt(I_min / area) if I_min > 0 and area > 0 else 0.0
+        if i_min <= 1e-9:
+            continue
         mu = float(getattr(seg, "buckling_mu", 1.0) or 1.0)
         Lb = mu * (seg.x2 - seg.x1)
         lam = Lb / i_min
         sigma_cr = _johnson_euler_sigma_cr(E, Fcy, lam)
-        P_cr = sigma_cr * sec.A
+        P_cr = sigma_cr * area
         RF = P_cr / abs(N_c) if abs(N_c) > 1e-9 else float("inf")
         rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1}", "N": N_c,
                      "lam": lam, "sigma_cr": sigma_cr, "P_cr": P_cr, "RF": RF})
@@ -721,12 +916,14 @@ class BucklingEigenResult:
     note: str = ""
 
 
-def buckling_eigen_check(state, result, factors=None, n_target=80):
+def buckling_eigen_check(state, result, factors=None, n_target=80, axis="min"):
     """Vzpěr fáze 2 (vlastní čísla). Vrací `BucklingEigenResult` nebo None.
-    Slabá osa I_min, osová síla z `result` (rovnovážné pole jedné kombinace –
-    NE obálka). Předpoklady: podpory drží příčný posun i v rovině vybočení
-    (pin/rolna/vetknutí → w=0, vetknutí i φ=0), pružiny elasticky; klouby fáze 2
-    zatím neuvažují moment. Bez tlaku → None."""
+    `axis="min"` = slabá osa I_min (řídí; výchozí), `axis="max"` = silná osa I_max.
+    Osová síla z `result` (rovnovážné pole jedné kombinace – NE obálka).
+    Předpoklady: podpory drží příčný posun i v rovině vybočení (pin/rolna/
+    vetknutí → w=0, vetknutí i φ=0), pružiny elasticky; klouby fáze 2 zatím
+    neuvažují moment. Bez tlaku → None. Pozn.: při shodném podepření obou rovin
+    řídí slabá osa; silná osa je relevantní až při odlišném vyztužení per rovina."""
     if result is None or not getattr(result, "is_stable", False) or not result.points:
         return None
     try:
@@ -771,8 +968,23 @@ def buckling_eigen_check(state, result, factors=None, n_target=80):
         sec = resolver.at(xm)
         if sec is None or not getattr(sec, "valid", False) or sec.A <= 1e-9:
             return None
+        if not getattr(sec, "stability_available", True):
+            return None
+        weighted = resolver.weighted_at(xm)
+        if weighted is not None:
+            avg = 0.5*(weighted.EIy + weighted.EIz)
+            diff = math.sqrt((0.5*(weighted.EIy-weighted.EIz))**2
+                             + weighted.EIyz**2)
+            return avg + diff if axis == "max" else avg - diff
         E_e = resolver.E_at(xm) or state.material().E
-        return E_e * min(sec.Iy, sec.Iz)
+        if axis == "max":
+            inertia = max(float(getattr(sec, "I1", 0.0) or 0.0),
+                          float(getattr(sec, "I2", 0.0) or 0.0))
+            if inertia <= 0.0:
+                inertia = max(sec.Iy, sec.Iz)
+        else:
+            inertia = _principal_inertia_min(sec)
+        return E_e * inertia
 
     Kb = np.zeros((ndof, ndof))
     Kg = np.zeros((ndof, ndof))
@@ -869,6 +1081,104 @@ def buckling_eigen_check(state, result, factors=None, n_target=80):
         lam_cr=lam_cr, P_cr=P_cr, N_ref=N_ref, mu_eff=mu_eff,
         x_mode=[float(x) for x in xs], w_mode=[float(v) for v in wmode],
         note="")
+
+
+@dataclass
+class BeamColumnResult:
+    """Interakce tlak + ohyb (beam-column) dle Bruhna – tlačené úseky."""
+    rows: list                 # [{seg,label,N,P_cr,R_c,sigma_b,R_b,R_int,RF,MS}]
+    rf_min: float
+    crit_label: str
+
+
+def beam_column_check(state, result, env=None):
+    """Interakce tlaku a ohybu (beam-column) leteckou interakční rovnicí (Bruhn):
+
+        R_c + R_b/(1 − R_c) ≤ 1 ,   R_c = |N|/P_cr ,   R_b = σ_ohyb/F_dov
+
+    R_c je poměr osového tlaku ke kritickému (Euler/Johnson), R_b poměr ohybového
+    napětí k dovolenému; člen 1/(1−R_c) je zesílení ohybu od tlaku (P-δ). Reserve
+    faktor RF = 1/R_int, míra bezpečnosti MS = RF − 1. Řeší jen tlačené úseky
+    (N<0); ohyb a osové účinky se berou ze ZOBRAZENÉ kombinace (fyzicky
+    konzistentní rovnovážný stav). Vrací `BeamColumnResult` nebo None."""
+    import math
+    if result is None or not getattr(result, "is_stable", False) or not result.points:
+        return None
+    from .sections_along import (normalized_segments, def_for_segment,
+                                 material_for_segment)
+    from .section import build_section
+    pts = result.points
+    basis = getattr(state, "rf_basis", "min")
+    combine = getattr(state, "sigma_red_mode", "exact") == "combined"
+    rows = []
+    for i, seg in enumerate(normalized_segments(state)):
+        seg_pts = [p for p in pts if seg.x1 - 1e-6 <= p.x <= seg.x2 + 1e-6]
+        if not seg_pts:
+            continue
+        N_c = min(p.N for p in seg_pts)          # nejzápornější = největší tlak
+        if N_c >= 0:                             # jen tlak → beam-column neřešíme
+            continue
+        xm = (seg.x1 + seg.x2) / 2.0
+        try:
+            sec = build_section(def_for_segment(state, seg, xm), fem=False)
+        except Exception:
+            continue
+        if sec is None or not getattr(sec, "valid", False):
+            continue
+        mat = material_for_segment(state, seg)
+        props = _stability_properties(state, seg, xm, sec, mat)
+        if props is None:
+            continue
+        area, I_min, E, Fcy, _ei_min, composite_prop = props
+        i_min = math.sqrt(I_min / area) if I_min > 0 and area > 0 else 0.0
+        if i_min <= 1e-9:
+            continue
+        mu = float(getattr(seg, "buckling_mu", 1.0) or 1.0)
+        lam = mu * (seg.x2 - seg.x1) / i_min
+        P_cr = _johnson_euler_sigma_cr(E, Fcy, lam) * area
+        R_c = abs(N_c) / P_cr if P_cr > 1e-9 else float("inf")
+        # ohybové napětí (biaxiálně, bez osové složky) v úseku
+        M_seg = max((abs(p.M) for p in seg_pts), default=0.0)
+        Mz_seg = max((abs(getattr(p, "M_z", 0.0)) for p in seg_pts), default=0.0)
+        if composite_prop is not None:
+            from .composite import composite_stress
+            stress_rows = composite_stress(
+                state, composite_prop, 0.0, M_seg, Mz=Mz_seg,
+            ) or []
+            sig_b = max((row["sigma_max"] for row in stress_rows), default=0.0)
+            ratios = []
+            for row in stress_rows:
+                if basis == "yield":
+                    allowable = row["Re"]
+                elif basis == "ultimate":
+                    allowable = row["Rm"]
+                else:
+                    allowable = min(row["Re"], row["Rm"])
+                ratios.append(row["sigma_max"] / allowable
+                              if allowable > 1e-9 else float("inf"))
+            R_b = max(ratios, default=0.0)
+        else:
+            infl = build_influence(sec, n=60)
+            sig_b, _, _ = max_stresses_fast(
+                infl, 0.0, 0.0, M_seg, 0.0, Mz=Mz_seg, combine=combine,
+            )
+            Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
+            if basis == "yield":
+                F_b = Re
+            elif basis == "ultimate":
+                F_b = Rm
+            else:
+                F_b = min(Re, Rm) if (Re > 0 and Rm > 0) else max(Re, Rm)
+            R_b = sig_b / F_b if F_b > 1e-9 else float("inf")
+        R_int = float("inf") if R_c >= 1.0 else R_c + R_b / (1.0 - R_c)
+        RF = 1.0 / R_int if R_int > 1e-12 else float("inf")
+        rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1}", "N": N_c, "P_cr": P_cr,
+                     "R_c": R_c, "sigma_b": sig_b, "R_b": R_b, "R_int": R_int,
+                     "RF": RF, "MS": RF - 1.0})
+    if not rows:
+        return None
+    crit = min(rows, key=lambda r: r["RF"])
+    return BeamColumnResult(rows, crit["RF"], crit["label"])
 
 
 def load_case_summary(state, factors, label=""):

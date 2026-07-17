@@ -1,0 +1,10 @@
+# Reprodukovatelné prostředí ověřené při auditu 2026-07-16 (Python 3.10+).
+PySide6==6.11.1
+numpy==2.3.5
+matplotlib==3.10.7
+scipy==1.16.3
+shapely==2.1.2
+python-docx==1.2.0
+pytest==9.0.3
+ruff==0.15.21
+mypy==2.2.0

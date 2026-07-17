@@ -22,10 +22,14 @@ CURVE_COLUMNS = [
     ("x_mm", "x"),
     ("N_N", "N"),
     ("V_N", "V"),
+    ("Vy_N", "V_y"),
     ("M_Nmm", "M"),
+    ("Mz_Nmm", "M_z"),
     ("Mk_Nmm", "Mk"),
     ("w_mm", "w"),
+    ("v_mm", "v"),
     ("phi_rad", "phi"),
+    ("phi_z_rad", "phi_z"),
     ("theta_rad", "theta"),
 ]
 
@@ -51,8 +55,10 @@ def _control_point_rows(state, result):
         if d is None:
             continue
         name = (cp.name.strip() if getattr(cp, "name", "") else "") or f"K{orig_idx + 1}"
-        rows.append([_fmt(d["x"]), name, _fmt(d["N"]), _fmt(d["V"]), _fmt(d["M"]),
-                     _fmt(d["Mk"]), _fmt(d["w"]), _fmt(d["phi"]), _fmt(d["theta"]),
+        rows.append([_fmt(d["x"]), name, _fmt(d["N"]), _fmt(d["V"]), _fmt(d["V_y"]),
+                     _fmt(d["M"]), _fmt(d["M_z"]), _fmt(d["Mk"]), _fmt(d["w"]),
+                     _fmt(d.get("v", 0.0)), _fmt(d["phi"]), _fmt(d.get("phi_z", 0.0)),
+                     _fmt(d["theta"]),
                      _fmt(d["sigma_max"]), _fmt(d["tau_max"]), _fmt(d["mises_max"]),
                      _fmt(d["RF"]), d["critical"]])
     return rows
@@ -89,17 +95,20 @@ def export_curves_csv(state, result, path, n_points=None) -> int:
         w.writerow([])
         # reakce
         w.writerow(["# Reactions"])
-        w.writerow(["x_mm", "support_type", "Rx_N", "Rz_N", "My_Nmm", "Mk_Nmm"])
+        w.writerow(["x_mm", "support_type", "Rx_N", "Ry_N", "Rz_N",
+                    "My_Nmm", "Mz_Nmm", "Mx_Nmm"])
         for rc in result.reactions:
-            w.writerow([_fmt(rc.x), rc.support_type, _fmt(rc.Rx), _fmt(rc.Rz),
-                        _fmt(rc.Ry), _fmt(rc.Rx_torsion)])
+            w.writerow([_fmt(rc.x), rc.support_type, _fmt(rc.Rx), _fmt(rc.Ry_force),
+                        _fmt(rc.Rz), _fmt(rc.Ry), _fmt(rc.Rz_moment),
+                        _fmt(rc.Rx_torsion)])
         w.writerow([])
         # kontrolní body (volitelné)
         cp_rows = _control_point_rows(state, result)
         if cp_rows:
             w.writerow(["# Control points"])
-            w.writerow(["x_mm", "name", "N_N", "V_N", "M_Nmm", "Mk_Nmm", "w_mm",
-                        "phi_rad", "theta_rad", "sigma_MPa", "tau_MPa",
+            w.writerow(["x_mm", "name", "N_N", "V_N", "Vy_N", "M_Nmm", "Mz_Nmm",
+                        "Mk_Nmm", "w_mm", "v_mm", "phi_rad", "phi_z_rad", "theta_rad",
+                        "sigma_MPa", "tau_MPa",
                         "sigma_red_MPa", "RF", "RF_critical"])
             for row in cp_rows:
                 w.writerow(row)

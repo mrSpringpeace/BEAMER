@@ -11,7 +11,7 @@ from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
 from matplotlib.patches import PathPatch, Circle, Annulus
 
-from ..analysis import stress_profile, forces_from_beam
+from ..analysis import stress_profile
 from ..i18n import tr
 from ..settings import SETTINGS, fmt
 
@@ -307,6 +307,235 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True,
     ax.grid(True, axis="x", alpha=0.3)
 
 
+def _draw_schema_axo(ax, state, result=None, show_loads=True, show_supports=True,
+                     filter_by_combination=True):
+    """Axonometrické (kabinetní) schéma – ukazuje OBĚ ohybové roviny naráz:
+    svislé zatížení Fz/q v rovině x‑z, vodorovné Fy a moment Mz do hloubky (osa
+    y), krut kolem osy prutu a – po výpočtu – 3D deformovaný tvar (w svisle + v
+    do hloubky). Osa y je vykreslena šikmo a zkráceně, měřítko je rovné
+    (set_aspect equal), takže projekce působí prostorově."""
+    L = state.length or 1.0
+    XN = 100.0
+    ang = math.radians(28.0)
+    FD = 0.62                                  # zkrácení hloubky (kabinet)
+    CA, SA = math.cos(ang) * FD, math.sin(ang) * FD
+
+    def P(xn, y, z):
+        return (xn + y * CA, z + y * SA)
+
+    def xof(x):
+        return x / L * XN
+
+    def seg2(p, q):                            # úsečka mezi dvěma 3D body
+        (u1, v1), (u2, v2) = P(*p), P(*q)
+        return [u1, u2], [v1, v2]
+
+    def arrow(ax, p_from, p_to, color, lw=1.6):
+        (u1, v1), (u2, v2) = P(*p_from), P(*p_to)
+        ax.annotate("", xy=(u2, v2), xytext=(u1, v1),
+                    arrowprops=dict(arrowstyle="-|>", color=color, lw=lw))
+
+    try:
+        _comb = state.active_combination()
+    except Exception:
+        _comb = None
+    _title = tr("Axonometrie") + (f"   —   ▶ {_comb.name}" if _comb is not None else "")
+    ax.set_title(_title, fontsize=9, loc="left")
+    _cf = getattr(_comb, "factors", None) if _comb is not None else None
+    _use_comb = filter_by_combination and bool(_cf)
+
+    def _lmult(ld):
+        if not _use_comb:
+            return 1.0
+        from ..solver import _load_multiplier
+        return _load_multiplier(state, ld, _cf)
+
+    C_LOAD, C_DIST, C_MOM, C_TOR = "#c62828", "#ef6c00", "#6a1b9a", "#00838f"
+    C_DEP, C_REAC = "#00838f", "#0a7d4f"       # C_DEP = hloubková (osa y) rovina
+
+    # jemná hloubková „podlaha" pod nosníkem – naznačí rovinu x‑y
+    yf = 20.0
+    ax.fill(*(lambda xs, vs: (xs, vs))(
+        [P(0, 0, 0)[0], P(XN, 0, 0)[0], P(XN, yf, 0)[0], P(0, yf, 0)[0]],
+        [P(0, 0, 0)[1], P(XN, 0, 0)[1], P(XN, yf, 0)[1], P(0, yf, 0)[1]]),
+        color="#90a4ae", alpha=0.06, lw=0)
+    for yy in (0.0, yf):                        # obrys podlahy
+        ax.plot(*seg2((0, yy, 0), (XN, yy, 0)), color="#b0bec5", lw=0.6, ls=":")
+
+    # nosník po úsecích
+    segs = getattr(state, "section_segments", None) or []
+    if segs:
+        for j, seg in enumerate(segs):
+            ax.plot(*seg2((xof(seg.x1), 0, 0), (xof(seg.x2), 0, 0)),
+                    color=(_INK, _INK2)[j % 2], lw=3, solid_capstyle="butt")
+    else:
+        ax.plot(*seg2((0, 0, 0), (XN, 0, 0)), color=_INK, lw=3)
+
+    # podpory (číslované) – značka v projekci + krátká hloubková patka
+    for i, s in enumerate(state.supports if show_supports else []):
+        xn = xof(s.x)
+        u0, v0 = P(xn, 0, 0)
+        if s.type == "fixed":
+            ax.plot(*seg2((xn, -6, -8), (xn, -6, 8)), color="#444", lw=4)
+        elif s.type == "pin":
+            ax.plot(u0, v0, "^", color="#1565c0", ms=11)
+        elif s.type == "spring":
+            ax.plot(u0, v0, "D", color="#8e24aa", ms=9)
+        else:                                   # roller
+            ax.plot(u0, v0, "o", color="#2e7d32", ms=9)
+        ax.plot(*seg2((xn, 0, 0), (xn, 6, 0)), color="#90a4ae", lw=0.8)   # hloubková patka
+        ax.annotate(str(i + 1), xy=(u0, v0), textcoords="offset points",
+                    xytext=(-8, -8), ha="center", va="center", fontsize=8,
+                    fontweight="bold", color="#1565c0",
+                    bbox=dict(boxstyle="circle,pad=0.2", fc=_PANEL, ec="#1565c0", lw=1.2))
+    for h in state.hinges:                       # klouby
+        u0, v0 = P(xof(h.x), 0, 0)
+        ax.plot(u0, v0, "o", mfc=_PANEL, mec="#c62828", ms=7)
+
+    # měřítko šipek: max přes svislé i vodorovné síly a reakce
+    def _fv(ld):
+        m = abs(_lmult(ld))
+        return [abs(getattr(ld, k, 0.0)) * m for k in ("Fz", "Fy")]
+    fvals = [v for ld in state.loads if ld.type == "point_force" for v in _fv(ld) if v > 1e-9]
+    if result is not None and getattr(result, "is_stable", False):
+        fvals += [abs(getattr(rc, "Rz", 0.0)) for rc in result.reactions]
+        fvals += [abs(getattr(rc, "Ry_force", 0.0)) for rc in result.reactions]
+    Fmax = max([v for v in fvals if v > 1e-9], default=1.0) or 1.0
+    AMP_F, FLOOR_F = 20.0, 6.0
+
+    def flen(val):
+        return FLOOR_F + (AMP_F - FLOOR_F) * math.sqrt(min(1.0, abs(val) / Fmax))
+
+    dloads = [ld for ld in state.loads if ld.type == "distributed"]
+    qmax = max((max(abs(ld.q1), abs(ld.q2)) * abs(_lmult(ld)) for ld in dloads), default=0.0)
+    qscale = (16.0 / qmax) if qmax > 1e-12 else 0.0
+    cnt = {"F": 0, "q": 0, "M": 0, "T": 0}
+
+    for ld in (state.loads if show_loads else []):
+        m = _lmult(ld)
+        if _use_comb and abs(m) < 1e-12:
+            continue
+        xn = xof(ld.x)
+        Fz, Fx, Fy = ld.Fz * m, ld.Fx * m, getattr(ld, "Fy", 0.0) * m
+        My, Mx = ld.My * m, ld.Mx * m
+        Mz, dT = getattr(ld, "Mz", 0.0) * m, ld.dT * m
+
+        if ld.type == "point_force" and (abs(Fz) > 1e-9 or abs(Fx) > 1e-9 or abs(Fy) > 1e-9):
+            cnt["F"] += 1; code = f"F{cnt['F']}"
+            # konvence (jako boční pohled): hrot v působišti (x,0,0), ocas proti
+            # směru síly → +Fz míří nahoru, +Fy do +y
+            if abs(Fz) > 1e-9:                   # svislá složka (rovina x‑z)
+                zl = -math.copysign(flen(Fz), Fz)
+                arrow(ax, (xn, 0, zl), (xn, 0, 0), C_LOAD)
+                u, v = P(xn, 0, zl)
+                ax.text(u, v + (-2 if Fz > 0 else 2), f"{code}\n{Fz:.0f} N", ha="center",
+                        va="top" if Fz > 0 else "bottom", fontsize=6.5, color=C_LOAD)
+            if abs(Fy) > 1e-9:                   # vodorovná složka (do hloubky, osa y)
+                yl = -math.copysign(flen(Fy), Fy)
+                arrow(ax, (xn, yl, 0), (xn, 0, 0), C_DEP)
+                u, v = P(xn, yl, 0)
+                ax.text(u, v, f" Fy={Fy:.0f} N", ha="left", va="center",
+                        fontsize=6.5, color=C_DEP)
+            if abs(Fx) > 1e-9:                   # osová složka (podél prutu)
+                dx = -flen(Fx) if Fx > 0 else flen(Fx)
+                arrow(ax, (xn + dx, 0, 0), (xn, 0, 0), C_LOAD)
+        elif ld.type == "distributed":
+            cnt["q"] += 1; code = f"q{cnt['q']}"
+            x1, x2 = xof(ld.x1), xof(ld.x2)
+            q1, q2 = ld.q1 * m, ld.q2 * m
+            z1, z2 = -qscale * q1, -qscale * q2   # +q míří nahoru (profil pod osou)
+            ax.plot(*seg2((x1, 0, z1), (x2, 0, z2)), color=C_DIST, lw=1.3)
+            nn = int(min(12, max(2, abs(x2 - x1) / 8)))
+            for k in range(nn + 1):
+                t = k / nn
+                xi, zi = x1 + (x2 - x1) * t, z1 + (z2 - z1) * t
+                if abs(zi) > 0.6:
+                    arrow(ax, (xi, 0, zi), (xi, 0, 0), C_DIST, lw=0.8)
+            u, v = P(x1, 0, z1)
+            ax.text(u, v + 2, f"{code}: {ld.q1:.1f}/{ld.q2:.1f} N/mm", ha="center",
+                    va="bottom", fontsize=6.5, color=C_DIST)
+        elif ld.type == "moment":
+            cnt["M"] += 1; code = f"M{cnt['M']}"
+            H, aL = 14.0, XN * 0.045
+            if abs(My) > 1e-9:                   # ohyb v rovině x‑z (dvojice svisle)
+                sgn = 1.0 if My >= 0 else -1.0
+                ax.plot(*seg2((xn, 0, -H), (xn, 0, H)), color=C_MOM, lw=1.4)
+                arrow(ax, (xn, 0, H), (xn - sgn * aL, 0, H), C_MOM)
+                arrow(ax, (xn, 0, -H), (xn + sgn * aL, 0, -H), C_MOM)
+                u, v = P(xn, 0, H)
+                ax.text(u, v + 3, f"{code} {My:.0f}", ha="center", fontsize=6.5, color=C_MOM)
+            if abs(Mz) > 1e-9:                   # ohyb v rovině x‑y (dvojice do hloubky)
+                sgn = 1.0 if Mz >= 0 else -1.0
+                ax.plot(*seg2((xn, -H, 0), (xn, H, 0)), color=C_DEP, lw=1.4)
+                arrow(ax, (xn, H, 0), (xn - sgn * aL, H, 0), C_DEP)
+                arrow(ax, (xn, -H, 0), (xn + sgn * aL, -H, 0), C_DEP)
+                u, v = P(xn, H, 0)
+                ax.text(u, v, f" Mz={Mz:.0f}", ha="left", fontsize=6.5, color=C_DEP)
+        elif ld.type == "torsion":
+            cnt["T"] += 1; code = f"T{cnt['T']}"
+            r = 9.0                              # kroužek v rovině y‑z kolem osy prutu
+            ph = np.linspace(0.4, 2 * math.pi - 0.1, 40)
+            us, vs = zip(*[P(xn, r * math.cos(t), r * math.sin(t)) for t in ph])
+            ax.plot(us, vs, color=C_TOR, lw=1.4)
+            arrow(ax, (xn, r * math.cos(ph[-3]), r * math.sin(ph[-3])),
+                  (xn, r * math.cos(ph[-1]), r * math.sin(ph[-1])), C_TOR, lw=1.4)
+            u, v = P(xn, 0, r)
+            ax.text(u, v + 3, f"{code} Mk={Mx:.0f}", ha="center", fontsize=6.5, color=C_TOR)
+        elif ld.type == "thermal":
+            x1, x2 = xof(ld.x1), xof(ld.x2)
+            c_th = "#d84315" if dT >= 0 else "#1565c0"
+            ax.plot(*seg2((x1, 0, 3), (x2, 0, 3)), color=c_th, lw=4, alpha=0.5,
+                    solid_capstyle="butt")
+            u, v = P((x1 + x2) / 2, 0, 3)
+            ax.text(u, v + 2, f"ΔT={dT:+.0f} °C", ha="center", fontsize=6.5, color=c_th)
+
+    # 3D deformovaný tvar (w svisle + v do hloubky), společné měřítko → poměr rovin
+    if result is not None and getattr(result, "is_stable", False) and result.points:
+        xs = np.array([xof(p.x) for p in result.points])
+        ww = np.array([p.w for p in result.points])
+        vv = np.array([getattr(p, "v", 0.0) for p in result.points])
+        dmax = float(max(np.max(np.abs(ww)), np.max(np.abs(vv)), 1e-12))
+        if dmax > 1e-9:
+            sc = 16.0 / dmax
+            pts = [P(xs[k], vv[k] * sc, ww[k] * sc) for k in range(len(xs))]
+            us, vs = zip(*pts)
+            ax.plot(us, vs, color="#7b1fa2", lw=1.6, ls="--", label=tr("deformovaný tvar"))
+            ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
+
+    # reakce (svislá Rz + vodorovná Ry)
+    if show_supports and result is not None and getattr(result, "is_stable", False):
+        for rc in result.reactions:
+            xn = xof(rc.x)
+            if abs(getattr(rc, "Rz", 0.0)) > 1e-6:
+                zl = flen(rc.Rz) if rc.Rz > 0 else -flen(rc.Rz)
+                sgn = 1 if rc.Rz > 0 else -1
+                arrow(ax, (xn, 0, -sgn * (2 + abs(zl))), (xn, 0, -sgn * 2), C_REAC, lw=1.8)
+                u, v = P(xn, 0, -sgn * (2 + abs(zl)))
+                ax.text(u, v + (-2 if rc.Rz > 0 else 2), f"Rz={rc.Rz:.0f}", ha="center",
+                        va="top" if rc.Rz > 0 else "bottom", fontsize=6.5,
+                        color=C_REAC, fontweight="bold")
+            ry = getattr(rc, "Ry_force", 0.0)
+            if abs(ry) > 1e-6:
+                sgn = 1 if ry > 0 else -1
+                arrow(ax, (xn, -sgn * (2 + flen(ry)), 0), (xn, -sgn * 2, 0), C_REAC, lw=1.8)
+                u, v = P(xn, -sgn * (2 + flen(ry)), 0)
+                ax.text(u, v, f" Ry={ry:.0f}", ha="left", va="center", fontsize=6.5,
+                        color=C_REAC, fontweight="bold")
+
+    # osový trojhran (x podél, y do hloubky, z svisle)
+    ox, oz = -XN * 0.02, -30.0
+    tl = 10.0
+    for (dy, dz, dxn, lbl, col) in ((0, tl, 0, "z", "#444"), (tl, 0, 0, "y", C_DEP),
+                                    (0, 0, tl, "x", "#444")):
+        arrow(ax, (ox, 0, oz), (ox + dxn, dy, oz + dz), col, lw=1.2)
+        u, v = P(ox + dxn, dy, oz + dz)
+        ax.text(u, v, " " + lbl, fontsize=7, color=col, va="center")
+
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.axis("off")
+    ax.margins(0.06)
+
+
 def _annotate_extremes(ax, x, arr, color):
     """Vyznačí maximum a minimum křivky s číselnou hodnotou."""
     if len(arr) == 0:
@@ -373,18 +602,24 @@ class SchemaCanvas(MplCanvas):
         super().__init__(figsize=(6, 2.4))
 
     def plot(self, state, result=None, show_loads=True, show_supports=True,
-             filter_by_combination=True):
+             filter_by_combination=True, axo=False):
         self.fig.clear()
         # pevné okraje (shodné s VVÚ grafy) → nosník lícuje s křivkami;
         # None odebere layout engine (umožní subplots_adjust)
         self.fig.set_layout_engine(None)
         ax = self.fig.add_subplot(111)
-        _draw_schema(ax, state, result, show_loads=show_loads,
-                     show_supports=show_supports,
-                     filter_by_combination=filter_by_combination)
-        ax.set_xlabel("x [mm]", fontsize=8)
-        self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
-                                 top=0.80, bottom=0.28)
+        if axo:
+            _draw_schema_axo(ax, state, result, show_loads=show_loads,
+                             show_supports=show_supports,
+                             filter_by_combination=filter_by_combination)
+            self.fig.subplots_adjust(left=0.02, right=0.98, top=0.86, bottom=0.04)
+        else:
+            _draw_schema(ax, state, result, show_loads=show_loads,
+                         show_supports=show_supports,
+                         filter_by_combination=filter_by_combination)
+            ax.set_xlabel("x [mm]", fontsize=8)
+            self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
+                                     top=0.80, bottom=0.28)
         self.draw()
 
 
@@ -794,7 +1029,7 @@ class StressCanvas(MplCanvas):
     def __init__(self):
         super().__init__(figsize=(5, 4))
 
-    def plot(self, section, N, V, M, Mk):
+    def plot(self, section, N, V, M, Mk, Vy=0.0, Mz=0.0):
         self.fig.clear()
         if section is None or not section.valid:
             ax = self.fig.add_subplot(111)
@@ -803,7 +1038,7 @@ class StressCanvas(MplCanvas):
             self.draw()
             return
 
-        prof = stress_profile(section, N, V, M, Mk, n=160)
+        prof = stress_profile(section, N, V, M, Mk, n=160, Vy=Vy, Mz=Mz)
         z = np.array(prof.z)
         sigma = np.array(prof.sigma)
         tau = np.array(prof.tau)

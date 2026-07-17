@@ -98,7 +98,6 @@ def _with_rotation(sdef, deg):
     sdílený knihovní průřez). Nulová rotace → beze změny."""
     if sdef is None or not deg:
         return sdef
-    import copy
     d = copy.copy(sdef)     # mělká kopie: mění se jen skalární rotation
     d.rotation = (getattr(sdef, "rotation", 0.0) or 0.0) + float(deg)
     return d

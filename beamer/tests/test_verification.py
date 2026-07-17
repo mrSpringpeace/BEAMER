@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from beamer.model import (
-    Material, Support, Hinge, Load, LoadCase, LoadCombination,
+    Material, Support, Load, LoadCase, LoadCombination,
     CrossSectionDef, SectionSegment, ProjectState,
 )
 from beamer.solver import solve_beam

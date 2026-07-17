@@ -8,7 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QComboBox, QHeaderView, QLabel,
+    QTableWidgetItem, QHeaderView, QLabel,
 )
 
 from ..i18n import tr

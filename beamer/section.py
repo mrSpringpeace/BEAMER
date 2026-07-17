@@ -314,6 +314,17 @@ class CrossSection:
 
     def __init__(self, pts_xy=None, slices_for_circle=None, walls=None,
                  IT_override=None, bodies=None, rotation=0.0):
+        self.fem_used = False
+        self.fem_failure = ""
+        self.fem_error_history: list[dict] = []
+        self.fem_element_order = ""
+        self.fem_error_estimate: float | None = None
+        self.geometry_inferred = False
+        self.strength_available = True
+        self.stability_available = True
+        self.analysis_note = ""
+        self._circle_r_out = 0.0
+        self._circle_r_in = 0.0
         self.valid = False
         # natočení celého průřezu o `rotation` [°] – otočí geometrii kolem počátku
         # (_compute pak recentruje na těžiště). Bending Iy/Iz/Iyz i napětí/smyk se
@@ -1171,7 +1182,7 @@ ALPHA_PL_TABLE = {
 }
 
 
-_BUILD_CACHE = {}          # signatura -> CrossSection (LRU dle pořadí vložení)
+_BUILD_CACHE: dict[str, CrossSection] = {}  # signatura -> CrossSection (LRU)
 _BUILD_CACHE_MAX = 96
 
 
@@ -1382,6 +1393,22 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
         if cs.A > 1e-12:                       # přepočet poloměrů setrvačnosti
             cs.iy = (cs.Iy / cs.A) ** 0.5
             cs.iz = (cs.Iz / cs.A) ** 0.5
+        avg = 0.5*(cs.Iy + cs.Iz)
+        diff = math.sqrt((0.5*(cs.Iy-cs.Iz))**2 + cs.Iyz**2)
+        cs.I1, cs.I2 = avg + diff, avg - diff
+        # Přímé tuhostní konstanty neurčují krajní vlákno ani smykové pole.
+        # Syntetický čtverec slouží pouze k vykreslení a nesmí být použit pro RF.
+        cs.geometry_inferred = True
+        cs.strength_available = False
+        cs.stability_available = (
+            "A" in p and gv("A", 0.0) > 0.0
+            and "Iy" in p and gv("Iy", 0.0) > 0.0
+            and "Iz" in p and gv("Iz", 0.0) > 0.0
+            and not bool(p.get("stiffness_only", False))
+        )
+        cs.analysis_note = (
+            "Přímé tuhostní zadání nemá geometrii průřezu; napětí a RF nejsou dostupné."
+        )
         hh = (12.0 * max(cs.Iy, 1e-9)) ** 0.25
         cs.torsion_model = "solid_rect"
         cs.torsion_ab = (hh, hh)
@@ -1414,14 +1441,23 @@ def _apply_fem_properties(cs: CrossSection, outer, holes=None):
         return
     try:
         from . import _fem
-    except Exception:
+    except Exception as exc:
         cs.fem_used = False
+        cs.fem_failure = f"FEM backend není dostupný: {exc}"
         return
     try:
-        r = _fem.analyze_section(outer, holes=holes or None, element_order="T6")
-    except Exception:
+        r = _fem.analyze_section_adaptive(
+            outer, holes=holes or None, error_threshold=0.03, max_iterations=2,
+        )
+    except Exception as exc:
         cs.fem_used = False
+        cs.fem_failure = f"FEM analýza selhala: {exc}"
         return
+    cs.fem_error_history = list(r.get("error_history", []))
+    cs.fem_element_order = r.get("element_order_final", "T6")
+    cs.fem_error_estimate = (
+        cs.fem_error_history[-1].get("rel_error") if cs.fem_error_history else None
+    )
     cs.IT = float(r["J"])
     cs.Iw = float(r["Iw"])
     cs.z_SC = float(r["z_sc"])
@@ -1451,6 +1487,7 @@ def _apply_fem_properties(cs: CrossSection, outer, holes=None):
     omega_max = max(e_top, e_bot) * (cs.b / 2.0) if cs.b > 0 else 1.0
     cs.Wk = cs.Iw / omega_max if (omega_max > 1e-9 and cs.Iw > 0) else 0.0
     cs.fem_used = True
+    cs.fem_failure = ""
 
 
 def _apply_fem_composite(cs: CrossSection, bodies_pts):
@@ -1460,13 +1497,15 @@ def _apply_fem_composite(cs: CrossSection, bodies_pts):
         return
     try:
         from . import _fem
-    except Exception:
+    except Exception as exc:
         cs.fem_used = False
+        cs.fem_failure = f"FEM backend není dostupný: {exc}"
         return
     try:
         r = _fem.analyze_composite_section(bodies_pts, element_order="T6")
-    except Exception:
+    except Exception as exc:
         cs.fem_used = False
+        cs.fem_failure = f"Kompozitní FEM analýza selhala: {exc}"
         return
     # geometrii (A, centroid, Ixx, Iyy, Ixy) máme přesně přes Greenovu větu;
     # z FEM přejímáme zejména torzi, warping, střed smyku a smykové plochy.
@@ -1490,3 +1529,4 @@ def _apply_fem_composite(cs: CrossSection, bodies_pts):
     cs.it = math.sqrt(cs.IT / cs.A) if (cs.A > 0 and cs.IT > 0) else 0.0
     cs.Wb_t = (cs.IT / cs.it) if cs.it > 1e-12 else 0.0
     cs.fem_used = True
+    cs.fem_failure = ""

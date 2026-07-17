@@ -2,6 +2,55 @@
 
 Version format: **X.XX**
 
+## 1.32
+Full audit of the computational core, physics, mathematics and code quality:
+- **Solver and stability:** loaded unrestrained axial, torsional and horizontal
+  rigid-body modes are mechanisms and are rejected; only unloaded modes receive
+  a reference calibration. The consistent load vector of an internal hinge is
+  statically condensed together with the stiffness, and released DOFs are
+  correctly reconstructed during recovery (this fixes wrong reactions and
+  moments when a load acted on an element beyond a hinge).
+- **Stress and RF:** `Vy` and `Mz` now enter the assessment; the combination of
+  transverse shear and torsion is sign-invariant. The plastic shape factor is
+  applied only to pure uniaxial bending – not to axial force, shear or combined
+  loading.
+- **Buckling and composites:** principal moments of inertia including `Iyz` are
+  used; composite stability keeps the E-weighted `EI` and per-material
+  compressive capacity.
+- **Temperature:** materials carry an explicit thermal-expansion coefficient and
+  composite uniform + gradient loads are integrated as `E·alpha·T` over the
+  actual cross-section.
+- **Safe `.nos` import:** a bare `Iy` is a stiffness model only; the synthetic
+  outline is no longer used to fabricate stress, RF or buckling results.
+- **3D follow-ups:** explicit horizontal/rotational/torsional support
+  constraints, complete biaxial TXT/DOCX/CSV exports and a stress diagram
+  including `Vy/Mz`.
+- **Quality and reproducibility:** adaptive T6/T10 section FEM with fallback
+  diagnostics, audit regression tests, `THEORY.md`, an exact dependency lock,
+  a Ruff/mypy gate and CI for Python 3.10/3.12.
+
+## 1.31
+Completion of the biaxial follow-ups and a spatial scheme:
+- **Compression + bending interaction (N+M).** Beam-column check using the
+  Bruhn interaction equation: R_c + R_b/(1−R_c) ≤ 1, where R_c = |N|/P_cr
+  (critical force per Johnson-Euler) and R_b = σ_bending/F_allow. RF/MS output
+  in the report (TXT and DOCX) for every compressed segment.
+- **Buckling about both axes.** The eigenvalue buckling solution covers the
+  weak and the strong axis; the strong axis is reported only when it differs
+  from the weak one (with identical restraints the weak axis governs).
+- **Biaxial composite.** Stress in a composite (multi-material) section now
+  respects bending about both axes including the Iyz coupling
+  (modulus-weighted stiffnesses).
+- **Bimetal – thermal self-stress.** A section made of materials with different
+  thermal expansion develops a self-equilibrated internal stress under uniform
+  heating even without external load (free expansion):
+  σᵢ = Eᵢ(ε₀ + κ·Δz − αᵢ·ΔT). Verified against a hand reference (free bimetal:
+  resultants N=0, M=0, yet stress in both layers).
+- **Axonometric beam scheme** ("axonometry" toggle in the top bar): a spatial
+  view showing both bending planes at once – vertical (Fz/q) and horizontal
+  (Fy/Mz) loads, torsion about the beam axis and the 3D deformed shape. Suited
+  to out-of-plane (biaxial) problems; the side view remains the default.
+
 ## 1.30
 Quality and validation (no change to the computation – only verification and
 readability):

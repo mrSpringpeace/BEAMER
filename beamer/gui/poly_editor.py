@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF, QPainterPath
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QTableWidget, QHeaderView, QCheckBox, QComboBox,
+    QTableWidget, QHeaderView, QCheckBox,
 )
 
 from ..i18n import tr

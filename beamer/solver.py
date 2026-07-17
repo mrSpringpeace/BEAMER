@@ -20,7 +20,7 @@ import math
 from dataclasses import dataclass
 import numpy as np
 
-from .section import build_section, CrossSection
+from .section import CrossSection
 
 
 @dataclass
@@ -58,7 +58,7 @@ class SolverResult:
     reactions: list
     elements: list
     is_stable: bool
-    section: CrossSection = None
+    section: CrossSection | None = None
     error_message: str = ""
     resolver: object = None      # SectionResolver (proměnný průřez)
 
@@ -74,8 +74,13 @@ def _load_multiplier(state, ld, factors=None):
     comb_f = factors.get(getattr(ld, "id", None))
     if comb_f is None:
         comb_f = factors.get(getattr(ld, "load_case_id", None), 0.0)
-    # zatížení = početní (ultimate) síly × volitelný dodatečný součinitel
-    return comb_f * getattr(state, "additional_factor", 1.0)
+    # ULS stav je již početní/faktorovaný. Dodatečný součinitel se aplikuje jen
+    # na provozní stav; tím má LoadCase.is_ultimate jednoznačnou výpočetní roli.
+    case = next((case for case in getattr(state, "load_cases", [])
+                 if case.id == getattr(ld, "load_case_id", None)), None)
+    extra = (1.0 if case is not None and getattr(case, "is_ultimate", False)
+             else getattr(state, "additional_factor", 1.0))
+    return comb_f * extra
 
 
 # ═══ prvkové matice a tvarové funkce (čistá matematika, bez stavu) ═══════════
@@ -170,9 +175,25 @@ def _recover_beam(elements, U, state, factors, timo):
         L_e = elem["L"]
         sd = elem["ns"]["dof"]
         ed = elem["ne"]["dof"]
+        # Uvolněné lokální DOF byly při sestavení staticky kondenzovány. Jejich
+        # skutečné lokální posuny nejsou totožné se sdíleným globálním DOF uzlu;
+        # zrekonstruujeme je z rovnováhy Krr·ur = fr − Kra·ua. Bez toho zatížení
+        # na prvku za kloubem kontaminuje reakce a koncový moment sousedního pole.
+        ue = np.array([
+            U[sd+0], U[sd+1], U[sd+2], U[sd+3], U[sd+4], U[sd+5],
+            U[ed+0], U[ed+1], U[ed+2], U[ed+3], U[ed+4], U[ed+5],
+        ], dtype=float)
+        released = elem.get("released", [])
+        if released:
+            active = elem["release_active"]
+            fr = elem.get("equiv_load", np.zeros(12))[released]
+            ua = ue[active]
+            ue[released] = elem["release_krr_inv"] @ (
+                fr - elem["release_kra"] @ ua
+            )
         # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx
-        u1, w1, phi1, v1, phiz1, th1 = (U[sd], U[sd+1], U[sd+2], U[sd+3], U[sd+4], U[sd+5])
-        u2, w2, phi2, v2, phiz2, th2 = (U[ed], U[ed+1], U[ed+2], U[ed+3], U[ed+4], U[ed+5])
+        u1, w1, phi1, v1, phiz1, th1 = ue[:6]
+        u2, w2, phi2, v2, phiz2, th2 = ue[6:]
 
         EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, GAs_e, GAsy_e = (
             elem["EA"], elem["EIy"], elem["EIz"], elem["EIyz"],
@@ -231,7 +252,7 @@ def _recover_beam(elements, U, state, factors, timo):
         Vi = (Mj - Mi - IL)/L_e if L_e > 1e-12 else 0.0
 
         # osová síla: mechanické přetvoření = celkové − teplotní (α·ΔT)
-        N = (EA_e/L_e)*(u2-u1) - EA_e*elem.get("alpha", 0.0)*elem.get("dT", 0.0)
+        N = (EA_e/L_e)*(u2-u1) - elem.get("N_th", 0.0)
         Mk = (GJ_e/L_e)*(th2-th1)
 
         local_points = []
@@ -319,12 +340,23 @@ def solve_beam(state, factors=None) -> SolverResult:
             GA_w = getattr(w, "GA", None)
             GAs = GA_w * (As / A) if (GA_w and A > 1e-12) else G_e * As
             GAsy = GA_w * (Asy / A) if (GA_w and A > 1e-12) else G_e * Asy
+            # teplotní tuhosti složeného (bimetal): EAα=ΣEᵢαᵢAᵢ, ESα=teplotní
+            # 1. moment k NA (nenulový u nesymetrického rozložení α)
+            EAalpha_c = getattr(w, "EAalpha", 0.0)
+            ESalpha_c = getattr(w, "ESalpha", 0.0)
+            EIalpha_c = getattr(w, "EIalpha", 0.0)
+            thermal_z_na = getattr(w, "z_NA", 0.0)
         else:
             EA, EIy, EIz, EIyz = E_e * A, E_e * Iy, E_e * Iz, E_e * Iyz
             GJ = G_e * J
             GAs = G_e * As
             GAsy = G_e * Asy
-        return EA, EIy, EIz, EIyz, GJ, GAs, GAsy, cs
+            EAalpha_c = None                # homogenní → dopočte se EA·α (jeden materiál)
+            ESalpha_c = 0.0
+            EIalpha_c = None
+            thermal_z_na = float(getattr(cs, "cz_raw", 0.0) or 0.0)
+        return (EA, EIy, EIz, EIyz, GJ, GAs, GAsy, cs, EAalpha_c,
+                ESalpha_c, EIalpha_c, thermal_z_na)
 
     # ── 1. Diskretizace ──
     xs = {0.0, float(length)}
@@ -353,7 +385,7 @@ def solve_beam(state, factors=None) -> SolverResult:
         if 0 <= sg.x2 <= length:
             xs.add(float(sg.x2))
     xcoords = sorted(xs)
-    filtered = []
+    filtered: list[float] = []
     for x in xcoords:
         if not filtered or abs(x - filtered[-1]) > 1e-3:
             filtered.append(x)
@@ -399,9 +431,13 @@ def solve_beam(state, factors=None) -> SolverResult:
         ns, ne = nodes[i], nodes[i+1]
         has_hinge = any(abs(h.x - ns["x"]) < 1e-3 for h in state.hinges)
         x_mid = (ns["x"] + ne["x"]) / 2
-        EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, GAs_e, GAsy_e, cs_e = elem_props(x_mid)
+        (EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, GAs_e, GAsy_e, cs_e,
+         EAalpha_c, ESalpha_c, EIalpha_c, thermal_z_na) = elem_props(x_mid)
         mat_e = resolver.material_at(x_mid)
         alpha_e = float(getattr(mat_e, "alpha", 0.0) or 0.0)
+        # teplotní tuhosti: složené z w (bimetal), homogenní EA·α (ESα=0)
+        EAalpha_e = EAalpha_c if EAalpha_c is not None else EA_e * alpha_e
+        EIalpha_e = EIalpha_c if EIalpha_c is not None else EIy_e * alpha_e
         elements.append({
             "id": i, "ns": ns, "ne": ne,
             "L": ne["x"] - ns["x"],
@@ -409,7 +445,9 @@ def solve_beam(state, factors=None) -> SolverResult:
             "xs": ns["x"], "xe": ne["x"],
             "EA": EA_e, "EIy": EIy_e, "EIz": EIz_e, "EIyz": EIyz_e, "GJ": GJ_e,
             "GAs": GAs_e, "GAsy": GAsy_e, "section": cs_e,
-            "alpha": alpha_e,
+            "alpha": alpha_e, "EAalpha": EAalpha_e, "ESalpha": ESalpha_c,
+            "EIalpha": EIalpha_e, "thermal_z_na": thermal_z_na,
+            "equiv_load": np.zeros(12),
         })
 
     K = np.zeros((num_dof, num_dof))
@@ -436,14 +474,39 @@ def solve_beam(state, factors=None) -> SolverResult:
             kri = k_e[np.ix_(released, active)]
             krr = k_e[np.ix_(released, released)]
             try:
-                kcond = kii - kir @ np.linalg.inv(krr) @ kri
+                krr_inv = np.linalg.inv(krr)
+                kcond = kii - kir @ krr_inv @ kri
                 k_new = np.zeros((12, 12))
                 for r, ai in enumerate(active):
                     for c, aj in enumerate(active):
                         k_new[ai, aj] = kcond[r, c]
                 k_e = k_new
+                elem["released"] = released
+                elem["release_active"] = active
+                elem["release_kir"] = kir
+                elem["release_kra"] = kri
+                elem["release_krr_inv"] = krr_inv
             except np.linalg.LinAlgError:
-                pass
+                return SolverResult([], [], [], False, rep_section,
+                                    "Nelze kondenzovat uvolnění vnitřního kloubu.")
+
+        release_indices = tuple(released)
+        active_indices = tuple(active) if released else ()
+
+        def condense_element_load(f_e, elem=elem, released=release_indices,
+                                  active=active_indices):
+            """Staticky kondenzuje zatěžovací vektor stejně jako tuhost prvku."""
+            if not released:
+                return f_e
+            active_idx = list(active)
+            released_idx = list(released)
+            fa = f_e[active_idx]
+            fr = f_e[released_idx]
+            f_new = np.zeros(12)
+            f_new[active_idx] = fa - elem["release_kir"] @ elem["release_krr_inv"] @ fr
+            return f_new
+
+        elem["condense_load"] = condense_element_load
 
         ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
         l2g = [ds+0, ds+1, ds+2, ds+3, ds+4, ds+5,
@@ -484,10 +547,17 @@ def solve_beam(state, factors=None) -> SolverResult:
                         return ld.q1 + (ld.q2-ld.q1)*(x-ld.x1)/dlen
                     qA, qB = qval(os_), qval(oe)
                     L_e = elem["L"]
-                    F[elem["ns"]["dof"]+1] += (L_e/20)*(7*qA+3*qB)*mult
-                    F[elem["ns"]["dof"]+2] += (L_e**2/60)*(3*qA+2*qB)*mult
-                    F[elem["ne"]["dof"]+1] += (L_e/20)*(3*qA+7*qB)*mult
-                    F[elem["ne"]["dof"]+2] += -(L_e**2/60)*(2*qA+3*qB)*mult
+                    f_e = np.zeros(12)
+                    f_e[1] = (L_e/20)*(7*qA+3*qB)*mult
+                    f_e[2] = (L_e**2/60)*(3*qA+2*qB)*mult
+                    f_e[7] = (L_e/20)*(3*qA+7*qB)*mult
+                    f_e[8] = -(L_e**2/60)*(2*qA+3*qB)*mult
+                    elem["equiv_load"] += f_e
+                    f_c = elem["condense_load"](f_e)
+                    ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
+                    l2g = [ds+i for i in range(6)] + [de+i for i in range(6)]
+                    for local, glob in enumerate(l2g):
+                        F[glob] += f_c[local]
 
     # ── teplotní zatížení: ekvivalentní uzlové síly ──
     # Rovnoměrné ΔT → osová dilatace ε_th=α·ΔT; při vazbě vzniká osová síla
@@ -508,21 +578,36 @@ def solve_beam(state, factors=None) -> SolverResult:
     for elem in elements:
         dT_e, dTg_e = dT_at((elem["xs"] + elem["xe"]) / 2.0)
         elem["dT"] = dT_e
-        # rovnoměrná složka → osová síla
-        if abs(dT_e) > 1e-12:
-            N_th = elem["EA"] * elem["alpha"] * dT_e     # EA·α·ΔT
-            F[elem["ns"]["dof"]+0] += -N_th
-            F[elem["ne"]["dof"]+0] += +N_th
-        # gradient → teplotní moment (křivost)
-        M_th = 0.0
-        if abs(dTg_e) > 1e-12 and elem["alpha"] != 0.0:
-            cs = elem["section"]
-            h = float(getattr(cs, "z_top", 0.0)) - float(getattr(cs, "z_bot", 0.0))
-            if h > 1e-9:
-                kth = elem["alpha"] * dTg_e / h          # teplotní křivost
-                M_th = elem["EIy"] * kth
-                F[elem["ns"]["dof"]+2] += -M_th
-                F[elem["ne"]["dof"]+2] += +M_th
+        cs = elem["section"]
+        h = float(getattr(cs, "z_top", 0.0)) - float(getattr(cs, "z_bot", 0.0))
+        z_mid = (float(getattr(cs, "cz_raw", 0.0) or 0.0)
+                 + 0.5*(float(getattr(cs, "z_top", 0.0))
+                        + float(getattr(cs, "z_bot", 0.0))))
+        z_na = float(elem.get("thermal_z_na", z_mid))
+        grad = dTg_e / h if h > 1e-9 else 0.0
+        # Integrace E·α·T přes skutečný (i kompozitní) průřez. Gradient je
+        # definován mezi horním a dolním vláknem, s T=0 v jejich středu.
+        N_th = (elem["EAalpha"] * dT_e
+                + grad*(elem["ESalpha"] + (z_na-z_mid)*elem["EAalpha"]))
+        elem["N_th"] = N_th
+        if abs(N_th) > 1e-12:
+            f_e = np.zeros(12)
+            f_e[0], f_e[6] = -N_th, +N_th
+            elem["equiv_load"] += f_e
+            f_c = elem["condense_load"](f_e)
+            ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
+            for local, glob in enumerate([ds+i for i in range(6)] + [de+i for i in range(6)]):
+                F[glob] += f_c[local]
+        M_th = (elem["ESalpha"] * dT_e
+                + grad*(elem["EIalpha"] + (z_na-z_mid)*elem["ESalpha"]))
+        if abs(M_th) > 1e-12:
+            f_e = np.zeros(12)
+            f_e[2], f_e[8] = -M_th, +M_th
+            elem["equiv_load"] += f_e
+            f_c = elem["condense_load"](f_e)
+            ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
+            for local, glob in enumerate([ds+i for i in range(6)] + [de+i for i in range(6)]):
+                F[glob] += f_c[local]
         elem["M_th"] = M_th
 
     # ── okrajové podmínky ──
@@ -536,6 +621,12 @@ def solve_beam(state, factors=None) -> SolverResult:
         if not nd:
             continue
         d = nd["dof"]
+        hold_y = getattr(sup, "restrain_y", None)
+        hold_rz = getattr(sup, "restrain_rz", None)
+        hold_tx = getattr(sup, "restrain_torsion", None)
+        hold_y = True if hold_y is None else bool(hold_y)
+        hold_rz = (sup.type == "fixed") if hold_rz is None else bool(hold_rz)
+        hold_tx = (sup.type in ("fixed", "pin")) if hold_tx is None else bool(hold_tx)
         # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx. Vodorovný příčný posun v (d+3) drží
         # každá podpora (fáze A: laterální podepření v obou příčných rovinách;
         # v je dekuplované od w, takže planar výsledek se nemění), vetknutí drží
@@ -547,7 +638,18 @@ def solve_beam(state, factors=None) -> SolverResult:
                 springs.append((d+1, kz))     # svislá pružina (w)
             if kry > 0:
                 springs.append((d+2, kry))    # rotační pružina (θy)
-            constrained.add(d+3)              # vodorovně tuhá (fáze A)
+            ky = float(getattr(sup, "spring_y", 0.0) or 0.0)
+            krz = float(getattr(sup, "spring_rz", 0.0) or 0.0)
+            if ky > 0:
+                springs.append((d+3, ky))
+            elif hold_y:
+                constrained.add(d+3)
+            if krz > 0:
+                springs.append((d+4, krz))
+            elif hold_rz:
+                constrained.add(d+4)
+            if hold_tx:
+                constrained.add(d+5)
             continue
         # tuhé typy – svislý DOF: vůle (gap, nelineární) > předepsaný posun
         # (settlement) > tuhý (0). Vůle a settlement se vylučují (gap má přednost).
@@ -563,13 +665,30 @@ def solve_beam(state, factors=None) -> SolverResult:
                 constrained.add(dv)
 
         if sup.type == "fixed":
-            constrained |= {d, d+2, d+3, d+4, d+5}
+            constrained |= {d, d+2}
+            if hold_y:
+                constrained.add(d+3)
+            if hold_rz:
+                constrained.add(d+4)
+            if hold_tx:
+                constrained.add(d+5)
             _hold_vertical(d+1)
         elif sup.type == "pin":
-            constrained |= {d, d+3, d+5}
+            constrained.add(d)
+            if hold_y:
+                constrained.add(d+3)
+            if hold_rz:
+                constrained.add(d+4)
+            if hold_tx:
+                constrained.add(d+5)
             _hold_vertical(d+1)
         elif sup.type == "roller":
-            constrained.add(d+3)              # vodorovně příčně drží
+            if hold_y:
+                constrained.add(d+3)
+            if hold_rz:
+                constrained.add(d+4)
+            if hold_tx:
+                constrained.add(d+5)
             rad = np.radians(sup.angle or 0.0)
             s_, c_ = float(np.sin(rad)), float(np.cos(rad))
             if abs(s_) < 1e-5:
@@ -579,10 +698,71 @@ def solve_beam(state, factors=None) -> SolverResult:
             else:
                 skew_rollers.append((d, s_, c_))
 
+    # Rigidní módy vodorovné ohybové roviny: v(x)=a+b·x. Fyzické vazby
+    # vytvoří řádky [1,x] (posun) nebo [0,1] (rotace). Chybějící kompatibilní
+    # mód pouze zkalibrujeme; zatížený mód je skutečný mechanismus.
+    lateral_rows = []
+    for dof in constrained:
+        nd_i, local = divmod(dof, 6)
+        if local == 3:
+            lateral_rows.append([1.0, nodes[nd_i]["x"]/max(length, 1.0)])
+        elif local == 4:
+            lateral_rows.append([0.0, 1.0])
+    for dof, stiffness in springs:
+        if stiffness <= 0.0:
+            continue
+        nd_i, local = divmod(dof, 6)
+        if local == 3:
+            lateral_rows.append([1.0, nodes[nd_i]["x"]/max(length, 1.0)])
+        elif local == 4:
+            lateral_rows.append([0.0, 1.0])
+    lateral_matrix = np.asarray(lateral_rows, dtype=float).reshape((-1, 2))
+    lateral_rank = int(np.linalg.matrix_rank(lateral_matrix)) if lateral_rows else 0
+    if lateral_rank < 2 and nodes:
+        lateral_moment = 0.0
+        for nd in nodes:
+            d0 = int(nd["dof"])
+            lateral_moment += nd["x"]*F[d0+3] + F[d0+4]
+        resultant = np.array([
+            float(np.sum(F[3::6])),
+            float(lateral_moment)/max(length, 1.0),
+        ])
+        _u, _s, vh = np.linalg.svd(lateral_matrix, full_matrices=True)
+        nullspace = vh[lateral_rank:, :] if lateral_rows else np.eye(2)
+        load_scale = float(np.max(np.abs(F))) + 1.0
+        if any(abs(float(mode @ resultant)) > 1e-9*load_scale
+               for mode in nullspace):
+            return SolverResult([], [], [], False, rep_section,
+                                "Nestabilní vodorovný ohybový mód: chybí 3D vazba podpory.")
+        candidates = [
+            (nodes[0]["dof"]+3, [1.0, nodes[0]["x"]/max(length, 1.0)]),
+            (nodes[-1]["dof"]+3, [1.0, nodes[-1]["x"]/max(length, 1.0)]),
+            (nodes[0]["dof"]+4, [0.0, 1.0]),
+        ]
+        for dof, row in candidates:
+            trial = np.vstack([lateral_matrix, row])
+            new_rank = int(np.linalg.matrix_rank(trial))
+            if new_rank > lateral_rank:
+                constrained.add(dof)
+                lateral_matrix, lateral_rank = trial, new_rank
+            if lateral_rank == 2:
+                break
+
     if not any(dof % 6 == 5 for dof in constrained) and nodes:
-        constrained.add(nodes[0]["dof"]+5)    # torze – zabránit rotaci tělesa
+        # Referenční fixace rigidního pootočení je legitimní jen pro vyrovnané
+        # torzní zatížení. Nevyrovnaný moment bez vazby je mechanismus, nikoli
+        # skryté vetknutí prvního uzlu.
+        torque_resultant = float(np.sum(F[5::6]))
+        if abs(torque_resultant) > 1e-9 * (float(np.max(np.abs(F))) + 1.0):
+            return SolverResult([], [], [], False, rep_section,
+                                "Nestabilní torzní mód: chybí torzní vazba.")
+        constrained.add(nodes[0]["dof"]+5)
     if not any(dof % 6 == 0 for dof in constrained) and nodes and not skew_rollers:
-        constrained.add(nodes[0]["dof"]+0)    # osa – zabránit posuvu tělesa
+        axial_resultant = float(np.sum(F[0::6]))
+        if abs(axial_resultant) > 1e-9 * (float(np.max(np.abs(F))) + 1.0):
+            return SolverResult([], [], [], False, rep_section,
+                                "Nestabilní axiální mód: chybí axiální vazba.")
+        constrained.add(nodes[0]["dof"]+0)
     # v-rovina (v,θz) zrcadlí w-rovinu (v držené u každé podpory, θz u vetknutí)
     # → stabilní právě když je stabilní svislá rovina; samostatný fallback netřeba.
 
@@ -631,7 +811,7 @@ def solve_beam(state, factors=None) -> SolverResult:
     U = _solve_once(prescribed)
     if gap_supports:
         rscale = float(np.abs(F).max()) + 1.0
-        gap_active = {}
+        gap_active: dict[int, float] = {}
         for _it in range(30):
             if U is None:
                 if not gap_active:            # bez kontaktu mechanismus → dosedni vše

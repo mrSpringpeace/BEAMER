@@ -28,7 +28,7 @@ Konvence souřadnic (Pilkey, sectionproperties):
 
 import math
 import numpy as np
-from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 from scipy.spatial import Delaunay
 
@@ -693,7 +693,6 @@ def triangulate_section(outer, holes=None, max_area=None):
     valid_tris = np.array(valid_tris)
 
     # ── 5. Z T3 udělej T6 přidáním středů hran ──
-    n_corner = len(pts_array)
     # mapa hrany → index středového uzlu
     edge_to_mid = {}
     new_nodes = list(pts_array)
@@ -859,7 +858,6 @@ def solve_warping_function(nodes, elements, cy, cz, elem_G=None):
 
     for ei, elem in enumerate(elements):
         idx = elem
-        coords = nodes[elem]      # globální (pro shape fcs)
         coords_c = nodes_c[elem]  # centroidální
         ge = 1.0 if elem_G is None else float(elem_G[ei])
 
@@ -907,6 +905,7 @@ def solve_warping_function(nodes, elements, cy, cz, elem_G=None):
     omega_mean = 0.0
     A_total = 0.0
     for elem in elements:
+        idx = elem
         coords_c = nodes_c[elem]
         omega_e = omega[elem]
         for gp in _CURRENT_GAUSS:
@@ -1414,7 +1413,6 @@ def compute_shear_areas_and_deformation_coeffs(
     kappa_xy = 0.0  # smíšený
 
     for elem in elements:
-        idx = elem
         coords_c = nodes_c[elem]
         psi_e = Psi[elem]
         phi_e = Phi[elem]
