@@ -8,7 +8,7 @@ addopts = "-ra"
 select = ["F"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 files = [
     "beamer/model.py",

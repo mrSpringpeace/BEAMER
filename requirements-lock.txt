@@ -1,4 +1,5 @@
-# Reprodukovatelné prostředí ověřené při auditu 2026-07-16 (Python 3.10+).
+# Reprodukovatelné prostředí ověřené při auditu 2026-07-16.
+# Vyžaduje Python 3.11+ (numpy 2.3 a scipy 1.16 už 3.10 nepodporují).
 PySide6==6.11.1
 numpy==2.3.5
 matplotlib==3.10.7

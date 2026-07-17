@@ -100,4 +100,4 @@ approved data including `Fcy`/`Fsu`.
 A numerical claim is not considered verified merely by matching a golden
 snapshot. The regressions contain analytic invariants and external
 comparisons; the exact verified dependency versions are in
-`requirements-lock.txt` and CI tests them on Python 3.10 and 3.12.
+`requirements-lock.txt` and CI tests them on Python 3.11 and 3.13.
