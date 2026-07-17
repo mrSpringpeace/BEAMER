@@ -2,6 +2,50 @@
 
 Version format: **X.XX**
 
+## 1.34
+Live profile library (the same pattern as materials in 1.33):
+- **Library profiles are available everywhere and immediately.** The
+  cross-section picker (PID card, segments, composite layup) offers – besides
+  the project cross-sections – the user and shared profile libraries. Picking
+  a library profile copies it into the project cross-sections and assigns it;
+  deduplication prevents duplicate copies and the project file stays
+  self-contained.
+- **Profile library manager** (the “🗂 Library…” button on the Cross-sections
+  card): new, edit (full cross-section editor), duplicate, rename, delete and
+  **reordering** (▲/▼ – the order is saved and drives the order in the
+  pickers); live shape preview; take a cross-section from the project; publish
+  to the shared library (which stays read-only).
+- Fix: the “direct” type (stiffness-only input) is no longer offered for a
+  composite layup, neither from the project nor from the library – its
+  synthetic outline is a stiffness model and must not be assembled.
+- Fix: loading a profile from the library no longer loses the construction
+  shape, the rotation or per-body materials (reading now covers all fields of
+  the definition).
+- Fix: in a new project without cross-sections, “Add profile” in the layup
+  takes the first usable profile straight from the library.
+- Fix: closing the layup window also refreshes the main material combo and the
+  list of project cross-sections.
+
+## 1.33
+Live material library:
+- **Library materials are available everywhere and immediately.** The material
+  pickers (PID card, segments, composite layup) offer – besides the project
+  materials – the whole user and shared library (groups “Project / User /
+  Shared”). Picking a library item copies it into the project and assigns it,
+  so the project file stays self-contained (a later library edit does not
+  change old projects); the same item is never copied twice (deduplication).
+- **Material library manager** (the “🗂 Library…” button in the Material
+  panel): a separate window – new, duplicate, edit, delete and **reordering**
+  (▲/▼; the order is saved, so steels can be grouped together, aluminium
+  alloys together…). The complete set of fields is editable, including α, Fcy,
+  Fsu, the data source and the allowables basis (previously not editable
+  anywhere). Taking a material from the project into the library and publishing
+  to the shared library are in one place; the shared library stays read-only.
+- Fix: a material inserted from the library (as well as a new or deleted one)
+  propagates to the PID card immediately – previously the project had to be
+  saved and reopened. Inserting from the library no longer loses α/Fcy/Fsu.
+- Library reading tolerates unknown keys (format compatibility both ways).
+
 ## 1.32
 Full audit of the computational core, physics, mathematics and code quality:
 - **Solver and stability:** loaded unrestrained axial, torsional and horizontal

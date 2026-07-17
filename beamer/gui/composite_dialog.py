@@ -84,26 +84,47 @@ class CompositeEditorDialog(QDialog):
         """Knihovní profily s použitelnou geometrií. Typ „direct" (jen přímé
         charakteristiky, žádný obrys) by se do skladby tiše vynechal – proto
         se v nabídce vůbec neukazuje."""
+        return [s for s in self.state.sections if self._usable_def(s)]
+
+    @staticmethod
+    def _usable_def(sd):
+        """Má definice použitelnou geometrii pro skladbu? („direct" nikdy –
+        syntetický obrys je jen tuhostní model.)"""
         from ..composite import section_bodies_centroidal
-        out = []
-        for s in self.state.sections:
-            try:
-                if section_bodies_centroidal(s):
-                    out.append(s)
-            except Exception:
-                pass
-        return out
+        if sd.type == "direct":
+            return False
+        try:
+            return bool(section_bodies_centroidal(sd))
+        except Exception:
+            return False
+
+    def _first_available_section_id(self):
+        """První použitelný průřez: z projektu, jinak z knihovny profilů
+        (zkopíruje se do projektu – nový projekt tak může začít skladbu rovnou
+        knihovním profilem). None, když není nic."""
+        usable = self._usable_sections()
+        if usable:
+            return usable[0].id
+        from .. import library
+        from .widgets import resolve_section_choice
+        for _src, profs in library.load_profiles_grouped():
+            for n, sd in profs:
+                if self._usable_def(sd):
+                    sid, _created = resolve_section_choice(
+                        self.state, ("plib", n, sd))
+                    return sid
+        return None
 
     def _add(self):
-        usable = self._usable_sections()
-        if not usable:
+        sid = self._first_available_section_id()
+        if sid is None:
             self.info.setText(tr("Nejdřív přidej průřez s geometrií do knihovny "
                                  "(Průřezy). Typ „přímé zadání“ skládat nejde."))
             return
         mid = (self.state.selected_material_id or
                (self.state.materials[0].id if self.state.materials else None))
         self.prop.composite_parts.append(
-            {"section_id": usable[0].id, "material_id": mid,
+            {"section_id": sid, "material_id": mid,
              "dy": 0.0, "dz": 0.0, "angle": 0.0})
         self._rebuild()
 
@@ -116,24 +137,77 @@ class CompositeEditorDialog(QDialog):
         self.prop.composite_parts[idx][key] = val
         self._preview()
 
+    def _fill_part_section_combo(self, sc, current_id):
+        """Průřezy projektu (použitelná geometrie) + knihovna profilů (též jen
+        s geometrií – „direct" skládat nejde). Volba knihovního = kopie do
+        projektu (stejný vzor jako materiály)."""
+        from .. import library
+        from .widgets import _HDR, _same_profile, SECTION_LABELS
+        from PySide6.QtCore import Qt
+
+        sc.blockSignals(True)
+        sc.clear()
+        for s in self._usable_sections():
+            sc.addItem(s.name or tr("Průřez"), s.id)
+        for src, profs in library.load_profiles_grouped():
+            fresh = [(n, sd) for n, sd in profs
+                     if self._usable_def(sd) and not any(
+                         _same_profile(n, sd, ps) for ps in self.state.sections)]
+            if not fresh:
+                continue
+            sc.addItem("— " + (tr("Sdílená") if src == "shared"
+                               else tr("Uživatelská")) + " " + tr("knihovna") + " —",
+                       _HDR)
+            sc.model().item(sc.count() - 1).setFlags(Qt.NoItemFlags)
+            for n, sd in fresh:
+                sc.addItem(f"{n}  ({tr(SECTION_LABELS.get(sd.type, sd.type))})",
+                           ("plib", n, sd))
+        idx = sc.findData(current_id)
+        sc.setCurrentIndex(max(0, idx))
+        sc.blockSignals(False)
+
+    def _set_section(self, idx, combo):
+        from .widgets import _HDR, resolve_section_choice
+        data = combo.currentData()
+        if data == _HDR:
+            return
+        sid, created = resolve_section_choice(self.state, data)
+        if sid is None:
+            return
+        self.prop.composite_parts[idx]["section_id"] = sid
+        if created:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._rebuild)
+        else:
+            self._preview()
+
+    def _set_material(self, idx, combo):
+        from .widgets import resolve_material_choice
+        mid, created = resolve_material_choice(self.state, combo.currentData())
+        if mid is None:
+            return                      # nadpis skupiny
+        self.prop.composite_parts[idx]["material_id"] = mid
+        if created:                     # comba v ostatních řádcích ať kopii vidí
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._rebuild)
+        else:
+            self._preview()
+
     def _rebuild(self):
         self.table.setRowCount(0)
         for i, part in enumerate(self.prop.composite_parts):
             r = self.table.rowCount()
             self.table.insertRow(r)
             sc = NoWheelComboBox()
-            for s in self._usable_sections():
-                sc.addItem(s.name or tr("Průřez"), s.id)
-            sc.setCurrentIndex(max(0, sc.findData(part.get("section_id"))))
+            self._fill_part_section_combo(sc, part.get("section_id"))
             sc.currentIndexChanged.connect(
-                lambda _, ii=i, c=sc: self._set(ii, "section_id", c.currentData()))
+                lambda _, ii=i, c=sc: self._set_section(ii, c))
             self.table.setCellWidget(r, 0, sc)
             mc = NoWheelComboBox()
-            for m in self.state.materials:
-                mc.addItem(m.name, m.id)
-            mc.setCurrentIndex(max(0, mc.findData(part.get("material_id"))))
+            from .widgets import fill_material_combo
+            fill_material_combo(mc, self.state, part.get("material_id"))
             mc.currentIndexChanged.connect(
-                lambda _, ii=i, c=mc: self._set(ii, "material_id", c.currentData()))
+                lambda _, ii=i, c=mc: self._set_material(ii, c))
             self.table.setCellWidget(r, 1, mc)
             for col, key in ((2, "dy"), (3, "dz"), (4, "angle")):
                 sp = NoWheelDoubleSpinBox()

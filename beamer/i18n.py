@@ -390,6 +390,74 @@ EN = {
     "Import profilu": "Import profile",
     "Export profilu": "Export profile",
     "Nelze importovat: ": "Cannot import: ",
+    # knihovna materiálů (živá comba + správce)
+    "Projekt": "Project",
+    "knihovna": "library",
+    "🗂 Knihovna…": "🗂 Library…",
+    "Správa knihovny materiálů: nový, duplikovat, upravit, smazat, pořadí":
+        "Manage the material library: new, duplicate, edit, delete, reorder",
+    "Knihovna materiálů": "Material library",
+    "Uživatelská knihovna": "User library",
+    "Duplikovat": "Duplicate",
+    "Smazat": "Delete",
+    "Přidat nový materiál do knihovny": "Add a new material to the library",
+    "Kopie vybraného (pak uprav)": "Copy of the selected one (then edit)",
+    "Smaže jen z knihovny – projekty mají vlastní kopie":
+        "Deletes from the library only – projects keep their own copies",
+    "Výš": "Up",
+    "Níž": "Down",
+    "Posunout v seznamu nahoru (pořadí se ukládá – seskup si např. oceli k sobě)":
+        "Move up in the list (the order is saved – e.g. group steels together)",
+    "⤓ Převzít z projektu": "⤓ Take from project",
+    "Uloží materiál z otevřeného projektu do knihovny":
+        "Saves a material from the open project into the library",
+    "Publikovat do sdílené…": "Publish to shared…",
+    "Změny se ukládají hned. Úprava knihovny nemění materiály už zkopírované "
+    "do projektů.":
+        "Changes are saved immediately. Editing the library does not change "
+        "materials already copied into projects.",
+    "Sdílená knihovna (jen pro čtení)": "Shared library (read-only)",
+    "Zkopírovat vybraný do uživatelské": "Copy selected to user library",
+    "Smazat z knihovny": "Delete from library",
+    "Smazat materiál „%s“ z uživatelské knihovny?\nProjekty, které ho už "
+    "používají, mají vlastní kopii a nezmění se.":
+        "Delete material “%s” from the user library?\nProjects already using "
+        "it keep their own copy and will not change.",
+    "Nový materiál": "New material",
+    " (kopie)": " (copy)",
+    "(projekt nemá materiály)": "(project has no materials)",
+    "(knihovna je prázdná – přidej „Nový“)": "(library is empty – press “New”)",
+    "α (roztažnost):": "α (expansion):",
+    "Fcy (tlaková mez kluzu):": "Fcy (compressive yield):",
+    "Fsu (mez ve smyku):": "Fsu (shear ultimate):",
+    "0 = nezadáno → použije se Re": "0 = not set → Re is used",
+    "0 = nezadáno → von Mises z Rm": "0 = not set → von Mises from Rm",
+    "Zdroj:": "Source:",
+    "Báze hodnot:": "Allowables basis:",
+    "původ dat / specifikace": "data origin / specification",
+    # knihovna profilů
+    "Knihovna profilů": "Profile library",
+    "Správa knihovny profilů: nový, duplikovat, upravit, smazat, pořadí":
+        "Manage the profile library: new, duplicate, edit, delete, reorder",
+    "Nový profil (obdélník – pak uprav)": "New profile (rectangle – then edit)",
+    "Otevře editor průřezu": "Opens the cross-section editor",
+    "Posunout v seznamu nahoru (pořadí se ukládá – seskup si např. trubky k sobě)":
+        "Move up in the list (the order is saved – e.g. group tubes together)",
+    "Uloží průřez z otevřeného projektu do knihovny":
+        "Saves a cross-section from the open project into the library",
+    "Změny se ukládají hned. Úprava knihovny nemění průřezy už zkopírované "
+    "do projektů.":
+        "Changes are saved immediately. Editing the library does not change "
+        "cross-sections already copied into projects.",
+    "Smazat profil „%s“ z uživatelské knihovny?\nProjekty, které ho už "
+    "používají, mají vlastní kopii a nezmění se.":
+        "Delete profile “%s” from the user library?\nProjects already using "
+        "it keep their own copy and will not change.",
+    "Nový profil": "New profile",
+    "(projekt nemá průřezy)": "(project has no cross-sections)",
+    "Upravit…": "Edit…",
+    "(kopie)": "(copy)",
+    "název profilu": "profile name",
     # záložka výsledky + zobrazení
     "Výsledky": "Results",
     "Schéma (zadání + reakce)": "Scheme (input + reactions)",

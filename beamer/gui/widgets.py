@@ -120,6 +120,150 @@ def _spin(val, mn=-1e9, mx=1e9, step=1.0, dec=3, suffix=""):
     return sp
 
 
+# ── „živá" knihovna materiálů v combech ─────────────────────────────
+# Comba materiálu (PID, úsek, skladba kompozitu) nabízejí kromě materiálů
+# projektu i celou uživatelskou/sdílenou knihovnu. Volba knihovní položky ji
+# ZKOPÍRUJE do projektu (projektový soubor zůstává soběstačný – pozdější úprava
+# knihovny staré projekty nemění); dedup podle názvu a hodnot brání množení.
+
+_MAT_VALUE_FIELDS = ("E", "G", "nu", "rho", "Re", "Rm", "alpha", "Fcy", "Fsu")
+
+
+def _same_material(a, b) -> bool:
+    if (a.name or "").strip() != (b.name or "").strip():
+        return False
+    for f in _MAT_VALUE_FIELDS:
+        va, vb = getattr(a, f, None), getattr(b, f, None)
+        if va is None or vb is None:
+            if va is not vb:
+                return False
+        elif abs(float(va) - float(vb)) > 1e-9 * max(1.0, abs(float(va))):
+            return False
+    return True
+
+
+def fill_material_combo(combo, state, current_id=None):
+    """Naplní combo materiály projektu + knihovny (skupiny s neaktivními
+    nadpisy). userData: str = id projektového materiálu, ("lib", Material) =
+    knihovní položka. Nastaví index na `current_id`."""
+    from .. import library
+    combo.blockSignals(True)
+    combo.clear()
+
+    def _header(text):
+        combo.addItem(text)
+        it = combo.model().item(combo.count() - 1)
+        it.setFlags(Qt.NoItemFlags)
+
+    _header("— " + tr("Projekt") + " —")
+    for m in state.materials:
+        combo.addItem(m.name, m.id)
+    for src, mats in library.load_materials_grouped():
+        # knihovní položky, které už v projektu jsou, nenabízet dvakrát
+        fresh = [m for m in mats
+                 if not any(_same_material(m, pm) for pm in state.materials)]
+        if not fresh:
+            continue
+        _header("— " + (tr("Sdílená") if src == "shared" else tr("Uživatelská"))
+                + " " + tr("knihovna") + " —")
+        for m in fresh:
+            combo.addItem(m.name, ("lib", m))
+    idx = combo.findData(current_id)
+    combo.setCurrentIndex(idx if idx >= 0 else 1 if combo.count() > 1 else 0)
+    combo.blockSignals(False)
+
+
+def resolve_material_choice(state, data):
+    """Převede volbu z comba na id projektového materiálu. Knihovní položku
+    zkopíruje do projektu (nebo najde existující kopii). Vrací (id, created)."""
+    if not isinstance(data, tuple):
+        return data, False
+    _, lm = data
+    for pm in state.materials:
+        if _same_material(lm, pm):
+            return pm.id, False
+    m = Material(new_id("mat"), lm.name, lm.E, lm.G, lm.nu, lm.rho,
+                 lm.Re, lm.Rm, is_custom=True,
+                 alpha=getattr(lm, "alpha", 12e-6),
+                 Fcy=getattr(lm, "Fcy", None), Fsu=getattr(lm, "Fsu", None),
+                 source=getattr(lm, "source", ""),
+                 allowables_basis=getattr(lm, "allowables_basis", ""))
+    state.materials.append(m)
+    return m.id, True
+
+
+# ── „živá" knihovna profilů ve výběru průřezu ───────────────────────
+# Stejný vzor jako materiály: výběr průřezu (PID, úseky, skladba kompozitu)
+# nabízí kromě průřezů projektu i knihovnu profilů; volba knihovního profilu
+# ho ZKOPÍRUJE do projektových průřezů (soběstačný soubor) s dedupem.
+
+_HDR = "\x00hdr"    # userData nadpisu skupiny (nesmí kolidovat s None=inline)
+
+
+def _sdef_signature(sdef):
+    """Porovnávací otisk definice průřezu (bez id/name – ty kopie mění)."""
+    import dataclasses
+    d = dataclasses.asdict(sdef)
+    d.pop("id", None)
+    d.pop("name", None)
+    return d
+
+
+def _same_profile(name, sdef, proj_sec) -> bool:
+    return ((proj_sec.name or "") == (name or "")
+            and _sdef_signature(sdef) == _sdef_signature(proj_sec))
+
+
+def fill_section_combo(combo, state, current_id=None, include_inline=True):
+    """Naplní combo výběru průřezu: (inline) + průřezy projektu + knihovna
+    profilů (skupiny). userData: None = inline, str = id projektového průřezu,
+    ("plib", name, sdef) = knihovní profil, _HDR = nadpis (neaktivní)."""
+    from .. import library
+    combo.blockSignals(True)
+    combo.clear()
+
+    def _header(text):
+        combo.addItem(text, _HDR)
+        combo.model().item(combo.count() - 1).setFlags(Qt.NoItemFlags)
+
+    if include_inline:
+        combo.addItem(tr("(vlastní – inline)"), None)
+    for s in state.sections:
+        combo.addItem(f"{s.name or tr('Průřez')} "
+                      f"({tr(SECTION_LABELS.get(s.type, s.type))})", s.id)
+    for src, profs in library.load_profiles_grouped():
+        fresh = [(n, sd) for n, sd in profs
+                 if not any(_same_profile(n, sd, ps) for ps in state.sections)]
+        if not fresh:
+            continue
+        _header("— " + (tr("Sdílená") if src == "shared" else tr("Uživatelská"))
+                + " " + tr("knihovna") + " —")
+        for n, sd in fresh:
+            combo.addItem(f"{n}  ({tr(SECTION_LABELS.get(sd.type, sd.type))})",
+                          ("plib", n, sd))
+    idx = combo.findData(current_id)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    combo.blockSignals(False)
+
+
+def resolve_section_choice(state, data):
+    """Volba z comba → id projektového průřezu (None = inline). Knihovní profil
+    zkopíruje do projektu (nebo najde existující kopii). Vrací (id, created).
+    Nadpis skupiny vrací (_HDR, False) – volající ignoruje."""
+    if not isinstance(data, tuple):
+        return data, False
+    import copy as _c
+    _, name, sdef = data
+    for ps in state.sections:
+        if _same_profile(name, sdef, ps):
+            return ps.id, False
+    sec = _c.deepcopy(sdef)
+    sec.id = new_id("sec")
+    sec.name = name
+    state.sections.append(sec)
+    return sec.id, True
+
+
 class InputPanel(QWidget):
     """Levý panel se vstupy: tenká ikonová lišta vlevo přepíná karty vstupu
     (QStackedWidget). Při změně emituje `changed`; změna kontrolních bodů
@@ -260,6 +404,11 @@ class InputPanel(QWidget):
         from_lib = QPushButton(tr("📂 Z knihovny"))
         from_lib.clicked.connect(self._material_from_lib)
         librow.addWidget(from_lib)
+        manage = QPushButton(tr("🗂 Knihovna…"))
+        manage.setToolTip(tr("Správa knihovny materiálů: nový, duplikovat, "
+                             "upravit, smazat, pořadí"))
+        manage.clicked.connect(self._open_material_library)
+        librow.addWidget(manage)
         v.addLayout(librow)
 
         # editovatelný formulář – vždy předvyplněný hodnotami zvoleného materiálu
@@ -291,9 +440,7 @@ class InputPanel(QWidget):
                      E=70000, G=27000, nu=0.3, rho=2.8, Re=300, Rm=400, is_custom=True)
         self.state.materials.append(m)
         self.state.selected_material_id = m.id
-        self._reload_mat_combo()
-        self._refresh_material_view()
-        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
+        self._after_material_import()   # obnoví i PID karty a úseky
         self._emit()
 
     def _refresh_material_view(self):
@@ -379,6 +526,13 @@ class InputPanel(QWidget):
             QMessageBox.critical(self, tr("Sdílená knihovna"),
                                  tr("Publikace selhala (zkontrolujte cestu a práva)."))
 
+    def _open_material_library(self):
+        from .material_library_dialog import MaterialLibraryDialog
+        dlg = MaterialLibraryDialog(self.state, self)
+        dlg.exec()
+        # živá knihovna: comba (PID, úseky) nabízejí knihovnu → obnovit hned
+        self._after_material_import()
+
     def _material_from_lib(self):
         from .. import library
         from PySide6.QtWidgets import QMenu
@@ -398,13 +552,10 @@ class InputPanel(QWidget):
         menu.exec(self.cursor().pos())
 
     def _add_lib_material(self, mat):
-        m = Material(new_id("mat"), mat.name, mat.E, mat.G, mat.nu, mat.rho,
-                     mat.Re, mat.Rm, is_custom=True)
-        self.state.materials.append(m)
-        self.state.selected_material_id = m.id
-        self._reload_mat_combo()
-        self._refresh_material_view()
-        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
+        # stejná cesta jako živá comba: kopie do projektu vč. α/Fcy/Fsu + dedup
+        mid, _ = resolve_material_choice(self.state, ("lib", mat))
+        self.state.selected_material_id = mid
+        self._after_material_import()
         self._emit()
 
     def _del_material(self, m):
@@ -412,9 +563,7 @@ class InputPanel(QWidget):
             return
         self.state.materials.remove(m)
         self.state.selected_material_id = self.state.materials[0].id
-        self._reload_mat_combo()
-        self._refresh_material_view()
-        self._refresh_parts()      # aby se nový materiál hned objevil i u úseků
+        self._after_material_import()
         self._emit()
 
     def _clear_layout(self, lay):
@@ -439,9 +588,16 @@ class InputPanel(QWidget):
         self.seclib_layout = QVBoxLayout(self.seclib_host)
         self.seclib_layout.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.seclib_host)
+        brow = QHBoxLayout()
         addb = QPushButton(tr("+ Přidat průřez"))
         addb.clicked.connect(self._add_library_section)
-        v.addWidget(addb)
+        brow.addWidget(addb)
+        manage = QPushButton(tr("🗂 Knihovna…"))
+        manage.setToolTip(tr("Správa knihovny profilů: nový, duplikovat, "
+                             "upravit, smazat, pořadí"))
+        manage.clicked.connect(self._open_profile_library)
+        brow.addWidget(manage)
+        v.addLayout(brow)
         self.layout.addWidget(box)
         self._refresh_section_library()
 
@@ -479,6 +635,13 @@ class InputPanel(QWidget):
         dele.clicked.connect(lambda _, sec=s: self._del_library_section(sec))
         h.addWidget(dele)
         return w
+
+    def _open_profile_library(self):
+        from .profile_library_dialog import ProfileLibraryDialog
+        dlg = ProfileLibraryDialog(self.state, self)
+        dlg.exec()
+        # živá knihovna: výběry průřezů nabízejí knihovnu → obnovit hned
+        self._after_section_import()
 
     def _add_library_section(self):
         n = len(self.state.sections) + 1
@@ -542,12 +705,9 @@ class InputPanel(QWidget):
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         cb = NoWheelComboBox()
-        cb.addItem(tr("(vlastní – inline)"), None)
-        for s in self.state.sections:
-            cb.addItem(f"{s.name or tr('Průřez')} ({tr(SECTION_LABELS.get(s.type, s.type))})", s.id)
-        cb.setCurrentIndex(max(0, cb.findData(getattr(obj, id_attr, None))))
+        fill_section_combo(cb, self.state, getattr(obj, id_attr, None))
         cb.currentIndexChanged.connect(
-            lambda _, c=cb: (setattr(obj, id_attr, c.currentData()), after(), self._emit()))
+            lambda _, c=cb: self._on_section_choice(obj, id_attr, c, after))
         h.addWidget(cb, 1)
         edit = QPushButton(tr("Upravit…"))
         edit.clicked.connect(lambda: self._edit_effective_section(obj, which, after))
@@ -572,6 +732,25 @@ class InputPanel(QWidget):
         self._refresh_section_library()
         after()
         self._emit()
+
+    def _on_section_choice(self, obj, id_attr, combo, after):
+        data = combo.currentData()
+        if data == _HDR:
+            return                      # klik na nadpis skupiny
+        sid, created = resolve_section_choice(self.state, data)
+        setattr(obj, id_attr, sid)
+        after()
+        self._emit()
+        if created:                     # kopie z knihovny → obnov výběry všude
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._after_section_import)
+
+    def _after_section_import(self):
+        """Po zkopírování knihovního profilu do projektu obnoví všechna místa
+        s výběrem průřezu (karta Průřezy, PID karty, úseky)."""
+        self._refresh_section_library()
+        self._refresh_properties()
+        self._refresh_parts()
 
     def _promote_section(self, obj, which, after):
         import copy as _c
@@ -660,12 +839,9 @@ class InputPanel(QWidget):
             f = QFormLayout()
             cl.addLayout(f)
             mcb = NoWheelComboBox()
-            for m in self.state.materials:
-                mcb.addItem(m.name, m.id)
-            mcb.setCurrentIndex(max(0, mcb.findData(p.material_id)))
+            fill_material_combo(mcb, self.state, p.material_id)
             mcb.currentIndexChanged.connect(
-                lambda _, pp=p, c=mcb: (setattr(pp, "material_id", c.currentData()),
-                                        self._emit()))
+                lambda _, pp=p, c=mcb: self._on_prop_material(pp, c))
             f.addRow(tr("Materiál:"), mcb)
             f.addRow(tr("Průřez:"), self._section_picker(p, "sec1", self._refresh_properties))
             taper = QCheckBox(tr("Náběh (tapered) → průřez B"))
@@ -695,8 +871,10 @@ class InputPanel(QWidget):
         from .composite_dialog import CompositeEditorDialog
         dlg = CompositeEditorDialog(self.state, p, self)
         dlg.exec()
-        self._refresh_properties()
-        self._refresh_parts()
+        # skladba mohla zkopírovat materiály/profily z knihovny do projektu →
+        # obnovit i panel Materiál (combo) a seznam projektových průřezů
+        self._refresh_section_library()
+        self._after_material_import()
         self._emit()
 
     def _add_property(self):
@@ -838,11 +1016,9 @@ class InputPanel(QWidget):
         else:
             # inline materiál
             mcb = NoWheelComboBox()
-            for m in self.state.materials:
-                mcb.addItem(m.name, m.id)
-            mcb.setCurrentIndex(max(0, mcb.findData(seg.material_id)))
+            fill_material_combo(mcb, self.state, seg.material_id)
             mcb.currentIndexChanged.connect(lambda _, s=seg, c=mcb, b=box, idx=i:
-                                            self._on_part_material(s, c.currentData(), b, idx))
+                                            self._on_part_material(s, c, b, idx))
             f.addRow(tr("Materiál:"), mcb)
             f.addRow(tr("Průřez:"), self._section_picker(seg, "sec1", self._refresh_parts))
             prow = QHBoxLayout()
@@ -886,11 +1062,35 @@ class InputPanel(QWidget):
         self._update_len_label()
         self._emit()
 
-    def _on_part_material(self, seg, mid, box, idx):
+    def _on_prop_material(self, p, combo):
+        mid, created = resolve_material_choice(self.state, combo.currentData())
+        if mid is None:
+            return                      # klik na nadpis skupiny
+        p.material_id = mid
+        self._emit()
+        if created:                     # nová kopie z knihovny → obnov comba všude
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._after_material_import)
+
+    def _on_part_material(self, seg, combo, box, idx):
+        mid, created = resolve_material_choice(self.state, combo.currentData())
+        if mid is None:
+            return
         seg.material_id = mid
         seg.E = None        # zvolený materiál řídí E/G (zruší přímý E override z .nos)
         box.setTitle(self._part_title(idx, seg))
         self._emit()
+        if created:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._after_material_import)
+
+    def _after_material_import(self):
+        """Po zkopírování knihovního materiálu do projektu obnoví všechna místa,
+        která nabízejí materiály (panel Materiál, PID karty, úseky)."""
+        self._reload_mat_combo()
+        self._refresh_material_view()
+        self._refresh_properties()
+        self._refresh_parts()
 
     def _on_part_pid(self, seg, pid, box, idx):
         seg.property_id = pid

@@ -1631,3 +1631,179 @@ def test_composite_combined_sigma_red_mode():
     for m in ca["materials"]:
         assert _rel(m["mises_max"],
                     math.sqrt(m["sigma_max"]**2 + 3*m["tau_max"]**2)) < 1e-9
+
+
+def test_material_library_order_and_tolerant_load(tmp_path, monkeypatch):
+    """Knihovna materiálů: save_materials zachovává pořadí (organizace „oceli
+    k sobě") a čtení toleruje neznámé klíče (starší/novější formát nesmí
+    položku zahodit)."""
+    from beamer import library
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    a = Material("a", "Ocel S355", 210000, 81000, 0.3, 7.85, 355, 490)
+    b = Material("b", "Al 6061", 69000, 26000, 0.33, 2.7, 240, 290)
+    assert library.save_materials([a, b])
+    assert [m.name for m in library.load_materials()] == ["Ocel S355", "Al 6061"]
+    library.save_materials([b, a])            # přeuspořádání
+    assert [m.name for m in library.load_materials()] == ["Al 6061", "Ocel S355"]
+    import json, os
+    p = os.path.join(str(tmp_path), "materials.json")
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
+    data[0]["budouci_pole"] = 123             # neznámý klíč
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    assert [m.name for m in library.load_materials()] == ["Al 6061", "Ocel S355"]
+
+
+def test_live_material_combo_import_and_dedup(tmp_path, monkeypatch):
+    """Živá knihovna v combech: knihovní položka se nabízí, výběr ji ZKOPÍRUJE
+    do projektu (vč. α/Fcy), druhý výběr vrátí existující kopii (dedup) a
+    zkopírovaná položka se v nabídce už neduplikuje."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    _ = QApplication.instance() or QApplication([])
+    from beamer import library
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    library.save_materials([
+        Material("l1", "Ocel S355", 210000, 81000, 0.3, 7.85, 355, 490,
+                 alpha=12e-6, Fcy=340.0),
+    ])
+    from beamer.gui.widgets import fill_material_combo, resolve_material_choice
+    from beamer.gui.spin import NoWheelComboBox
+    st = ProjectState(materials=[Material("m1", "Projektový", 70000, 27000,
+                                          0.33, 2.7, 200, 300)],
+                      selected_material_id="m1")
+    cb = NoWheelComboBox()
+    fill_material_combo(cb, st, "m1")
+    datas = [cb.itemData(i) for i in range(cb.count())]
+    libs = [d for d in datas if isinstance(d, tuple)]
+    assert len(libs) == 1 and libs[0][1].name == "Ocel S355"
+    assert cb.currentData() == "m1"           # aktuální výběr zachován
+
+    mid, created = resolve_material_choice(st, libs[0])
+    assert created and len(st.materials) == 2
+    m = next(mm for mm in st.materials if mm.id == mid)
+    assert m.name == "Ocel S355" and m.Fcy == 340.0 and m.alpha == 12e-6
+    mid2, created2 = resolve_material_choice(st, libs[0])
+    assert mid2 == mid and not created2       # dedup: žádná další kopie
+
+    cb2 = NoWheelComboBox()                   # po importu už není v nabídce 2×
+    fill_material_combo(cb2, st, mid)
+    libs2 = [cb2.itemData(i) for i in range(cb2.count())
+             if isinstance(cb2.itemData(i), tuple)]
+    assert not libs2
+    assert cb2.currentData() == mid
+
+
+def test_profile_library_order_roundtrip(tmp_path, monkeypatch):
+    """Knihovna profilů: save_profiles zachovává pořadí (organizace „trubky
+    k sobě") a save_profile (upsert) pořadí nerozbije."""
+    from beamer import library
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    a = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20})
+    b = CrossSectionDef(type="tube", params={"Do": 60, "t": 4})
+    assert library.save_profiles([("Obdelnik", a), ("Trubka", b)])
+    assert [n for n, _ in library.load_profiles()] == ["Obdelnik", "Trubka"]
+    library.save_profiles([("Trubka", b), ("Obdelnik", a)])
+    assert [n for n, _ in library.load_profiles()] == ["Trubka", "Obdelnik"]
+    library.save_profile("Obdelnik", a)       # upsert existujícího
+    assert [n for n, _ in library.load_profiles()] == ["Trubka", "Obdelnik"]
+
+
+def test_live_section_combo_import_and_dedup(tmp_path, monkeypatch):
+    """Živá knihovna profilů ve výběru průřezu: knihovní profil se nabízí,
+    výběr ho zkopíruje do projektových průřezů, dedup nevytváří další kopie,
+    inline volba (None) zůstává funkční."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    _ = QApplication.instance() or QApplication([])
+    from beamer import library
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    library.save_profiles([("Trubka 60x4",
+                            CrossSectionDef(type="tube", params={"Do": 60, "t": 4}))])
+    from beamer.gui.widgets import (fill_section_combo, resolve_section_choice,
+                                    _HDR)
+    from beamer.gui.spin import NoWheelComboBox
+    st = ProjectState(sections=[CrossSectionDef(type="rectangle",
+                                                params={"b": 100, "h": 200},
+                                                id="s1", name="R1")])
+    cb = NoWheelComboBox()
+    fill_section_combo(cb, st, None)
+    datas = [cb.itemData(i) for i in range(cb.count())]
+    assert cb.currentData() is None            # inline výchozí
+    libs = [d for d in datas if isinstance(d, tuple)]
+    assert len(libs) == 1 and libs[0][1] == "Trubka 60x4"
+    assert _HDR in datas                       # nadpis skupiny přítomen
+
+    sid, created = resolve_section_choice(st, libs[0])
+    assert created and len(st.sections) == 2
+    sec = next(s for s in st.sections if s.id == sid)
+    assert sec.name == "Trubka 60x4" and sec.type == "tube"
+    sid2, created2 = resolve_section_choice(st, libs[0])
+    assert sid2 == sid and not created2        # dedup
+
+    cb2 = NoWheelComboBox()                    # po importu už není v nabídce 2×
+    fill_section_combo(cb2, st, sid)
+    assert not [cb2.itemData(i) for i in range(cb2.count())
+                if isinstance(cb2.itemData(i), tuple)]
+    assert cb2.currentData() == sid
+    # inline volba dál funguje
+    assert resolve_section_choice(st, None) == (None, False)
+
+
+def test_profile_library_roundtrip_preserves_all_fields(tmp_path, monkeypatch):
+    """P1 (review 1.34): knihovna profilů nesmí při načtení ztratit shapes,
+    rotation ani Body.material_id – konstrukční/natočený/kompozitní profil
+    projde uložením a načtením beze změny definice."""
+    from beamer import library
+    from beamer.model import Body
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    sdef = CrossSectionDef(
+        type="construction",
+        shapes=[{"kind": "rect", "op": "add", "y": 0, "z": 0, "b": 40, "h": 20}],
+        rotation=30.0,
+        bodies=[Body(points=[{"y": 0, "z": 0}, {"y": 10, "z": 0},
+                             {"y": 10, "z": 10}],
+                     holes=[], material_id="mat_x")])
+    library.save_profiles([("Konstrukcni", sdef)])
+    (name, back), = library.load_profiles()
+    assert name == "Konstrukcni"
+    assert back.type == "construction"
+    assert back.rotation == 30.0
+    assert back.shapes == sdef.shapes
+    assert back.bodies and back.bodies[0].material_id == "mat_x"
+    assert back.bodies[0].points == sdef.bodies[0].points
+
+
+def test_composite_add_starts_from_library_in_empty_project(tmp_path, monkeypatch):
+    """P2 (review 1.34): nový projekt bez projektových průřezů – „Přidat
+    profil" ve skladbě si vezme první použitelný profil z KNIHOVNY (zkopíruje
+    do projektu); „direct" v knihovně se přeskočí."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    _ = QApplication.instance() or QApplication([])
+    from beamer import library
+    monkeypatch.setattr(library, "_LOCAL_DIR", str(tmp_path))
+    library.save_profiles([
+        ("Direct X", CrossSectionDef(type="direct",
+                                     params={"A": 1e3, "Iy": 1e6, "Iz": 1e6,
+                                             "IT": 1e6})),
+        ("Trubka 60x4", CrossSectionDef(type="tube", params={"Do": 60, "t": 4})),
+    ])
+    from beamer.model import Property
+    from beamer.gui.composite_dialog import CompositeEditorDialog
+    st = ProjectState(materials=[MAT], selected_material_id=MAT.id)
+    assert not st.sections                     # prázdný projekt
+    p = Property(id="p", pid=1, name="komp", composite_parts=[])
+    dlg = CompositeEditorDialog(st, p)
+    dlg._add()
+    assert len(p.composite_parts) == 1         # část přidána z knihovny
+    sec = next(s for s in st.sections
+               if s.id == p.composite_parts[0]["section_id"])
+    assert sec.type == "tube" and sec.name == "Trubka 60x4"   # direct přeskočen

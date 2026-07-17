@@ -57,29 +57,34 @@ def _write(path, data) -> bool:
 
 
 def _csdef_from_dict(d) -> CrossSectionDef:
-    bodies_raw = d.get("bodies")
-    bodies = None
-    if bodies_raw:
-        from .model import Body
-        bodies = [Body(points=list(b.get("points") or []),
-                       holes=list(b.get("holes") or [])) for b in bodies_raw]
-    return CrossSectionDef(
-        type=d.get("type", "i_section"),
-        params=d.get("params", {}),
-        polygon_points=d.get("polygon_points"),
-        polygon_holes=d.get("polygon_holes"),
-        polygon_thickness=d.get("polygon_thickness"),
-        polygon_closed=d.get("polygon_closed", False),
-        bodies=bodies,
-    )
+    """Tolerantní konstrukce přes pole dataclassy (jako u materiálů): žádné
+    pole se tiše neztratí (shapes, rotation, Body.material_id…), neznámé klíče
+    se ignorují. `id` se záměrně vynechává – kopie do projektu dostává nové."""
+    import dataclasses
+    from .model import Body
+    known = {f.name for f in dataclasses.fields(CrossSectionDef)} - {"id"}
+    kw = {k: v for k, v in d.items() if k in known}
+    if kw.get("bodies"):
+        bknown = {f.name for f in dataclasses.fields(Body)}
+        kw["bodies"] = [Body(**{k: v for k, v in b.items() if k in bknown})
+                        for b in kw["bodies"]]
+    return CrossSectionDef(**kw)
 
 
 # ── materiály: čtení ───────────────────────────────────────
+def _mat_from_dict(d) -> Material:
+    """Tolerantní konstrukce: neznámé klíče (starší/novější formát) se ignorují,
+    chybějící doplní defaulty dataclassy."""
+    import dataclasses
+    known = {f.name for f in dataclasses.fields(Material)}
+    return Material(**{k: v for k, v in d.items() if k in known})
+
+
 def _load_materials_from(base: str) -> list:
     out = []
     for d in _read(_mat_path(base)):
         try:
-            out.append(Material(**d))
+            out.append(_mat_from_dict(d))
         except Exception:
             pass
     return out
@@ -118,6 +123,17 @@ def save_material(mat: Material):
     md = asdict(mat); md["is_custom"] = True
     _upsert(data, "name", mat.name, md)
     _write(_mat_path(_LOCAL_DIR), data)
+
+
+def save_materials(mats: list) -> bool:
+    """Přepíše CELOU uživatelskou knihovnu daným seznamem (v jeho pořadí).
+    Pořadí v souboru = pořadí v UI; správce knihovny tím řeší přesuny
+    (oceli k sobě, hliníky k sobě…) i hromadné úpravy."""
+    data = []
+    for m in mats:
+        md = asdict(m); md["is_custom"] = True
+        data.append(md)
+    return _write(_mat_path(_LOCAL_DIR), data)
 
 
 def delete_material(name: str):
@@ -171,6 +187,13 @@ def save_profile(name: str, sdef: CrossSectionDef):
     data = _read(_prof_path(_LOCAL_DIR))
     _upsert(data, "name", name, {"name": name, "section": asdict(sdef)})
     _write(_prof_path(_LOCAL_DIR), data)
+
+
+def save_profiles(profiles: list) -> bool:
+    """Přepíše CELOU uživatelskou knihovnu profilů seznamem [(name, sdef), …]
+    v jeho pořadí (pořadí v souboru = pořadí v nabídkách – jako u materiálů)."""
+    data = [{"name": n, "section": asdict(s)} for n, s in profiles]
+    return _write(_prof_path(_LOCAL_DIR), data)
 
 
 def delete_profile(name: str):
