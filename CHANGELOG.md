@@ -2,6 +2,35 @@
 
 Version format: **X.XX**
 
+## 1.35
+- **Fix: a newly added load was silently zero.** Once the combination factors
+  were converted to per-load keying – which happens when a **project is opened
+  from a file** as well as after opening the Load Case Builder – a newly added
+  load was missing from the combination and got a factor of 0. The user entered
+  a force, ran the analysis and “nothing was computed” until the factor was set
+  by hand in the Load Cases window. Every newly created load (added manually,
+  duplicated, from the generator or from a curve) is now automatically
+  registered with a factor of ×1 into the combinations that say nothing about
+  it; a deliberate exclusion (an explicit 0) is never overwritten.
+- **Safety net:** when the analysis runs with a combination in which every load
+  has a zero factor, a warning pointing to the Load Cases window is shown in the
+  status bar (previously an empty result with no explanation).
+- **Axial displacement / elongation.** The solver now returns `u(x)`. For
+  axially loaded members there is a new “u – axial displacement (elongation)”
+  diagram panel (shown only when non-zero), the value on the Report card and in
+  the report including the total elongation ΔL. Verified against
+  ΔL = N·L/(E·A) and against free thermal expansion α·ΔT·L (where N = 0).
+- **The plastic shape factor now actually applies.** The check introduced by the
+  1.32 audit disabled α_pl at any non-zero shear, so it only took effect exactly
+  where V = 0 – never at the critical section – which made the feature
+  effectively dead. A shear interaction is now used:
+  α_eff = 1 + (α−1)·(1 − (R_v/0.25)²) for R_v = τ_V/τ_allow < 0.25, and
+  α_eff = 1.0 above that limit. Axial force, torsion and biaxial bending still
+  disable α. The report additionally prints both the entered and the actually
+  applied α_pl at the critical section and notes when yield governs (α_pl only
+  enters RF_ultimate, which is why it usually makes no difference when RF is
+  taken to min(Re,Rm)). See THEORY.md.
+
 ## 1.34
 Live profile library (the same pattern as materials in 1.33):
 - **Library profiles are available everywhere and immediately.** The

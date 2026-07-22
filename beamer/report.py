@@ -92,6 +92,7 @@ def build_report(state, result, margins, include_conservative=False) -> str:
         Mk = [p.Mk for p in result.points]
         w = [p.w for p in result.points]
         v = [getattr(p, "v", 0.0) for p in result.points]
+        u = [getattr(p, "u", 0.0) for p in result.points]
         L.append(tr("VNITŘNÍ ÚČINKY (extrémy)"))
         L.append(f"  N : {fmt(min(N))} … {fmt(max(N))} N")
         L.append(f"  V : {fmt(min(V))} … {fmt(max(V))} N")
@@ -101,6 +102,9 @@ def build_report(state, result, margins, include_conservative=False) -> str:
         L.append(f"  Mk: {fmt(min(Mk))} … {fmt(max(Mk))} N·mm")
         L.append(f"  w : {fmt(min(w))} … {fmt(max(w))} mm")
         L.append(f"  v : {fmt(min(v))} … {fmt(max(v))} mm")
+        if max(abs(min(u)), abs(max(u))) > 1e-9:      # osově zatížený prut
+            L.append(f"  u : {fmt(min(u))} … {fmt(max(u))} mm")
+            L.append(tr("  celkové prodloužení ΔL: ") + f"{fmt(u[-1] - u[0])} mm")
         L.append("")
         L.append(tr("REAKCE"))
         for rc in result.reactions:
@@ -114,6 +118,23 @@ def build_report(state, result, margins, include_conservative=False) -> str:
         L.append(tr("POSOUZENÍ (RF = reserve factor, ≥ 1 vyhovuje)"))
         if getattr(state, "plasticity_enabled", False):
             L.append(f"  {tr('Plasticita: ZAP')} ({state.plasticity_method}) – RF_ultimate = α_pl·Rm/σ")
+            # α_pl v ŘÍDICÍM řezu: uživatel jinak nevidí, proč se zapnutí
+            # neprojevilo (uplatní se jen v ultimate a klesá se smykem)
+            try:
+                from .analysis import values_at_x
+                dv = values_at_x(result, state, crit.x)
+                a_nom = dv.get("alpha_pl", 1.0)
+                a_eff = dv.get("alpha_pl_eff", 1.0)
+                L.append(tr("  α_pl v řídicím řezu: zadaná %s, uplatněná %s")
+                         % (fmt(a_nom), fmt(a_eff)))
+                if a_nom > 1.0 and a_eff < a_nom - 1e-9:
+                    L.append(tr("    (snížena interakcí se smykem / osovou silou "
+                                "– viz THEORY.md)"))
+                if crit.critical == "yield":
+                    L.append(tr("    pozn.: řídí mez kluzu – α_pl ovlivňuje jen "
+                                "RF_ultimate"))
+            except Exception:
+                pass
         L.append(f"  σ_red,max ({tr('celý nosník')}) = {fmt(max(mm.mises_max for mm in margins))} MPa")
         L.append(f"  RF_min ({tr('celý nosník')}) = {fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f} mm")
         L.append("")

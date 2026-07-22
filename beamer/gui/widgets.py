@@ -59,6 +59,7 @@ class CollapsibleBox(QWidget):
 
 from ..model import (
     Material, Support, Hinge, ControlPoint, Load, CrossSectionDef, SectionSegment, Property, new_id,
+    combination_factor, register_load_in_combinations,
 )
 from ..i18n import tr
 from ..settings import fmt, SETTINGS
@@ -1567,6 +1568,8 @@ class InputPanel(QWidget):
         lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         new_loads = loads_from_curve(pts, lc_id, nm)
         self.state.loads.extend(new_loads)
+        for _new in new_loads:            # jinak by načtená křivka byla nulová
+            register_load_in_combinations(self.state, _new)
         if new_loads:
             self._expand_obj = new_loads[-1]
         self._refresh_loads()
@@ -1733,6 +1736,7 @@ class InputPanel(QWidget):
             ld.x2 = self.state.length
             ld.dT = 50.0
         self.state.loads.append(ld)
+        register_load_in_combinations(self.state, ld)   # jinak tichá nula
         self._expand_obj = ld
         self._refresh_loads()
         self._emit()
@@ -1744,6 +1748,10 @@ class InputPanel(QWidget):
         dup.name = (ld.name + " " + tr("(kopie)")) if ld.name else tr("(kopie)")
         i = self.state.loads.index(ld)
         self.state.loads.insert(i + 1, dup)
+        # kopie převezme faktory originálu (kde je zná), jinak ×1
+        for comb in self.state.load_combinations or []:
+            f = combination_factor(comb, ld)
+            comb.factors[dup.id] = 1.0 if f is None else f
         self._expand_obj = dup
         self._refresh_loads()
         self._emit()
@@ -2145,6 +2153,8 @@ class ReportPanel(QWidget):
             ("φ (ohyb. pootočení) [°]", fmt(d0["phi"] * deg)),
             ("θ (torzní pootočení) [°]", fmt(d0["theta"] * deg)),
         ]
+        if abs(d0.get("u", 0.0)) > 1e-9:       # osově zatížený prut
+            rows.insert(5, (tr("u (osový posun) [mm]"), fmt(d0["u"])))
         # na rozhraní úseků: blok průřez/napětí/RF pro každý přiléhající úsek
         for d in ds:
             sec = d["section"]; mat = d["material"]

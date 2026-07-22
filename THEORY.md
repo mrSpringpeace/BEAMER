@@ -1,4 +1,4 @@
-# BEAMER 1.32 — theory, assumptions and limits of validity
+# BEAMER 1.35 — theory, assumptions and limits of validity
 
 This document is part of the computational model. It describes what the program
 actually solves, which conventions it uses and when a result must not be taken
@@ -39,9 +39,23 @@ force and torsion is combined conservatively by summing magnitudes (no full
 joint 2D vector field yet); the result is invariant to the sign of the torque.
 The reduced stress is von Mises.
 
-The plastic shape factor `Wpl/Wel` is applied only to pure uniaxial bending.
-For axial force, shear, torsion, biaxial or combined loading the factor stays
-1.0 until a full plastic interaction is implemented and validated.
+The plastic shape factor `Wpl/Wel` is applied to uniaxial bending and enters
+`RF_ultimate` only (`RF_yield` is first-fibre yielding, where a plastic reserve
+does not belong by definition). With RF taken to `min(Re,Rm)` yield therefore
+usually governs for ductile materials and enabling plasticity makes no
+difference to the resulting RF; that is correct, not a defect.
+
+Transverse shear is handled by an interaction. With `R_v = τ_V/τ_allow`, where
+`τ_allow` is `Fsu` or, when it is missing, the von Mises substitute `Rm/√3`:
+
+    α_eff = 1 + (α−1)·(1 − (R_v/0.25)²)   for R_v < 0.25
+    α_eff = 1.0                            otherwise
+
+The full `α` thus holds for pure bending, decreases towards 1.0 as shear grows
+and does not apply at all above a quarter of the shear capacity. Axial force,
+torsion and biaxial bending disable `α` completely (value 1.0) until a full
+plastic interaction is implemented and validated; so does an unknown shear
+capacity.
 
 A direct `Iy` import from `.nos` is a stiffness model only. The synthetic
 outline may be used for display, never for stress, RF or buckling. Those

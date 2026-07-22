@@ -710,8 +710,26 @@ class MainWindow(QMainWindow):
             self.buckling_canvas.plot(self.state, None)
         if self.result and not self.result.is_stable:
             self.statusBar().showMessage("⚠ " + self.result.error_message)
+        elif self._inactive_loads_warning():
+            self.statusBar().showMessage("⚠ " + self._inactive_loads_warning())
         else:
             self.statusBar().showMessage(tr("Přepočítáno."))
+
+    def _inactive_loads_warning(self):
+        """Hlídač „spočítal jsem nulu“: model má zatížení, ale zobrazená
+        kombinace jim dává nulový faktor → výsledky by byly prázdné bez zjevné
+        příčiny. Vrací text varování, nebo None."""
+        from ..solver import _load_multiplier
+        loads = getattr(self.state, "loads", None) or []
+        if not loads:
+            return None
+        active = [ld for ld in loads if abs(_load_multiplier(self.state, ld)) > 1e-12]
+        if active:
+            return None
+        comb = self.state.active_combination()
+        name = comb.name if comb is not None else "—"
+        return tr("Kombinace „%s“ nezahrnuje žádné zatížení (všechny faktory 0) "
+                  "– otevři ⊞ Load Cases a nastav faktory.") % name
 
     def _refresh_results_text(self):
         """Přegeneruje textový protokol (karta Výsledky) z aktuálního výsledku.

@@ -321,18 +321,48 @@ def _stability_properties(state, seg, x, section, material):
     return area, inertia, float(e_mod), float(fcy), float(e_mod)*inertia, None
 
 
-def _plastic_capacity_factor(alpha, enabled, N, V, M, Mk, Mz=0.0, Vy=0.0):
-    """Tvarový součinitel platí pouze pro čistý ohyb kolem své definované osy.
+#: podíl smykové únosnosti, nad kterým se plastický ohyb neuvažuje vůbec
+PLASTIC_SHEAR_LIMIT = 0.25
 
-    Pro kombinaci s osovou silou, smykem, torzí či biaxiálním ohybem nelze
-    násobit celé von Misesovo napětí hodnotou Wpl/Wel. Dokud není implementována
-    plná plastická interakce, je bezpečná hodnota 1.0.
+
+def shear_allowable(Rm, Fsu=None):
+    """Dovolené smykové napětí [MPa]: `Fsu` je-li zadané, jinak von Misesova
+    náhrada Rm/√3 (viz THEORY.md – vestavěná knihovna Fsu neuvádí)."""
+    if Fsu:
+        return float(Fsu)
+    return float(Rm) / math.sqrt(3.0) if Rm else 0.0
+
+
+def _plastic_capacity_factor(alpha, enabled, N, V, M, Mk, Mz=0.0, Vy=0.0,
+                             tau_v=0.0, tau_allow=0.0):
+    """Tvarový součinitel Wpl/Wel pro ohyb, s interakcí příčného smyku.
+
+    Plná hodnota α platí pro čistý ohyb. S rostoucím příčným smykem klesá
+    parabolicky k 1.0 a nad R_v = τ_V/τ_dov = `PLASTIC_SHEAR_LIMIT` se
+    neuplatní vůbec (letecká praxe – plastický ohyb se uvažuje, dokud je smyk
+    malý vůči smykové únosnosti):
+
+        α_eff = 1 + (α−1)·(1 − (R_v/0.25)²)   pro R_v < 0.25
+        α_eff = 1.0                            jinak
+
+    Osová síla, torze a biaxiální ohyb α vypínají úplně – pro ně není plastická
+    interakce implementovaná ani validovaná (konzervativní 1.0). Není-li známa
+    smyková únosnost, vrací se rovněž 1.0.
     """
     if not enabled or alpha <= 1.0 or abs(M) <= 1e-12:
         return 1.0
-    other = max(abs(N), abs(V), abs(Mk), abs(Mz), abs(Vy))
     scale = max(abs(M), 1.0)
-    return alpha if other <= 1e-10 * scale else 1.0
+    # bez plné plastické interakce: osová síla / torze / biaxiál → konzervativně
+    if max(abs(N), abs(Mk), abs(Mz), abs(Vy)) > 1e-10 * scale:
+        return 1.0
+    if abs(V) <= 1e-10 * scale:
+        return alpha                       # čistý ohyb
+    if tau_allow <= 1e-9:
+        return 1.0                         # neznámá smyková únosnost
+    R_v = abs(tau_v) / tau_allow
+    if R_v >= PLASTIC_SHEAR_LIMIT:
+        return 1.0
+    return 1.0 + (alpha - 1.0) * (1.0 - (R_v / PLASTIC_SHEAR_LIMIT) ** 2)
 
 
 def _thermal_at(state, x):
@@ -394,7 +424,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
                      if getattr(section, "strength_available", True) else None)
         base_alpha = alpha_pl_for(section)
         def data_at(x):
-            return base_infl, base_alpha, g_mat.Re, g_mat.Rm
+            return (base_infl, base_alpha, g_mat.Re, g_mat.Rm,
+                    getattr(g_mat, "Fsu", None))
     else:
         # Vlivové koeficienty pro průřez SKUTEČNĚ v poloze x, cache dle identity
         # průřezu. resolver.at vrací u prizmatického úseku stejný objekt (→ jen
@@ -411,7 +442,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
             if key not in seen:
                 infl = (build_influence(cs, n=50)
                         if getattr(cs, "strength_available", True) else None)
-                seen[key] = (infl, alpha_pl_for(cs), mat.Re, mat.Rm)
+                seen[key] = (infl, alpha_pl_for(cs), mat.Re, mat.Rm,
+                             getattr(mat, "Fsu", None))
             return seen[key]
 
     if progress:
@@ -438,7 +470,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
                                          ca["RF_yield"], ca["RF_ultimate"], ca["RF"],
                                          ca["critical"]))
                 continue
-        infl, alpha, Re, Rm = data_at(p.x)
+        infl, alpha, Re, Rm, Fsu = data_at(p.x)
         if infl is None:
             continue
         vy = getattr(p, "V_y", 0.0)
@@ -448,7 +480,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
         alpha_eff = _plastic_capacity_factor(
-            alpha, plast, p.N, p.V, p.M, p.Mk, Mz=mz_b, Vy=vy
+            alpha, plast, p.N, p.V, p.M, p.Mk, Mz=mz_b, Vy=vy,
+            tau_v=tu, tau_allow=shear_allowable(Rm, Fsu),
         )
         RF_u = (alpha_eff*Rm/mz) if mz > 1e-9 else float("inf")
         if basis == "yield":
@@ -522,6 +555,7 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
     alpha_eff = _plastic_capacity_factor(
         alpha, getattr(state, "plasticity_enabled", False),
         N, V, M, Mk, Mz=Mz, Vy=Vy,
+        tau_v=tu, tau_allow=shear_allowable(Rm, getattr(mat, "Fsu", None)),
     )
     RF_u = (alpha_eff * Rm / mz) if mz > 1e-9 else float("inf")
     basis = getattr(state, "rf_basis", "min")
@@ -537,7 +571,7 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
         "sigma_max": sg, "tau_max": tu, "mises_max": mz,
         "sigma_z": z_sg, "tau_z": z_tu, "sigma_red_combined": combine,
         "RF_yield": RF_y, "RF_ultimate": RF_u, "RF": RF,
-        "critical": crit, "alpha_pl": alpha,
+        "critical": crit, "alpha_pl": alpha, "alpha_pl_eff": alpha_eff,
     }
 
 
@@ -578,8 +612,10 @@ def values_at_x(result, state, x):
                           [getattr(p, "v", 0.0) for p in result.points]))
     phi_z = float(np.interp(x, [p.x for p in result.points],
                             [getattr(p, "phi_z", 0.0) for p in result.points]))
+    u_ax = float(np.interp(x, [p.x for p in result.points],
+                           [getattr(p, "u", 0.0) for p in result.points]))
     d = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
-         "Mk": Mk, "w": w, "v": v_y, "phi": phi, "phi_z": phi_z,
+         "Mk": Mk, "w": w, "v": v_y, "u": u_ax, "phi": phi, "phi_z": phi_z,
          "theta": theta}
     dtemp, dtemp_grad = _thermal_at(state, x)
     d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
@@ -605,8 +641,10 @@ def values_at_x_multi(result, state, x, tol=1e-3):
                           [getattr(p, "v", 0.0) for p in result.points]))
     phi_z = float(np.interp(x, [p.x for p in result.points],
                             [getattr(p, "phi_z", 0.0) for p in result.points]))
+    u_ax = float(np.interp(x, [p.x for p in result.points],
+                           [getattr(p, "u", 0.0) for p in result.points]))
     base = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
-            "Mk": Mk, "w": w, "v": v_y, "phi": phi, "phi_z": phi_z,
+            "Mk": Mk, "w": w, "v": v_y, "u": u_ax, "phi": phi, "phi_z": phi_z,
             "theta": theta}
 
     all_segs = normalized_segments(state)

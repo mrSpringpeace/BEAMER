@@ -33,6 +33,7 @@ class BeamPoint:
     w: float      # průhyb svislý (mm, z)
     phi: float    # ohybové pootočení θy (rad)
     theta: float  # torzní pootočení (rad)
+    u: float = 0.0      # osový posun (mm, x) – prodloužení/zkrácení prutu
     # druhá rovina (x-y) – biaxiál (fáze A: nenulové jen při Fy/Mz)
     v: float = 0.0      # průhyb vodorovný (mm, y)
     V_y: float = 0.0    # posouvající síla vodorovná (N)
@@ -73,6 +74,9 @@ def _load_multiplier(state, ld, factors=None):
         factors = comb.factors if comb else {}
     comb_f = factors.get(getattr(ld, "id", None))
     if comb_f is None:
+        # zpětná kompatibilita: faktor zatěžovacího stavu. Chybí-li i ten,
+        # kombinace o zatížení nic neříká → 0 (nové zatížení se registruje
+        # přes model.register_load_in_combinations, viz tam)
         comb_f = factors.get(getattr(ld, "load_case_id", None), 0.0)
     # ULS stav je již početní/faktorovaný. Dodatečný součinitel se aplikuje jen
     # na provozní stav; tím má LoadCase.is_ultimate jednoznačnou výpočetní roli.
@@ -269,6 +273,7 @@ def _recover_beam(elements, U, state, factors, timo):
             v = n1*v1 + n2*phiz1 + n3*v2 + n4*phiz2
             phiz = h1*v1 + h2*phiz1 + h3*v2 + h4*phiz2
             theta = th1 + (th2-th1)*xi
+            u = u1 + (u2-u1)*xi          # osový posun (lineární tvarová funkce)
 
             a0 = float(np.interp(xloc, sgrid, A0))
             a1 = float(np.interp(xloc, sgrid, A1))
@@ -279,7 +284,7 @@ def _recover_beam(elements, U, state, factors, timo):
             V_y = Vi2
 
             local_points.append(BeamPoint(elem["xs"]+xloc, N, V, M, Mk, w, phi, theta,
-                                          v=v, V_y=V_y, M_z=M_z, phi_z=phiz))
+                                          u=u, v=v, V_y=V_y, M_z=M_z, phi_z=phiz))
 
         elem_results.append({"id": elem["id"], "xs": elem["xs"], "xe": elem["xe"],
                              "points": local_points, "section": elem["section"]})

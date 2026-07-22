@@ -243,6 +243,33 @@ def new_id(prefix: str = "id") -> str:
     return f"{prefix}_{int(time.time()*1000)}_{next(_counter)}"
 
 
+def combination_factor(comb, ld):
+    """Explicitní faktor zatížení `ld` v kombinaci `comb`, nebo None, když o něm
+    kombinace nic neříká (ani klíčem zatížení, ani klíčem zatěžovacího stavu).
+    None ≠ 0.0: „nevím" se řeší registrací, „nula" je vědomé vyřazení."""
+    f = (comb.factors or {}).get(getattr(ld, "id", None))
+    if f is not None:
+        return f
+    return (comb.factors or {}).get(getattr(ld, "load_case_id", None))
+
+
+def register_load_in_combinations(state, ld, factor: float = 1.0) -> None:
+    """Zaregistruje nově vzniklé zatížení do kombinací, které o něm zatím nic
+    neříkají, faktorem `factor`.
+
+    Bez toho je nové zatížení TICHÁ NULA: jakmile jsou faktory klíčované podle
+    id zatížení (což nastane po otevření projektu ze souboru nebo po otevření
+    Load Case Builderu – viz `migrate_combinations_to_loads`), nové zatížení
+    v mapě chybí a `solver._load_multiplier` vrátí 0. Uživatel zadá sílu a
+    „nic se nepočítá“. Kombinace, které zatížení znají (byť s faktorem 0.0 =
+    vědomé vyřazení), se nemění – explicitní volba uživatele má přednost."""
+    for comb in getattr(state, "load_combinations", None) or []:
+        if combination_factor(comb, ld) is None:
+            if comb.factors is None:
+                comb.factors = {}
+            comb.factors[ld.id] = factor
+
+
 def migrate_combinations_to_loads(state) -> None:
     """Převede faktory kombinací ze starého modelu (klíč = id stavu) na nový
     (klíč = id zatížení): faktor stavu se rozkopíruje na všechna jeho zatížení.

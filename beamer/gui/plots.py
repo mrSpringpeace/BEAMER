@@ -649,7 +649,8 @@ class BeamDiagramCanvas(MplCanvas):
                  w=np.array([p.w for p in pts]), phi=np.array([p.phi for p in pts]),
                  V_y=np.array([getattr(p, "V_y", 0.0) for p in pts]),
                  M_z=np.array([getattr(p, "M_z", 0.0) for p in pts]),
-                 v=np.array([getattr(p, "v", 0.0) for p in pts]))
+                 v=np.array([getattr(p, "v", 0.0) for p in pts]),
+                 u=np.array([getattr(p, "u", 0.0) for p in pts]))
         if self.combined:
             self.fig.set_layout_engine("constrained")
             self._plot_combined(x, d)
@@ -675,6 +676,7 @@ class BeamDiagramCanvas(MplCanvas):
             candidates += [
                 (tr("w – průhyb svislý [mm]"), d["w"], "#00838f"),
                 (tr("v – průhyb vodorovný [mm]"), d["v"], "#26c6da"),
+                (tr("u – osový posun (prodloužení) [mm]"), d["u"], "#5d4037"),
                 (tr("φ – pootočení [rad]"), d["phi"], "#ef6c00"),
             ]
         # nulové veličiny (např. N, Mk bez příslušného zatížení) se nezobrazují

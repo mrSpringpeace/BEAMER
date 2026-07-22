@@ -1807,3 +1807,132 @@ def test_composite_add_starts_from_library_in_empty_project(tmp_path, monkeypatc
     sec = next(s for s in st.sections
                if s.id == p.composite_parts[0]["section_id"])
     assert sec.type == "tube" and sec.name == "Trubka 60x4"   # direct přeskočen
+
+
+def test_new_load_is_registered_in_combinations():
+    """Nově přidané zatížení nesmí být TICHÁ NULA.
+
+    Jakmile jsou faktory kombinace klíčované podle id zatížení (což nastane po
+    otevření projektu ze souboru nebo po otevření Load Case Builderu), nové
+    zatížení v mapě chybí a solver mu dá faktor 0 – uživatel zadá sílu a „nic
+    se nepočítá". `register_load_in_combinations` to napraví; vědomé vyřazení
+    (explicitní 0.0) se přitom nesmí přepsat."""
+    from beamer.defaults import create_default_state
+    from beamer.model import (register_load_in_combinations, combination_factor,
+                              migrate_combinations_to_loads, new_id)
+    from beamer.solver import _load_multiplier
+
+    st = create_default_state()
+    migrate_combinations_to_loads(st)          # = otevření projektu ze souboru
+    comb = st.active_combination()
+    assert set(comb.factors) == {st.loads[0].id}      # klíčováno dle zatížení
+
+    new = Load(new_id("load"), "point_force", "Nová síla", st.load_cases[0].id)
+    new.x, new.Fz = 1000.0, -5000.0
+    st.loads.append(new)
+    assert _load_multiplier(st, new) == 0.0           # bez registrace tichá nula
+    register_load_in_combinations(st, new)
+    assert _load_multiplier(st, new) == 1.0
+
+    # vědomé vyřazení se nepřepisuje
+    ex = st.loads[0]
+    comb.factors[ex.id] = 0.0
+    register_load_in_combinations(st, ex)
+    assert comb.factors[ex.id] == 0.0
+    assert combination_factor(comb, ex) == 0.0
+
+    # zatížení se skutečně projeví ve výsledku
+    m_before = max(abs(p.M) for p in solve_beam(st).points)
+    comb.factors[ex.id] = 1.0
+    assert max(abs(p.M) for p in solve_beam(st).points) > m_before
+
+
+def test_axial_displacement_matches_analytic():
+    """Osový posun u(x): tažený vetknutý prut ΔL = N·L/(E·A), lineární průběh;
+    volná teplotní dilatace ΔL = α·ΔT·L při nulové osové síle."""
+    L, P = 2000.0, 50000.0
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 20})
+    st = ProjectState(
+        length=L, supports=[Support("a", 0, "fixed", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        load_combinations=[LoadCombination("c", "C", {"lc": 1.0})],
+        loads=[Load("f", "point_force", "F", "lc", x=L, Fx=P)],
+        materials=[MAT], selected_material_id=MAT.id, cross_section=rect,
+        section_segments=[SectionSegment(0.0, L, rect)],
+        additional_factor=1.0, selected_active_combination_id="c")
+    res = solve_beam(st)
+    A = build_section(rect, fem=False).A
+    dL = P * L / (MAT.E * A)
+    assert _rel(res.points[-1].u, dL) < 1e-9
+    assert abs(res.points[0].u) < 1e-9
+    mid = res.points[len(res.points) // 2]
+    assert _rel(mid.u, dL * mid.x / L) < 1e-6          # lineární průběh
+
+    # volná teplotní dilatace: N = 0, přesto se prut prodlouží
+    th = Load("t", "thermal", "dT", "lc"); th.x1 = 0; th.x2 = L; th.dT = 100.0
+    st.loads = [th]
+    st.load_combinations[0].factors = {"t": 1.0}
+    res2 = solve_beam(st)
+    assert abs(res2.points[0].N) < 1e-6
+    assert _rel(res2.points[-1].u, MAT.alpha * 100.0 * L) < 1e-9
+
+
+def test_plastic_factor_shear_interaction():
+    """α_pl s interakcí smyku: plná hodnota při čistém ohybu, parabolický pokles
+    k 1.0 na hranici R_v = τ_V/τ_dov = 0.25, nad ní se neuplatní. Osová síla,
+    torze a biaxiál α vypínají úplně."""
+    from beamer.analysis import (_plastic_capacity_factor, shear_allowable,
+                                 PLASTIC_SHEAR_LIMIT)
+    a, M = 1.15, 1.0e6
+    ta = shear_allowable(483.0, None)
+    assert _rel(ta, 483.0 / math.sqrt(3.0)) < 1e-12
+    assert shear_allowable(483.0, 290.0) == 290.0      # Fsu má přednost
+
+    # čistý ohyb → plná α
+    assert _plastic_capacity_factor(a, True, 0, 0, M, 0) == a
+    # monotónní pokles k 1.0 na hranici
+    prev = a
+    for frac in (0.05, 0.1, 0.2, 0.249):
+        cur = _plastic_capacity_factor(a, True, 0, 1.0, M, 0,
+                                       tau_v=frac * ta, tau_allow=ta)
+        assert 1.0 < cur <= prev
+        prev = cur
+    assert _plastic_capacity_factor(a, True, 0, 1.0, M, 0,
+                                    tau_v=PLASTIC_SHEAR_LIMIT * ta,
+                                    tau_allow=ta) == 1.0
+    assert _plastic_capacity_factor(a, True, 0, 1.0, M, 0,
+                                    tau_v=0.9 * ta, tau_allow=ta) == 1.0
+    # osová síla / torze / biaxiál vypínají
+    for kw in ({"N": 1e4}, {"Mk": 1e5}, {"Mz": 1e5}, {"Vy": 1e3}):
+        kwargs = {"N": 0, "V": 1.0, "M": M, "Mk": 0}
+        kwargs.update(kw)
+        assert _plastic_capacity_factor(
+            a, True, kwargs["N"], kwargs["V"], kwargs["M"], kwargs["Mk"],
+            Mz=kwargs.get("Mz", 0.0), Vy=kwargs.get("Vy", 0.0),
+            tau_v=0.0, tau_allow=ta) == 1.0
+    # vypnutá plasticita / neznámá smyková únosnost
+    assert _plastic_capacity_factor(a, False, 0, 0, M, 0) == 1.0
+    assert _plastic_capacity_factor(a, True, 0, 1.0, M, 0,
+                                    tau_v=1.0, tau_allow=0.0) == 1.0
+
+
+def test_plasticity_raises_ultimate_rf_along_beam():
+    """Zapnutí plasticity se MUSÍ projevit na RF_ultimate podél nosníku (dříve
+    ji gate vypínal při jakémkoli smyku, takže funkce byla fakticky mrtvá)."""
+    from beamer.defaults import create_default_state
+    from beamer.analysis import reserves_along_beam
+    st = create_default_state()
+    st.rf_basis = "ultimate"
+    res = solve_beam(st)
+    st.plasticity_enabled = False
+    rf_off = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    st.plasticity_enabled = True
+    rf_on = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    assert rf_on > rf_off * 1.05
+    # při bázi min řídí mez kluzu → α_pl se (správně) neprojeví
+    st.rf_basis = "min"
+    st.plasticity_enabled = False
+    a = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    st.plasticity_enabled = True
+    b = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    assert _rel(a, b) < 1e-12

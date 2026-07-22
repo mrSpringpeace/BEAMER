@@ -458,6 +458,22 @@ EN = {
     "Upravit…": "Edit…",
     "(kopie)": "(copy)",
     "název profilu": "profile name",
+    # osový posun / prodloužení
+    "u – osový posun (prodloužení) [mm]": "u – axial displacement (elongation) [mm]",
+    "u (osový posun) [mm]": "u (axial displacement) [mm]",
+    "  celkové prodloužení ΔL: ": "  total elongation ΔL: ",
+    # plasticita – vysvětlení
+    "  α_pl v řídicím řezu: zadaná %s, uplatněná %s":
+        "  α_pl at the critical section: entered %s, applied %s",
+    "    (snížena interakcí se smykem / osovou silou – viz THEORY.md)":
+        "    (reduced by shear / axial force interaction – see THEORY.md)",
+    "    pozn.: řídí mez kluzu – α_pl ovlivňuje jen RF_ultimate":
+        "    note: yield governs – α_pl affects RF_ultimate only",
+    # varování na nulovou kombinaci
+    "Kombinace „%s“ nezahrnuje žádné zatížení (všechny faktory 0) "
+    "– otevři ⊞ Load Cases a nastav faktory.":
+        "Combination “%s” includes no load (all factors are 0) – open "
+        "⊞ Load Cases and set the factors.",
     # záložka výsledky + zobrazení
     "Výsledky": "Results",
     "Schéma (zadání + reakce)": "Scheme (input + reactions)",

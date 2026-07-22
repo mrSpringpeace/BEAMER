@@ -211,6 +211,9 @@ class LoadGenDialog(QDialog):
                                   self.kind.currentData(), lc_id)
         self.state.loads.append(dist)
         self.state.loads.extend(extras)
+        from ..model import register_load_in_combinations
+        for _new in [dist, *extras]:      # jinak by generované zatížení bylo nulové
+            register_load_in_combinations(self.state, _new)
         removed = False
         if self.remove_src.isChecked() and self._current_src() is not None:
             try:
