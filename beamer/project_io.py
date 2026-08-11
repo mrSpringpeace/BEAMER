@@ -10,9 +10,12 @@ from .model import (
     migrate_combinations_to_loads,
 )
 
+PROJECT_FORMAT_VERSION = 1
+
 
 def state_to_dict(state: ProjectState) -> dict:
     return {
+        "format_version": PROJECT_FORMAT_VERSION,
         "length": state.length,
         "supports": [asdict(s) for s in state.supports],
         "hinges": [asdict(h) for h in state.hinges],
@@ -31,7 +34,9 @@ def state_to_dict(state: ProjectState) -> dict:
         "plasticity_method": state.plasticity_method,
         "rf_basis": getattr(state, "rf_basis", "min"),
         "sigma_red_mode": getattr(state, "sigma_red_mode", "exact"),
+        "tau_mode": getattr(state, "tau_mode", "conservative"),
         "theory": state.theory,
+        "torsion_theory": getattr(state, "torsion_theory", "saint-venant"),
         "selected_active_combination_id": state.selected_active_combination_id,
     }
 
@@ -66,6 +71,16 @@ def _csdef(d):
 
 
 def dict_to_state(d: dict) -> ProjectState:
+    if not isinstance(d, dict):
+        raise ValueError("Projekt BEAMER musí být objekt JSON.")
+    format_version = d.get("format_version", 0)
+    if not isinstance(format_version, int) or format_version < 0:
+        raise ValueError("Projekt BEAMER má neplatnou verzi formátu.")
+    if format_version > PROJECT_FORMAT_VERSION:
+        raise ValueError(
+            f"Projekt používá novější formát {format_version}; "
+            f"tato verze podporuje nejvýše {PROJECT_FORMAT_VERSION}."
+        )
     cs = d.get("cross_section", {})
     st = ProjectState(
         length=d.get("length", 2000),
@@ -87,6 +102,7 @@ def dict_to_state(d: dict) -> ProjectState:
                 E=s.get("E"), material_id=s.get("material_id"),
                 property_id=s.get("property_id"),
                 buckling_mu=s.get("buckling_mu", 1.0),
+                local_buckling_length=s.get("local_buckling_length"),
             ) for s in d.get("section_segments", [])
         ],
         properties=[
@@ -105,7 +121,9 @@ def dict_to_state(d: dict) -> ProjectState:
         plasticity_method=d.get("plasticity_method", "analytic"),
         rf_basis=d.get("rf_basis", "min"),
         sigma_red_mode=d.get("sigma_red_mode", "exact"),
+        tau_mode=d.get("tau_mode", "conservative"),
         theory=d.get("theory", "euler-bernoulli"),
+        torsion_theory=d.get("torsion_theory", "saint-venant"),
         selected_active_combination_id=d.get("selected_active_combination_id", ""),
     )
     # starý model kombinací (faktor×stav) → nový (faktor×zatížení)

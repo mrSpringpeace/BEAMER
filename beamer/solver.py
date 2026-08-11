@@ -1,4 +1,4 @@
-"""Beam solver – přímá metoda tuhosti (Euler-Bernoulli / Timoshenko).
+"""Beam solver – přímá metoda tuhosti (Euler-Bernoulli / Timoshenko / Vlasov).
 
 Prostorový prutový prvek, 6 DOF na uzel:
   0: u   (axiální posun, x)
@@ -7,6 +7,9 @@ Prostorový prutový prvek, 6 DOF na uzel:
   3: v   (příčný průhyb vodorovný, y)   – ohyb v rovině x-y, tuhost EIz
   4: θz  (ohybové pootočení kolem z)
   5: θx  (torzní pootočení)
+
+Volitelný Vlasovův režim přidává 7. DOF:
+  6: θx' (deplanace / podélná derivace torzního pootočení)
 
 FÁZE A (biaxiál): dvě ohybové roviny jsou zatím DEKUPLOVANÉ (bez Iyz vazby) –
 planar úloha (Fy=Mz=0) dává identické výsledky jako dřívější 4-DOF solver.
@@ -39,6 +42,10 @@ class BeamPoint:
     V_y: float = 0.0    # posouvající síla vodorovná (N)
     M_z: float = 0.0    # ohybový moment kolem osy z (N·mm)
     phi_z: float = 0.0  # ohybové pootočení θz (rad)
+    warping_rate: float = 0.0  # θx' [1/mm]
+    B: float = 0.0       # bimoment E·Iω·θx'' [N·mm²]
+    T_sv: float = 0.0    # Saint-Venantova část krouticího momentu [N·mm]
+    T_w: float = 0.0     # warpingová část krouticího momentu [N·mm]
 
 
 @dataclass
@@ -51,6 +58,7 @@ class Reaction:
     Rx_torsion: float  # torzní reakce (N·mm)
     Ry_force: float = 0.0   # vodorovná silová reakce (N, y) – biaxiál
     Rz_moment: float = 0.0  # momentová reakce kolem z (N·mm) – biaxiál
+    B_warping: float = 0.0  # reakce proti deplanaci = bimoment [N·mm²]
 
 
 @dataclass
@@ -136,6 +144,76 @@ def _k_element(L_e, EA, EIy, EIz, EIyz, GJ, GAs, GAsy, timo):
     return k
 
 
+def _vlasov_torsion_block(L_e, GJ, EIw):
+    """4×4 Vlasovova tuhost pro [θ1, θ1', θ2, θ2'].
+
+    Energie prvku je 1/2 ∫(GJ·θ'² + EIw·θ''²) dx a θ je interpolováno
+    kubickými Hermitovými funkcemi. První člen je Saint-Venantova torze,
+    druhý bráněná deplanace. Matice je přesná pro konstantní GJ/EIw.
+    """
+    L = float(L_e)
+    k_sv = (GJ / (30.0 * L)) * np.array([
+        [36.0, 3.0*L, -36.0, 3.0*L],
+        [3.0*L, 4.0*L**2, -3.0*L, -L**2],
+        [-36.0, -3.0*L, 36.0, -3.0*L],
+        [3.0*L, -L**2, -3.0*L, 4.0*L**2],
+    ])
+    k_w = (EIw / L**3) * np.array([
+        [12.0, 6.0*L, -12.0, 6.0*L],
+        [6.0*L, 4.0*L**2, -6.0*L, 2.0*L**2],
+        [-12.0, -6.0*L, 12.0, -6.0*L],
+        [6.0*L, 2.0*L**2, -6.0*L, 4.0*L**2],
+    ])
+    return k_sv + k_w
+
+
+def _k_element_vlasov(L_e, EA, EIy, EIz, EIyz, GJ, EIw,
+                       GAs, GAsy, timo, warping_active=True):
+    """14×14 prostorový prvek se 7 DOF na uzel.
+
+    Pro průřezy bez fyzikálního warpingu se vloží původní lineární GJ blok a
+    DOF θx' zůstane odpojen; soustava jej následně bezpečně ukotví. Tím se
+    uzavřené/plné průřezy přesně degenerují k Saint-Venantovu modelu.
+    """
+    legacy = _k_element(L_e, EA, EIy, EIz, EIyz, GJ, GAs, GAsy, timo)
+    k = np.zeros((14, 14))
+    old_to_new = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
+    for i, ni in enumerate(old_to_new):
+        for j, nj in enumerate(old_to_new):
+            k[ni, nj] = legacy[i, j]
+    if warping_active:
+        # Nahraď lineární Saint-Venantův blok konzistentním Vlasovovým blokem.
+        torsion_idx = [5, 6, 12, 13]
+        for i in (5, 12):
+            for j in (5, 12):
+                k[i, j] = 0.0
+        kt = _vlasov_torsion_block(L_e, GJ, EIw)
+        for i, ni in enumerate(torsion_idx):
+            for j, nj in enumerate(torsion_idx):
+                k[ni, nj] += kt[i, j]
+    return k
+
+
+def _hermite_torsion(xi, L_e, q):
+    """Vrátí θ, θ', θ'', θ''' z [θ1,θ1',θ2,θ2'] v poloze ξ∈[0,1]."""
+    L = float(L_e)
+    th1, b1, th2, b2 = q
+    n = np.array([1-3*xi**2+2*xi**3,
+                  L*(xi-2*xi**2+xi**3),
+                  3*xi**2-2*xi**3,
+                  L*(-xi**2+xi**3)])
+    d1 = np.array([(-6*xi+6*xi**2)/L,
+                   1-4*xi+3*xi**2,
+                   (6*xi-6*xi**2)/L,
+                   -2*xi+3*xi**2])
+    d2 = np.array([(-6+12*xi)/L**2,
+                   (-4+6*xi)/L,
+                   (6-12*xi)/L**2,
+                   (-2+6*xi)/L])
+    d3 = np.array([12/L**3, 6/L**2, -12/L**3, 6/L**2])
+    return (float(n @ q), float(d1 @ q), float(d2 @ q), float(d3 @ q))
+
+
 def _iie_shapes(xi, L_e, Phi):
     """IIE (Reddy) tvarové funkce: N pro průhyb, H pro pootočení; konzistentní
     s Timoshenkem, pro Φ=0 přesně klasické Hermitovy (Euler-Bernoulli)."""
@@ -159,9 +237,14 @@ def _recover_beam(elements, U, state, factors, timo):
     all_points = []
     elem_results = []
     NG = 201  # bodů jemné mřížky pro integraci zatížení v prvku
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
+    ndpn = 7 if vlasov else 6
+    element_dof = 2 * ndpn
 
-    def q_total_at(sg):
-        """Hodnota spojitého zatížení (×mult) v globální poloze sg [N/mm]."""
+    def q_total_at(sg, horiz=False):
+        """Hodnota spojitého zatížení (×mult) v globální poloze sg [N/mm].
+        `horiz=False` → svislá složka q (rovina x–z), True → vodorovná qy (x–y)."""
+        a1, a2 = ("qy1", "qy2") if horiz else ("q1", "q2")
         q = 0.0
         for ld in state.loads:
             if ld.type != "distributed":
@@ -170,8 +253,9 @@ def _recover_beam(elements, U, state, factors, timo):
                 lm = _load_multiplier(state, ld, factors)
                 if lm == 0:
                     continue
+                v1 = getattr(ld, a1, 0.0); v2 = getattr(ld, a2, 0.0)
                 dlen = ld.x2 - ld.x1
-                qv = ld.q1 + (ld.q2 - ld.q1)*(sg - ld.x1)/dlen if dlen > 1e-12 else ld.q1
+                qv = v1 + (v2 - v1)*(sg - ld.x1)/dlen if dlen > 1e-12 else v1
                 q += qv * lm
         return q
 
@@ -183,25 +267,25 @@ def _recover_beam(elements, U, state, factors, timo):
         # skutečné lokální posuny nejsou totožné se sdíleným globálním DOF uzlu;
         # zrekonstruujeme je z rovnováhy Krr·ur = fr − Kra·ua. Bez toho zatížení
         # na prvku za kloubem kontaminuje reakce a koncový moment sousedního pole.
-        ue = np.array([
-            U[sd+0], U[sd+1], U[sd+2], U[sd+3], U[sd+4], U[sd+5],
-            U[ed+0], U[ed+1], U[ed+2], U[ed+3], U[ed+4], U[ed+5],
-        ], dtype=float)
+        ue = np.array([U[sd+i] for i in range(ndpn)]
+                      + [U[ed+i] for i in range(ndpn)], dtype=float)
         released = elem.get("released", [])
         if released:
             active = elem["release_active"]
-            fr = elem.get("equiv_load", np.zeros(12))[released]
+            fr = elem.get("equiv_load", np.zeros(element_dof))[released]
             ua = ue[active]
             ue[released] = elem["release_krr_inv"] @ (
                 fr - elem["release_kra"] @ ua
             )
-        # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx
+        # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx [6:θx' ve Vlasovově režimu]
         u1, w1, phi1, v1, phiz1, th1 = ue[:6]
-        u2, w2, phi2, v2, phiz2, th2 = ue[6:]
+        u2, w2, phi2, v2, phiz2, th2 = ue[ndpn:ndpn+6]
+        beta1 = ue[6] if vlasov else (th2-th1)/L_e
+        beta2 = ue[ndpn+6] if vlasov else beta1
 
-        EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, GAs_e, GAsy_e = (
+        EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, EIw_e, GAs_e, GAsy_e = (
             elem["EA"], elem["EIy"], elem["EIz"], elem["EIyz"],
-            elem["GJ"], elem["GAs"], elem["GAsy"])
+            elem["GJ"], elem.get("EIw", 0.0), elem["GAs"], elem["GAsy"])
         Phi_e = (12*EIy_e)/(GAs_e*L_e**2) if timo else 0.0
         Phi_z = (12*EIz_e)/(GAsy_e*L_e**2) if timo else 0.0
         kb = _bending_block(EIy_e, GAs_e, L_e, timo)      # rovina x-z (w, θy)
@@ -210,22 +294,26 @@ def _recover_beam(elements, U, state, factors, timo):
         ub = np.array([w1, phi1, w2, phi2])
         ub2 = np.array([v1, phiz1, v2, phiz2])
 
-        # ekvivalentní uzlové síly od spojitého zatížení na CELÉM prvku (jen svislá
-        # rovina – vodorovné spojité zatížení fáze A neuvažuje)
+        # ekvivalentní uzlové síly od spojitého zatížení na CELÉM prvku –
+        # obě roviny (feq = svislá [Fz1,My1,Fz2,My2], feq2 = vodorovná)
         feq = np.zeros(4)
+        feq2 = np.zeros(4)
         for ld in state.loads:
             lm = _load_multiplier(state, ld, factors)
             if lm == 0 or ld.type != "distributed":
                 continue
             dlen = ld.x2 - ld.x1
-            def qval(x):
-                return ld.q1 + (ld.q2-ld.q1)*(x-ld.x1)/dlen if dlen > 1e-12 else ld.q1
+            def qval(x, v1, v2):
+                return v1 + (v2-v1)*(x-ld.x1)/dlen if dlen > 1e-12 else v1
             a = max(elem["xs"], ld.x1)
             b = min(elem["xe"], ld.x2)
             if b - a > 1e-9 and abs(b - a - L_e) < 1e-6:
-                qA, qB = qval(a)*lm, qval(b)*lm
-                feq += np.array([(L_e/20)*(7*qA+3*qB), (L_e**2/60)*(3*qA+2*qB),
-                                 (L_e/20)*(3*qA+7*qB), -(L_e**2/60)*(2*qA+3*qB)])
+                def _trapez(v1, v2):
+                    qA, qB = qval(a, v1, v2)*lm, qval(b, v1, v2)*lm
+                    return np.array([(L_e/20)*(7*qA+3*qB), (L_e**2/60)*(3*qA+2*qB),
+                                     (L_e/20)*(3*qA+7*qB), -(L_e**2/60)*(2*qA+3*qB)])
+                feq += _trapez(ld.q1, ld.q2)
+                feq2 += _trapez(getattr(ld, "qy1", 0.0), getattr(ld, "qy2", 0.0))
 
         # teplotní gradient: stejný ekvivalentní moment jako při sestavení, aby
         # koncové momenty (a tím M(x)) obsahovaly teplotní příspěvek
@@ -241,23 +329,39 @@ def _recover_beam(elements, U, state, factors, timo):
         Mi = 0.0 if elem["release_start"] else -fend[1]
         Mj = 0.0 if elem["release_end"] else fend[3]
 
-        # vodorovná rovina (fáze A: jen uzlová Fy/Mz, žádné spojité/teplotní)
-        fend2 = kb2 @ ub2 + cpl2      # [Fy1, Mz1, Fy2, Mz2]
+        # vodorovná rovina (x–y) – včetně spojitého zatížení qy
+        fend2 = kb2 @ ub2 + cpl2 - feq2      # [Fy1, Mz1, Fy2, Mz2]
         Mi2 = 0.0 if elem["release_start"] else -fend2[1]
         Mj2 = 0.0 if elem["release_end"] else fend2[3]
-        Vi2 = (Mj2 - Mi2)/L_e if L_e > 1e-12 else 0.0   # V_y konstantní (bez spoj. zat.)
 
         # jemná mřížka pro kumulativní integrály zatížení (lokální s = 0..L)
         sgrid = np.linspace(0.0, L_e, NG)
+        ds_g = np.diff(sgrid)
+
+        def _cum(qg):
+            """(∫q ds, ∫s·q ds) kumulativně po mřížce."""
+            a0 = np.concatenate([[0.0], np.cumsum((qg[1:]+qg[:-1])/2*ds_g)])
+            a1 = np.concatenate([[0.0], np.cumsum(
+                (qg[1:]*sgrid[1:]+qg[:-1]*sgrid[:-1])/2*ds_g)])
+            return a0, a1
+
         qgrid = np.array([q_total_at(elem["xs"] + s) for s in sgrid])
-        A0 = np.concatenate([[0.0], np.cumsum((qgrid[1:]+qgrid[:-1])/2*np.diff(sgrid))])      # ∫q ds
-        A1 = np.concatenate([[0.0], np.cumsum((qgrid[1:]*sgrid[1:]+qgrid[:-1]*sgrid[:-1])/2*np.diff(sgrid))])  # ∫s·q ds
+        A0, A1 = _cum(qgrid)
         IL = L_e*A0[-1] - A1[-1]    # ∫(L−s)q ds
         Vi = (Mj - Mi - IL)/L_e if L_e > 1e-12 else 0.0
 
+        qygrid = np.array([q_total_at(elem["xs"] + s, horiz=True) for s in sgrid])
+        if np.any(np.abs(qygrid) > 1e-15):
+            B0, B1 = _cum(qygrid)
+            ILy = L_e*B0[-1] - B1[-1]
+        else:                        # bez vodorovného q → nulové integrály
+            B0 = B1 = np.zeros_like(sgrid)
+            ILy = 0.0
+        Vi2 = (Mj2 - Mi2 - ILy)/L_e if L_e > 1e-12 else 0.0
+
         # osová síla: mechanické přetvoření = celkové − teplotní (α·ΔT)
         N = (EA_e/L_e)*(u2-u1) - elem.get("N_th", 0.0)
-        Mk = (GJ_e/L_e)*(th2-th1)
+        Mk_legacy = (GJ_e/L_e)*(th2-th1)
 
         local_points = []
         nsteps = 100
@@ -272,7 +376,20 @@ def _recover_beam(elements, U, state, factors, timo):
             n1, n2, n3, n4, h1, h2, h3, h4 = _iie_shapes(xi, L_e, Phi_z)
             v = n1*v1 + n2*phiz1 + n3*v2 + n4*phiz2
             phiz = h1*v1 + h2*phiz1 + h3*v2 + h4*phiz2
-            theta = th1 + (th2-th1)*xi
+            if vlasov and elem.get("warping_active", False):
+                theta, beta, theta2, theta3 = _hermite_torsion(
+                    xi, L_e, np.array([th1, beta1, th2, beta2]))
+                T_sv = GJ_e * beta
+                T_w = -EIw_e * theta3
+                B = EIw_e * theta2
+                Mk = T_sv + T_w
+            else:
+                theta = th1 + (th2-th1)*xi
+                beta = (th2-th1)/L_e
+                T_sv = Mk_legacy
+                T_w = 0.0
+                B = 0.0
+                Mk = Mk_legacy
             u = u1 + (u2-u1)*xi          # osový posun (lineární tvarová funkce)
 
             a0 = float(np.interp(xloc, sgrid, A0))
@@ -280,11 +397,14 @@ def _recover_beam(elements, U, state, factors, timo):
             I1 = xloc*a0 - a1           # ∫₀ˣ(x−s)q ds
             M = Mi + Vi*xloc + I1
             V = Vi + a0
-            M_z = Mi2 + Vi2*xloc        # vodorovná rovina (bez spojitého zatížení)
-            V_y = Vi2
+            b0 = float(np.interp(xloc, sgrid, B0))
+            b1 = float(np.interp(xloc, sgrid, B1))
+            M_z = Mi2 + Vi2*xloc + (xloc*b0 - b1)   # vodorovná rovina vč. qy
+            V_y = Vi2 + b0
 
             local_points.append(BeamPoint(elem["xs"]+xloc, N, V, M, Mk, w, phi, theta,
-                                          u=u, v=v, V_y=V_y, M_z=M_z, phi_z=phiz))
+                                          u=u, v=v, V_y=V_y, M_z=M_z, phi_z=phiz,
+                                          warping_rate=beta, B=B, T_sv=T_sv, T_w=T_w))
 
         elem_results.append({"id": elem["id"], "xs": elem["xs"], "xe": elem["xe"],
                              "points": local_points, "section": elem["section"]})
@@ -300,6 +420,9 @@ def solve_beam(state, factors=None) -> SolverResult:
     libovolnou kombinaci/stav bez mutace state (pro Load Case Builder)."""
     material = state.material()
     E, G = material.E, material.G
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
+    ndpn = 7 if vlasov else 6
+    element_dof = 2 * ndpn
 
     length = state.length
 
@@ -321,6 +444,7 @@ def solve_beam(state, factors=None) -> SolverResult:
         Iz = cs.Iz
         Iyz = getattr(cs, "Iyz", 0.0)
         J = cs.IT
+        Iw = max(float(getattr(cs, "Iw", 0.0) or 0.0), 0.0)
         kappa = cs.kappa
         As = cs.Asz if cs.Asz > 0 else A * kappa
         Asy = cs.Asy if getattr(cs, "Asy", 0.0) > 0 else A * kappa
@@ -360,8 +484,14 @@ def solve_beam(state, factors=None) -> SolverResult:
             ESalpha_c = 0.0
             EIalpha_c = None
             thermal_z_na = float(getattr(cs, "cz_raw", 0.0) or 0.0)
-        return (EA, EIy, EIz, EIyz, GJ, GAs, GAsy, cs, EAalpha_c,
-                ESalpha_c, EIalpha_c, thermal_z_na)
+        # EIw je přesné pouze z FEM průřezu. U různomateriálového kompozitu je
+        # přímo integrováno ∫E(y,z)·ω²dA; homogenní řez se redukuje na E·Iω.
+        EIw_w = getattr(w, "EIw", None) if w is not None else None
+        EIw = EIw_w if EIw_w is not None else E_e * Iw
+        warping_active = (getattr(cs, "torsion_model", "open") == "open"
+                          and Iw > 1e-12)
+        return (EA, EIy, EIz, EIyz, GJ, EIw, GAs, GAsy, cs, EAalpha_c,
+                ESalpha_c, EIalpha_c, thermal_z_na, warping_active)
 
     # ── 1. Diskretizace ──
     xs = {0.0, float(length)}
@@ -420,9 +550,9 @@ def solve_beam(state, factors=None) -> SolverResult:
             densified.append(xa + (xb-xa)*k/n_sub)
     filtered = densified
 
-    nodes = [{"id": i, "x": x, "dof": i*6} for i, x in enumerate(filtered)]
+    nodes = [{"id": i, "x": x, "dof": i*ndpn} for i, x in enumerate(filtered)]
     num_nodes = len(nodes)
-    num_dof = num_nodes * 6
+    num_dof = num_nodes * ndpn
 
     def node_at(x):
         for nd in nodes:
@@ -436,8 +566,9 @@ def solve_beam(state, factors=None) -> SolverResult:
         ns, ne = nodes[i], nodes[i+1]
         has_hinge = any(abs(h.x - ns["x"]) < 1e-3 for h in state.hinges)
         x_mid = (ns["x"] + ne["x"]) / 2
-        (EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, GAs_e, GAsy_e, cs_e,
-         EAalpha_c, ESalpha_c, EIalpha_c, thermal_z_na) = elem_props(x_mid)
+        (EA_e, EIy_e, EIz_e, EIyz_e, GJ_e, EIw_e, GAs_e, GAsy_e, cs_e,
+         EAalpha_c, ESalpha_c, EIalpha_c, thermal_z_na,
+         warping_active) = elem_props(x_mid)
         mat_e = resolver.material_at(x_mid)
         alpha_e = float(getattr(mat_e, "alpha", 0.0) or 0.0)
         # teplotní tuhosti: složené z w (bimetal), homogenní EA·α (ESα=0)
@@ -449,10 +580,11 @@ def solve_beam(state, factors=None) -> SolverResult:
             "release_start": has_hinge, "release_end": False,
             "xs": ns["x"], "xe": ne["x"],
             "EA": EA_e, "EIy": EIy_e, "EIz": EIz_e, "EIyz": EIyz_e, "GJ": GJ_e,
+            "EIw": EIw_e, "warping_active": warping_active,
             "GAs": GAs_e, "GAsy": GAsy_e, "section": cs_e,
             "alpha": alpha_e, "EAalpha": EAalpha_e, "ESalpha": ESalpha_c,
             "EIalpha": EIalpha_e, "thermal_z_na": thermal_z_na,
-            "equiv_load": np.zeros(12),
+            "equiv_load": np.zeros(element_dof),
         })
 
     K = np.zeros((num_dof, num_dof))
@@ -463,17 +595,24 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     for elem in elements:
         L_e = elem["L"]
-        k_e = _k_element(L_e, elem["EA"], elem["EIy"], elem["EIz"], elem["EIyz"],
-                         elem["GJ"], elem["GAs"], elem["GAsy"], timo)
+        if vlasov:
+            k_e = _k_element_vlasov(
+                L_e, elem["EA"], elem["EIy"], elem["EIz"], elem["EIyz"],
+                elem["GJ"], elem["EIw"], elem["GAs"], elem["GAsy"], timo,
+                elem["warping_active"],
+            )
+        else:
+            k_e = _k_element(L_e, elem["EA"], elem["EIy"], elem["EIz"], elem["EIyz"],
+                             elem["GJ"], elem["GAs"], elem["GAsy"], timo)
 
         # kloub = uvolnění ohybových pootočení (obě roviny) na daném konci
         released = []
         if elem["release_start"]:
             released += [2, 4]     # θy, θz na začátku
         if elem["release_end"]:
-            released += [8, 10]    # θy, θz na konci
+            released += [ndpn+2, ndpn+4]    # θy, θz na konci
         if released:
-            active = [i for i in range(12) if i not in released]
+            active = [i for i in range(element_dof) if i not in released]
             kii = k_e[np.ix_(active, active)]
             kir = k_e[np.ix_(active, released)]
             kri = k_e[np.ix_(released, active)]
@@ -481,7 +620,7 @@ def solve_beam(state, factors=None) -> SolverResult:
             try:
                 krr_inv = np.linalg.inv(krr)
                 kcond = kii - kir @ krr_inv @ kri
-                k_new = np.zeros((12, 12))
+                k_new = np.zeros((element_dof, element_dof))
                 for r, ai in enumerate(active):
                     for c, aj in enumerate(active):
                         k_new[ai, aj] = kcond[r, c]
@@ -507,17 +646,16 @@ def solve_beam(state, factors=None) -> SolverResult:
             released_idx = list(released)
             fa = f_e[active_idx]
             fr = f_e[released_idx]
-            f_new = np.zeros(12)
+            f_new = np.zeros(element_dof)
             f_new[active_idx] = fa - elem["release_kir"] @ elem["release_krr_inv"] @ fr
             return f_new
 
         elem["condense_load"] = condense_element_load
 
         ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
-        l2g = [ds+0, ds+1, ds+2, ds+3, ds+4, ds+5,
-               de+0, de+1, de+2, de+3, de+4, de+5]
-        for r in range(12):
-            for c in range(12):
+        l2g = [ds+i for i in range(ndpn)] + [de+i for i in range(ndpn)]
+        for r in range(element_dof):
+            for c in range(element_dof):
                 K[l2g[r], l2g[c]] += k_e[r, c]
 
     # ── zatížení ──
@@ -548,19 +686,28 @@ def solve_beam(state, factors=None) -> SolverResult:
                 oe = min(elem["xe"], ld.x2)
                 if oe - os_ > 1e-3:
                     dlen = ld.x2 - ld.x1
-                    def qval(x):
-                        return ld.q1 + (ld.q2-ld.q1)*(x-ld.x1)/dlen
-                    qA, qB = qval(os_), qval(oe)
+                    def qval(x, v1, v2):
+                        return v1 + (v2-v1)*(x-ld.x1)/dlen if dlen > 1e-12 else v1
                     L_e = elem["L"]
-                    f_e = np.zeros(12)
+                    f_e = np.zeros(element_dof)
+                    # svislá rovina (w, θy) – DOF 1,2 / 7,8
+                    qA, qB = qval(os_, ld.q1, ld.q2), qval(oe, ld.q1, ld.q2)
                     f_e[1] = (L_e/20)*(7*qA+3*qB)*mult
                     f_e[2] = (L_e**2/60)*(3*qA+2*qB)*mult
-                    f_e[7] = (L_e/20)*(3*qA+7*qB)*mult
-                    f_e[8] = -(L_e**2/60)*(2*qA+3*qB)*mult
+                    f_e[ndpn+1] = (L_e/20)*(3*qA+7*qB)*mult
+                    f_e[ndpn+2] = -(L_e**2/60)*(2*qA+3*qB)*mult
+                    # vodorovná rovina (v, θz) – DOF 3,4 na obou uzlech
+                    qyA = qval(os_, getattr(ld, "qy1", 0.0), getattr(ld, "qy2", 0.0))
+                    qyB = qval(oe, getattr(ld, "qy1", 0.0), getattr(ld, "qy2", 0.0))
+                    if abs(qyA) > 1e-15 or abs(qyB) > 1e-15:
+                        f_e[3] = (L_e/20)*(7*qyA+3*qyB)*mult
+                        f_e[4] = (L_e**2/60)*(3*qyA+2*qyB)*mult
+                        f_e[ndpn+3] = (L_e/20)*(3*qyA+7*qyB)*mult
+                        f_e[ndpn+4] = -(L_e**2/60)*(2*qyA+3*qyB)*mult
                     elem["equiv_load"] += f_e
                     f_c = elem["condense_load"](f_e)
                     ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
-                    l2g = [ds+i for i in range(6)] + [de+i for i in range(6)]
+                    l2g = [ds+i for i in range(ndpn)] + [de+i for i in range(ndpn)]
                     for local, glob in enumerate(l2g):
                         F[glob] += f_c[local]
 
@@ -596,22 +743,22 @@ def solve_beam(state, factors=None) -> SolverResult:
                 + grad*(elem["ESalpha"] + (z_na-z_mid)*elem["EAalpha"]))
         elem["N_th"] = N_th
         if abs(N_th) > 1e-12:
-            f_e = np.zeros(12)
-            f_e[0], f_e[6] = -N_th, +N_th
+            f_e = np.zeros(element_dof)
+            f_e[0], f_e[ndpn] = -N_th, +N_th
             elem["equiv_load"] += f_e
             f_c = elem["condense_load"](f_e)
             ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
-            for local, glob in enumerate([ds+i for i in range(6)] + [de+i for i in range(6)]):
+            for local, glob in enumerate([ds+i for i in range(ndpn)] + [de+i for i in range(ndpn)]):
                 F[glob] += f_c[local]
         M_th = (elem["ESalpha"] * dT_e
                 + grad*(elem["EIalpha"] + (z_na-z_mid)*elem["ESalpha"]))
         if abs(M_th) > 1e-12:
-            f_e = np.zeros(12)
-            f_e[2], f_e[8] = -M_th, +M_th
+            f_e = np.zeros(element_dof)
+            f_e[2], f_e[ndpn+2] = -M_th, +M_th
             elem["equiv_load"] += f_e
             f_c = elem["condense_load"](f_e)
             ds, de = elem["ns"]["dof"], elem["ne"]["dof"]
-            for local, glob in enumerate([ds+i for i in range(6)] + [de+i for i in range(6)]):
+            for local, glob in enumerate([ds+i for i in range(ndpn)] + [de+i for i in range(ndpn)]):
                 F[glob] += f_c[local]
         elem["M_th"] = M_th
 
@@ -629,10 +776,12 @@ def solve_beam(state, factors=None) -> SolverResult:
         hold_y = getattr(sup, "restrain_y", None)
         hold_rz = getattr(sup, "restrain_rz", None)
         hold_tx = getattr(sup, "restrain_torsion", None)
+        hold_warp = getattr(sup, "restrain_warping", None)
         hold_y = True if hold_y is None else bool(hold_y)
         hold_rz = (sup.type == "fixed") if hold_rz is None else bool(hold_rz)
         hold_tx = (sup.type in ("fixed", "pin")) if hold_tx is None else bool(hold_tx)
-        # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx. Vodorovný příčný posun v (d+3) drží
+        hold_warp = (sup.type == "fixed") if hold_warp is None else bool(hold_warp)
+        # DOF: 0:u 1:w 2:θy 3:v 4:θz 5:θx [6:θx']. Vodorovný příčný posun v (d+3) drží
         # každá podpora (fáze A: laterální podepření v obou příčných rovinách;
         # v je dekuplované od w, takže planar výsledek se nemění), vetknutí drží
         # navíc θz (d+4). Iyz spřažení a přesná 3D sémantika podpor = fáze B/C.
@@ -655,6 +804,8 @@ def solve_beam(state, factors=None) -> SolverResult:
                 constrained.add(d+4)
             if hold_tx:
                 constrained.add(d+5)
+            if vlasov and hold_warp and K[d+6, d+6] > 0.0:
+                constrained.add(d+6)
             continue
         # tuhé typy – svislý DOF: vůle (gap, nelineární) > předepsaný posun
         # (settlement) > tuhý (0). Vůle a settlement se vylučují (gap má přednost).
@@ -677,6 +828,8 @@ def solve_beam(state, factors=None) -> SolverResult:
                 constrained.add(d+4)
             if hold_tx:
                 constrained.add(d+5)
+            if vlasov and hold_warp and K[d+6, d+6] > 0.0:
+                constrained.add(d+6)
             _hold_vertical(d+1)
         elif sup.type == "pin":
             constrained.add(d)
@@ -686,6 +839,8 @@ def solve_beam(state, factors=None) -> SolverResult:
                 constrained.add(d+4)
             if hold_tx:
                 constrained.add(d+5)
+            if vlasov and hold_warp and K[d+6, d+6] > 0.0:
+                constrained.add(d+6)
             _hold_vertical(d+1)
         elif sup.type == "roller":
             if hold_y:
@@ -694,6 +849,8 @@ def solve_beam(state, factors=None) -> SolverResult:
                 constrained.add(d+4)
             if hold_tx:
                 constrained.add(d+5)
+            if vlasov and hold_warp and K[d+6, d+6] > 0.0:
+                constrained.add(d+6)
             rad = np.radians(sup.angle or 0.0)
             s_, c_ = float(np.sin(rad)), float(np.cos(rad))
             if abs(s_) < 1e-5:
@@ -708,7 +865,7 @@ def solve_beam(state, factors=None) -> SolverResult:
     # mód pouze zkalibrujeme; zatížený mód je skutečný mechanismus.
     lateral_rows = []
     for dof in constrained:
-        nd_i, local = divmod(dof, 6)
+        nd_i, local = divmod(dof, ndpn)
         if local == 3:
             lateral_rows.append([1.0, nodes[nd_i]["x"]/max(length, 1.0)])
         elif local == 4:
@@ -716,7 +873,7 @@ def solve_beam(state, factors=None) -> SolverResult:
     for dof, stiffness in springs:
         if stiffness <= 0.0:
             continue
-        nd_i, local = divmod(dof, 6)
+        nd_i, local = divmod(dof, ndpn)
         if local == 3:
             lateral_rows.append([1.0, nodes[nd_i]["x"]/max(length, 1.0)])
         elif local == 4:
@@ -729,7 +886,7 @@ def solve_beam(state, factors=None) -> SolverResult:
             d0 = int(nd["dof"])
             lateral_moment += nd["x"]*F[d0+3] + F[d0+4]
         resultant = np.array([
-            float(np.sum(F[3::6])),
+            float(np.sum(F[3::ndpn])),
             float(lateral_moment)/max(length, 1.0),
         ])
         _u, _s, vh = np.linalg.svd(lateral_matrix, full_matrices=True)
@@ -753,21 +910,29 @@ def solve_beam(state, factors=None) -> SolverResult:
             if lateral_rank == 2:
                 break
 
-    if not any(dof % 6 == 5 for dof in constrained) and nodes:
+    if not any(dof % ndpn == 5 for dof in constrained) and nodes:
         # Referenční fixace rigidního pootočení je legitimní jen pro vyrovnané
         # torzní zatížení. Nevyrovnaný moment bez vazby je mechanismus, nikoli
         # skryté vetknutí prvního uzlu.
-        torque_resultant = float(np.sum(F[5::6]))
+        torque_resultant = float(np.sum(F[5::ndpn]))
         if abs(torque_resultant) > 1e-9 * (float(np.max(np.abs(F))) + 1.0):
             return SolverResult([], [], [], False, rep_section,
                                 "Nestabilní torzní mód: chybí torzní vazba.")
         constrained.add(nodes[0]["dof"]+5)
-    if not any(dof % 6 == 0 for dof in constrained) and nodes and not skew_rollers:
-        axial_resultant = float(np.sum(F[0::6]))
+    if not any(dof % ndpn == 0 for dof in constrained) and nodes and not skew_rollers:
+        axial_resultant = float(np.sum(F[0::ndpn]))
         if abs(axial_resultant) > 1e-9 * (float(np.max(np.abs(F))) + 1.0):
             return SolverResult([], [], [], False, rep_section,
                                 "Nestabilní axiální mód: chybí axiální vazba.")
         constrained.add(nodes[0]["dof"]+0)
+    if vlasov:
+        # Uzavřené/plné úseky mají odpojené θx' DOF. Ukotvení pouze nulových
+        # řádků odstraní algebraickou singularitu a nijak nezmění GJ řešení.
+        diag_scale = max(float(np.max(np.abs(np.diag(K)))), 1.0)
+        for nd in nodes:
+            beta_dof = int(nd["dof"]) + 6
+            if abs(float(K[beta_dof, beta_dof])) <= 1e-14 * diag_scale:
+                constrained.add(beta_dof)
     # v-rovina (v,θz) zrcadlí w-rovinu (v držené u každé podpory, θz u vetknutí)
     # → stabilní právě když je stabilní svislá rovina; samostatný fallback netřeba.
 
@@ -852,8 +1017,11 @@ def solve_beam(state, factors=None) -> SolverResult:
         if not nd:
             continue
         d = nd["dof"]
-        reactions.append(Reaction(sup.x, sup.type, R[d], R[d+1], R[d+2], R[d+5],
-                                  Ry_force=R[d+3], Rz_moment=R[d+4]))
+        reactions.append(Reaction(
+            sup.x, sup.type, R[d], R[d+1], R[d+2], R[d+5],
+            Ry_force=R[d+3], Rz_moment=R[d+4],
+            B_warping=R[d+6] if vlasov else 0.0,
+        ))
 
     # ── VVÚ + deformace (po prvcích, statika) ──
     all_points, elem_results = _recover_beam(elements, U, state, factors, timo)

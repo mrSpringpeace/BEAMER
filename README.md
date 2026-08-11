@@ -10,6 +10,8 @@ reserve-factor assessment.
 
 Python · PySide6 · NumPy · Matplotlib · SciPy.
 
+Current release: **1.41**.
+
 [![tests](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml/badge.svg)](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml)
 
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
@@ -29,8 +31,9 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 
 ## Features
 
-- **Beam solver** — direct stiffness method, **6 DOF per node** (axial *u*, two
-  transverse deflections *w*, *v*, two bending rotations, torsion). Handles
+- **Beam solver** — direct stiffness method with the backward-compatible
+  **6-DOF Saint-Venant model** and an optional **7th warping DOF** for Vlasov
+  torsion. Handles
   statically indeterminate beams; choice of **Euler–Bernoulli** or **Timoshenko**
   theory. The mesh is refined automatically for accurate deflection.
 - **Biaxial bending** — loads in both transverse planes (vertical *Fz* and
@@ -38,8 +41,8 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
   coupling** through the product of inertia *Iyz* for unsymmetric/rotated
   sections. A purely vertical (planar) problem behaves exactly as before.
 - **Internal forces & deformations** — axial force *N*, shears *V_z*/*V_y*,
-  bending moments *M_y*/*M_z*, torsion *Mk*, deflections *w*/*v* along the beam,
-  with extrema marked on the diagrams.
+  bending moments *M_y*/*M_z*, torsion *Mk*, Saint-Venant/warping torque,
+  bimoment, twist and deflections *w*/*v* along the beam, with extrema marked.
 - **Segment-based model** — the beam is built from segments; each segment has
   its own **length**, **material** (from the library) and **cross-section**
   (including tapered transitions). The solver uses per-segment *E*, *G* and
@@ -58,7 +61,8 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
   gyration, section moduli and plastic moduli are reported as well.
 - **Stress & assessment** — normal and shear stress, von Mises equivalent
   stress, and the **reserve factor (RF)** against yield and ultimate strength
-  along the entire beam (RF ≥ 1 means the section passes).
+  along the entire beam (RF ≥ 1 means the section passes). An optional exact
+  2D FEM shear field is available in addition to the legacy shear model.
 - **Supports & loads** — pin / roller (at an angle) / fixed, plus **elastic
   springs** and, for rigid supports, a **clearance** (unilateral contact) or a
   **prescribed settlement**. Point forces, moments, torsion, distributed loads
@@ -70,10 +74,13 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
   buckling-length factor μ) and a **system eigenvalue buckling analysis** (phase
   2): the critical load factor and mode shape from the geometric stiffness
   matrix, with the effective length following from the boundary conditions.
+- **Local stability** — elastic plate buckling and Needham/Gerard crippling for
+  parameterized I/T/L/U/box thin-walled sections with explicit wall topology.
 - **Material library** — common aerospace alloys and steel; custom materials
   with arbitrary *E*, *G*, *ν*, *Re*, *Rm*, *ρ*.
-- **Files & export** — human-readable JSON projects, text and **DOCX** report
-  export, and PNG export of the diagrams.
+- **Files & export** — human-readable JSON projects; polygon import from text
+  coordinates and a planar IGES/IGS subset; text and **DOCX** reports; PNG
+  export of diagrams.
 - **Bilingual UI** — English / Czech (switchable in Settings).
 
 ---
@@ -109,7 +116,7 @@ To package BEAMER into a single standalone `.exe`, see
 ## Documentation
 
 A full user manual is available:
-[manual/BEAMER_manual_EN_v1.17.docx](manual/BEAMER_manual_EN_v1.17.docx).
+[manual/BEAMER_manual_EN_v1.41.docx](manual/BEAMER_manual_EN_v1.41.docx).
 
 ## Tests
 

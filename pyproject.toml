@@ -17,6 +17,8 @@ files = [
     "beamer/composite_fem.py",
     "beamer/solver.py",
     "beamer/analysis.py",
+    "beamer/local_stability.py",
+    "beamer/section_import.py",
     "beamer/nos_io.py",
     "beamer/csv_export.py",
 ]

@@ -16,6 +16,7 @@ SectionType = Literal[
     "polygon", "direct", "construction",
 ]
 Theory = Literal["euler-bernoulli", "timoshenko"]
+TorsionTheory = Literal["saint-venant", "vlasov"]
 
 
 @dataclass
@@ -50,6 +51,7 @@ class Support:
     restrain_y: Optional[bool] = None       # vodorovný příčný posun v
     restrain_rz: Optional[bool] = None      # pootočení kolem z
     restrain_torsion: Optional[bool] = None # pootočení kolem x
+    restrain_warping: Optional[bool] = None # deplanace θx' (jen Vlasov; None = dle typu)
     spring_y: float = 0.0                   # vodorovná pružina [N/mm]
     spring_rz: float = 0.0                  # pružina kolem z [N·mm/rad]
 
@@ -88,8 +90,10 @@ class Load:
     # spojité
     x1: float = 0.0
     x2: float = 0.0
-    q1: float = 0.0          # N/mm (svislé, +nahoru)
+    q1: float = 0.0          # N/mm (svislé, +nahoru; rovina x–z)
     q2: float = 0.0
+    qy1: float = 0.0         # N/mm (vodorovné, +y; rovina x–y) – biaxiál
+    qy2: float = 0.0
     # teplotní zatížení (type "thermal"): rovnoměrné ΔT na [x1,x2]
     dT: float = 0.0          # změna teploty [°C] (+ = ohřev) – rovnoměrná složka → osová dilatace
     dT_grad: float = 0.0     # gradient přes výšku [°C]: T(horní vlákno) − T(dolní) → křivost/ohyb
@@ -155,6 +159,9 @@ class SectionSegment:
     material_id: Optional[str] = None  # odkaz na materiál v knihovně; None = globální
     property_id: Optional[str] = None  # odkaz na Property (PID); None = inline (sec1/material_id)
     buckling_mu: float = 1.0           # součinitel vzpěrné délky μ (L_vzpěr = μ·L_úseku)
+    # Rozteč skutečných příčných podpor stěny pro lokální boulení [mm]. None =
+    # konzervativní dlouhá deska; délka úseku nosníku se za podporu nepovažuje.
+    local_buckling_length: Optional[float] = None
 
     @property
     def tapered(self) -> bool:
@@ -213,7 +220,12 @@ class ProjectState:
     rf_basis: str = "min"             # řídicí RF: "min" | "yield" (Re) | "ultimate" (Rm)
     sigma_red_mode: str = "exact"     # σ_red: "exact" (skutečné max von Mises po řezu)
                                       #        | "combined" (konzervativní √(σ_max²+3τ_max²))
+    tau_mode: str = "conservative"    # skládání smyku: "conservative" (|τ_V|+|τ_t|,
+                                      #   Žuravskij – výchozí, jako dosud)
+                                      # | "exact" (plné 2D pole Pilkey Ψ/Φ, vektorově;
+                                      #   vyžaduje FEM průřezu → build_section(exact=True))
     theory: Theory = "euler-bernoulli"
+    torsion_theory: TorsionTheory = "saint-venant"  # výchozí zachovává staré projekty
     selected_active_combination_id: str = ""
 
     @property

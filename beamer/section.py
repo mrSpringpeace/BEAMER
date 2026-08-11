@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 import numpy as np
 
+from .local_stability import PlateWall
+
 
 # ═══════════════════════════════════════════════════════════
 #  GEOMETRIE – vrstvy pro kruh
@@ -318,11 +320,20 @@ class CrossSection:
         self.fem_failure = ""
         self.fem_error_history: list[dict] = []
         self.fem_element_order = ""
+        # přesné smykové pole (jen po FEM): dict s poli coords/t_vy/t_vz/t_tor
+        self.shear_field = None
+        # Vlasovovo pole: centroidální ω_n/∇χ a uzlové extrémy ω_n
+        self.warping_field = None
         self.fem_error_estimate: float | None = None
         self.geometry_inferred = False
         self.strength_available = True
         self.stability_available = True
         self.analysis_note = ""
+        # Autoritativní rozklad parametrického tenkostěnného profilu na desky.
+        # Obecný polygon/konstrukční tvar zůstává prázdný: spojení hran nelze
+        # spolehlivě odvodit pouze z obrysu.
+        self.local_walls: list[PlateWall] = []
+        self.local_stability_note = "Topologie stěn není pro tento průřez dostupná."
         self._circle_r_out = 0.0
         self._circle_r_in = 0.0
         self.valid = False
@@ -959,16 +970,30 @@ class CrossSection:
         z = z_mm/1e3
         y = y_mm/1e3
         Iy = self.Iy/1e12; Iz = self.Iz/1e12; A = self.A/1e6
+        Iyz = getattr(self, "Iyz", 0.0)/1e12
 
+        # dutá zóna: krajní vlákna (vrcholy) mají šířku ~0 jen numericky – tam
+        # napětí existuje. Za dutinu se proto považuje jen bod UVNITŘ obrysu
+        # se skutečně nulovou šířkou, ne bod na hranici z_top/z_bot.
         bz_check = self.width_at(z_mm)
         if bz_check < 1e-10:
-            nan = float("nan")
-            return dict(sigma=nan, tauVz=nan, tauVy=0.0, tauT=nan,
-                        tau=nan, mises=nan, Q=0.0, hollow=True)
+            span = max(self.z_top - self.z_bot, 1e-12)
+            at_edge = (z_mm >= self.z_top - 1e-6*span
+                       or z_mm <= self.z_bot + 1e-6*span)
+            if not at_edge:
+                nan = float("nan")
+                return dict(sigma=nan, tauVz=nan, tauVy=0.0, tauT=nan,
+                            tau=nan, mises=nan, Q=0.0, hollow=True)
 
         # znaménková konvence: sagging M>0 → tlak na horním vlákně (+z), tah dole.
         # (von Mises σ_red a RF jsou na znaménku σ nezávislé.)
-        sigma = Fx/A - My*z/Iy - Mz*y/Iz
+        # Plný vzorec nesymetrického ohybu (shodný s analysis.max_stresses_fast):
+        # pro Iyz=0 se redukuje na uniaxiální My·z/Iy + Mz·y/Iz.
+        denom = Iy*Iz - Iyz*Iyz
+        if abs(Iyz) > 1e-40 and denom > 1e-40:
+            sigma = Fx/A - ((My*Iz - Mz*Iyz)*z + (Mz*Iy - My*Iyz)*y)/denom
+        else:
+            sigma = Fx/A - My*z/Iy - Mz*y/Iz
 
         Q = self.Q_at(z_mm)/1e9
         bz = self.width_at(z_mm)/1e3
@@ -980,7 +1005,10 @@ class CrossSection:
 
         tauT = Mk * self._tau_t_coeff(z_mm)
 
-        tau = tauVz + tauVy + tauT
+        # smyk se skládá SOUČTEM MAGNITUD – shodně s RF cestou (analysis).
+        # Algebraický součet by se při opačných znaménkách rušil a dával
+        # nekonzervativní (a s RF nekonzistentní) výsledek.
+        tau = abs(tauVz) + abs(tauVy) + abs(tauT)
         mises = math.sqrt(sigma**2 + 3*tau**2)
         return dict(sigma=sigma, tauVz=tauVz, tauVy=tauVy, tauT=tauT,
                     tau=tau, mises=mises, Q=Q)
@@ -997,8 +1025,23 @@ class CrossSection:
                                "tauT": float("nan"), "tau": float("nan"),
                                "mises": float("nan"), "Q": 0.0, "hollow": True})
                 continue
-            y_ext = self._y_extreme_at_z(z)
-            s = self.stress(forces, z, y_mm=y_ext)
+            # U nesymetrického ohybu (Iyz≠0 nebo Mz≠0) nemusí špička σ ležet
+            # v bodě s největším |y| – vyhodnotí se VŠECHNY hraniční body
+            # v dané úrovni z a vezme se maximum |σ| (shodně s
+            # analysis.stress_profile a s RF cestou).
+            s = None
+            if abs(getattr(self, "Iyz", 0.0)) > 1e-9 or abs(forces.get("Mz", 0.0)) > 1e-15:
+                best = None
+                for y_b in self._y_boundaries_at_z(z):
+                    cand = self.stress(forces, z, y_mm=y_b)
+                    if cand.get("hollow"):
+                        continue
+                    if best is None or abs(cand["sigma"]) > abs(best["sigma"]):
+                        best = cand
+                s = best
+            if s is None:
+                y_ext = self._y_extreme_at_z(z)
+                s = self.stress(forces, z, y_mm=y_ext)
             if s.get("hollow"):
                 s["z"] = z
                 result.append(s)
@@ -1012,6 +1055,25 @@ class CrossSection:
             s["z"] = z
             result.append(s)
         return result
+
+    def _y_boundaries_at_z(self, z_mm):
+        """Všechny hraniční y v úrovni z (vč. hran děr a více těles). Pro
+        nesymetrický ohyb, kde špička σ nemusí být v bodě s největším |y|."""
+        ys = []
+        if self.bodies_c:
+            for outer, holes in self.bodies_c:
+                ys.extend(_scan_intersections(outer, z_mm))
+                for hole in holes:
+                    ys.extend(_scan_intersections(hole, z_mm))
+        elif self._pts_c:
+            ys = _scan_intersections(self._pts_c, z_mm)
+        elif getattr(self, "_circle_r_out", 0.0):
+            dy = math.sqrt(max(self._circle_r_out**2 - z_mm**2, 0.0))
+            ys = [-dy, dy]
+        if not ys:
+            ye = self._y_extreme_at_z(z_mm)
+            ys = [ye] if ye else [0.0]
+        return ys
 
     def _y_extreme_at_z(self, z_mm):
         if self.bodies_c:
@@ -1104,6 +1166,66 @@ def _segs_to_pts(pts):
     return [(float(x), float(z)) for x, z in pts]
 
 
+def fillet_reentrant(pts, r, n_arc=8):
+    """Zaoblí VNITŘNÍ (re-entrant) rohy polygonu poloměrem `r`.
+
+    Ostrý vnitřní roh (kout stojina/pásnice u I, T, L, U) je idealizace: pružné
+    řešení tam má singularitu, takže FEM napětí s jemnější sítí roste bez
+    konvergence. Skutečné válcované i ohýbané profily mají v koutě zaoblení,
+    které koncentraci omezí. Zaoblení se aplikuje jen na rohy, kde je materiál
+    na VNĚJŠÍ straně (vnitřní úhel > 180°); vnější rohy zůstanou ostré.
+
+    `r <= 0` vrátí obrys beze změny (zpětná kompatibilita)."""
+    if r is None or r <= 1e-12 or len(pts) < 3:
+        return pts
+    P = [(float(y), float(z)) for y, z in pts]
+    n = len(P)
+    # orientace polygonu (kladná plocha = CCW)
+    area2 = sum(P[i][0]*P[(i+1) % n][1] - P[(i+1) % n][0]*P[i][1] for i in range(n))
+    ccw = area2 > 0
+    out = []
+    for i in range(n):
+        p_prev, v, p_next = P[i-1], P[i], P[(i+1) % n]
+        e1 = (p_prev[0]-v[0], p_prev[1]-v[1])
+        e2 = (p_next[0]-v[0], p_next[1]-v[1])
+        l1 = math.hypot(*e1); l2 = math.hypot(*e2)
+        if l1 < 1e-12 or l2 < 1e-12:
+            out.append(v); continue
+        u1 = (e1[0]/l1, e1[1]/l1)
+        u2 = (e2[0]/l2, e2[1]/l2)
+        # reflexní (vnitřní) roh: znaménko křížového součinu podle orientace
+        cross = u1[0]*u2[1] - u1[1]*u2[0]
+        reflex = (cross > 0) if ccw else (cross < 0)
+        if not reflex:
+            out.append(v); continue
+        cos_t = max(-1.0, min(1.0, u1[0]*u2[0] + u1[1]*u2[1]))
+        theta = math.acos(cos_t)                 # úhel mezi rameny
+        if theta < 1e-6 or abs(math.pi - theta) < 1e-6:
+            out.append(v); continue
+        d = r / math.tan(theta/2.0)              # odsazení bodů dotyku od vrcholu
+        if d > 0.49*l1 or d > 0.49*l2:           # nevejde se → nezaoblovat
+            out.append(v); continue
+        t1 = (v[0]+d*u1[0], v[1]+d*u1[1])
+        t2 = (v[0]+d*u2[0], v[1]+d*u2[1])
+        bis = (u1[0]+u2[0], u1[1]+u2[1])
+        lb = math.hypot(*bis)
+        if lb < 1e-12:
+            out.append(v); continue
+        dc = r / math.sin(theta/2.0)             # vzdálenost středu oblouku
+        c = (v[0]+dc*bis[0]/lb, v[1]+dc*bis[1]/lb)
+        a1 = math.atan2(t1[1]-c[1], t1[0]-c[0])
+        a2 = math.atan2(t2[1]-c[1], t2[0]-c[0])
+        da = a2 - a1                             # kratší cesta po oblouku
+        while da > math.pi:
+            da -= 2*math.pi
+        while da < -math.pi:
+            da += 2*math.pi
+        for k in range(n_arc+1):
+            a = a1 + da*k/n_arc
+            out.append((c[0]+r*math.cos(a), c[1]+r*math.sin(a)))
+    return out
+
+
 def make_I(h, b_top, b_bot, tw, tf_top, tf_bot):
     hw = h - tf_top - tf_bot
     pts = [
@@ -1164,6 +1286,77 @@ def make_tube(Do, t):
     return None, None, slices_from_circle(0, 0, r_out, r_in), IT
 
 
+def _attach_local_walls(cs, specs, rotation=0.0):
+    """Připojí stěny z přirozené orientace a převede je do těžišťových os."""
+    a = math.radians(rotation)
+    ca, sa = math.cos(a), math.sin(a)
+
+    def point(y, z):
+        yr = y*ca - z*sa
+        zr = y*sa + z*ca
+        return yr - cs.cx_raw, zr - cs.cz_raw
+
+    walls = []
+    for label, width, thickness, edge_condition, start, end in specs:
+        if width <= 0.0 or thickness <= 0.0:
+            continue
+        y1, z1 = point(*start)
+        y2, z2 = point(*end)
+        walls.append(PlateWall(label, width, thickness, edge_condition,
+                               y1, z1, y2, z2))
+    cs.local_walls = walls
+    cs.local_stability_note = "" if walls else "Topologie stěn není pro tento průřez dostupná."
+
+
+def _parametric_local_wall_specs(section_type, p, gv):
+    """Střednice plochých stěn v přirozených souřadnicích generátoru."""
+    ss = "supported_supported"
+    sf = "supported_free"
+    if section_type == "i_section":
+        h = gv("h", 200); bt = gv("bf1", 100); bb = gv("bf2", 100)
+        tw = gv("tw", 6); tt = gv("tf1", 10); tb = gv("tf2", 10)
+        zt = h/2 - tt/2; zb = -h/2 + tb/2
+        return [
+            ("stojina", h-tt-tb, tw, ss, (0.0, -h/2+tb), (0.0, h/2-tt)),
+            ("horní pásnice vlevo", (bt-tw)/2, tt, sf, (-tw/2, zt), (-bt/2, zt)),
+            ("horní pásnice vpravo", (bt-tw)/2, tt, sf, (tw/2, zt), (bt/2, zt)),
+            ("dolní pásnice vlevo", (bb-tw)/2, tb, sf, (-tw/2, zb), (-bb/2, zb)),
+            ("dolní pásnice vpravo", (bb-tw)/2, tb, sf, (tw/2, zb), (bb/2, zb)),
+        ]
+    if section_type == "t_section":
+        h = gv("h", 200); b = gv("b", 120); tw = gv("tw", 8); tf = gv("tf", 12)
+        zf = h/2 - tf/2
+        return [
+            ("stojina", h-tf, tw, sf, (0.0, h/2-tf), (0.0, -h/2)),
+            ("pásnice vlevo", (b-tw)/2, tf, sf, (-tw/2, zf), (-b/2, zf)),
+            ("pásnice vpravo", (b-tw)/2, tf, sf, (tw/2, zf), (b/2, zf)),
+        ]
+    if section_type == "l_section":
+        h = gv("h", 100); b = gv("b", 100); t = gv("t", 10)
+        corner = (-b/2+t/2, -h/2+t/2)
+        return [
+            ("svislé rameno", h-t, t, sf, corner, (-b/2+t/2, h/2-t/2)),
+            ("vodorovné rameno", b-t, t, sf, corner, (b/2-t/2, -h/2+t/2)),
+        ]
+    if section_type in ("c_section", "u_section"):
+        h = gv("h", 200); b = gv("b", 80); t = gv("t", 8)
+        zl = -h/2+t/2
+        return [
+            ("spodní stojina", b-t, t, ss, (-b/2+t/2, zl), (b/2-t/2, zl)),
+            ("levá pásnice", h-t, t, sf, (-b/2+t/2, zl), (-b/2+t/2, h/2-t/2)),
+            ("pravá pásnice", h-t, t, sf, (b/2-t/2, zl), (b/2-t/2, h/2-t/2)),
+        ]
+    if section_type == "box":
+        h = gv("H", 200); b = gv("B", 100); t = gv("tw", 6)
+        return [
+            ("horní stěna", b-t, t, ss, (-b/2+t/2, h/2-t/2), (b/2-t/2, h/2-t/2)),
+            ("dolní stěna", b-t, t, ss, (-b/2+t/2, -h/2+t/2), (b/2-t/2, -h/2+t/2)),
+            ("levá stěna", h-t, t, ss, (-b/2+t/2, -h/2+t/2), (-b/2+t/2, h/2-t/2)),
+            ("pravá stěna", h-t, t, ss, (b/2-t/2, -h/2+t/2), (b/2-t/2, h/2-t/2)),
+        ]
+    return []
+
+
 # ═══════════════════════════════════════════════════════════
 #  BUILDER:  CrossSectionDef  →  CrossSection
 # ═══════════════════════════════════════════════════════════
@@ -1205,7 +1398,7 @@ def _sec_signature(sdef, fem):
     return sig
 
 
-def build_section(sdef, fem: bool = True) -> CrossSection:
+def build_section(sdef, fem: bool = True, exact: bool = False) -> CrossSection:
     """Sestaví CrossSection z definice (model.CrossSectionDef).
 
     Výsledek se cachuje podle obsahu definice – stejná geometrie (zejména drahý
@@ -1214,9 +1407,15 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
 
     fem=False – pro polygon přeskočí FEM Saint-Venant solver (rychlý živý náhled).
                 IT, Iω, střed smyku zůstanou na scanline odhadech.
+    exact=True – pustí FEM i pro PARAMETRICKÉ profily (I, T, L, U…), které jinak
+                jedou na analytických/scanline vzorcích. Nutné pro přesné Iω,
+                střed smyku a smykové pole; stojí jednotky sekund, proto je to
+                mimo výchozí cestu (spouští se na vyžádání a cachuje).
     """
     try:
         sig = _sec_signature(sdef, fem)
+        if sig is not None and exact:
+            sig = sig + ("exact",)
     except Exception:
         sig = None
     if sig is not None:
@@ -1224,7 +1423,7 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
         if cached is not None:
             _BUILD_CACHE[sig] = _BUILD_CACHE.pop(sig)   # LRU: posuň na konec
             return cached
-    cs = _build_section_impl(sdef, fem)
+    cs = _build_section_impl(sdef, fem, exact)
     if sig is not None:
         _BUILD_CACHE[sig] = cs
         if len(_BUILD_CACHE) > _BUILD_CACHE_MAX:
@@ -1232,7 +1431,7 @@ def build_section(sdef, fem: bool = True) -> CrossSection:
     return cs
 
 
-def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
+def _build_section_impl(sdef, fem: bool = True, exact: bool = False) -> CrossSection:
     """Vlastní sestavení (bez cache) – viz build_section."""
     t = sdef.type
     p = sdef.params or {}
@@ -1263,6 +1462,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             Am = 0.0
         cs = CrossSection(bodies=[(outer, holes)], IT_override=IT, rotation=rot)
         cs.section_type = "box"
+        _attach_local_walls(cs, _parametric_local_wall_specs(t, p, gv), rot)
         if Am > 0:
             cs.torsion_model = "closed_box"     # Bredt: τ = Mk/(2·Am·t)
             cs.torsion_Am = Am
@@ -1277,12 +1477,16 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
     elif t == "i_section":
         pts, walls, sl, IT = make_I(gv("h", 200), gv("bf1", 100), gv("bf2", 100),
                                     gv("tw", 6), gv("tf1", 10), gv("tf2", 10))
+        pts = fillet_reentrant(pts, gv("r", 0.0))
     elif t == "t_section":
         pts, walls, sl, IT = make_T(gv("h", 200), gv("b", 120), gv("tw", 8), gv("tf", 12))
+        pts = fillet_reentrant(pts, gv("r", 0.0))
     elif t == "l_section":
         pts, walls, sl, IT = make_L(gv("h", 100), gv("b", 100), gv("t", 10))
+        pts = fillet_reentrant(pts, gv("r", 0.0))
     elif t in ("c_section", "u_section"):
         pts, walls, sl, IT = make_U(gv("h", 200), gv("b", 80), gv("t", 8))
+        pts = fillet_reentrant(pts, gv("r", 0.0))
     elif t == "direct":
         # průřez zadaný přímo momentem setrvačnosti Iy (import .nos / EI model);
         # geometrie se syntetizuje jako čtverec se shodným Iy (h⁴/12 = Iy)
@@ -1362,6 +1566,7 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
 
     cs = CrossSection(pts_xy=pts, slices_for_circle=sl, walls=walls, IT_override=IT, rotation=rot)
     cs.section_type = t
+    _attach_local_walls(cs, _parametric_local_wall_specs(t, p, gv), rot)
     # poloměry pro vykreslení obrysu + torzní model pro τ_t
     if t == "circle":
         R = gv("D", 100) / 2.0
@@ -1390,6 +1595,11 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             cs.Iz = gv("Iz", cs.Iz)
         if "IT" in p and gv("IT", 0.0) > 0:
             cs.IT = gv("IT", cs.IT)
+        if "Iw" in p and gv("Iw", 0.0) > 0:
+            # Tuhostní validace Vlasovova prvku může zadat Iω přímo. Bez
+            # skutečné geometrie zůstávají napětí/RF správně nedostupné.
+            cs.Iw = gv("Iw", cs.Iw)
+            cs.torsion_model = "open"
         if cs.A > 1e-12:                       # přepočet poloměrů setrvačnosti
             cs.iy = (cs.Iy / cs.A) ** 0.5
             cs.iz = (cs.Iz / cs.A) ** 0.5
@@ -1410,7 +1620,8 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
             "Přímé tuhostní zadání nemá geometrii průřezu; napětí a RF nejsou dostupné."
         )
         hh = (12.0 * max(cs.Iy, 1e-9)) ** 0.25
-        cs.torsion_model = "solid_rect"
+        if not ("Iw" in p and gv("Iw", 0.0) > 0):
+            cs.torsion_model = "solid_rect"
         cs.torsion_ab = (hh, hh)
 
     # Natočení parametrického profilu: z_SC/Iω/Wk se počítají scanline aproximací,
@@ -1429,6 +1640,14 @@ def _build_section_impl(sdef, fem: bool = True) -> CrossSection:
         cs.z_SC = y0 * sa + z0 * ca
         cs.Iw = nat.Iw
         cs.Wk = nat.Wk
+
+    # Přesný režim: parametrické profily jinak jedou na analytických/scanline
+    # vzorcích, jejichž Iω a střed smyku jsou u OTEVŘENÝCH profilů řádově mimo
+    # (ověřeno proti sectionproperties: T-profil 123×, L 56×, U 16×; FEM sedí
+    # na 3–4 platné číslice). Pro warping torzi a přesný smykový tok jsou tyto
+    # veličiny nosné, proto se na vyžádání dopočtou plným FEM z obrysu.
+    if exact and cs.valid and getattr(cs, "_pts_c", None) and t != "direct":
+        _apply_fem_properties(cs, list(cs._pts_c), [])
     return cs
 
 
@@ -1474,6 +1693,24 @@ def _apply_fem_properties(cs: CrossSection, outer, holes=None):
         cs.Wy_top = cs.Iy / abs(cs.z_top) if abs(cs.z_top) > 1e-9 else 0
         cs.Wy_bot = cs.Iy / abs(cs.z_bot) if abs(cs.z_bot) > 1e-9 else 0
         cs.Ip = cs.Iy + cs.Iz
+    # přesné smykové pole (Pilkey Ψ/Φ + torzní ∇ω) v těžištích elementů –
+    # pro volitelné vektorové skládání τ místo konzervativního součtu velikostí
+    if r.get("shear_coords") is not None:
+        cs.shear_field = {
+            # warping_coords jsou vždy centroidální; původní shear_coords byly
+            # u vlastního polygonu v absolutních vstupních souřadnicích.
+            "coords": r.get("warping_coords", r["shear_coords"]),
+            "t_vy": r["shear_t_vy"],
+            "t_vz": r["shear_t_vz"], "t_tor": r["shear_t_tor"],
+        }
+    if r.get("warping_coords") is not None:
+        cs.warping_field = {
+            "coords": r["warping_coords"], "omega": r["warping_omega"],
+            "t_w": r["warping_t_w"],
+            "node_coords": r["warping_node_coords"],
+            "node_omega": r["warping_node_omega"],
+            "Iw": float(r["Iw"]),
+        }
     A_sz = float(r.get("A_sz", 0.0))
     A_sy = float(r.get("A_sy", 0.0))
     if A_sz > 0:

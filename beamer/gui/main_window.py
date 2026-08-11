@@ -129,6 +129,21 @@ class MainWindow(QMainWindow):
             max(0, self.sigred_cb.findData(getattr(self.state, "sigma_red_mode", "exact"))))
         self.sigred_cb.currentIndexChanged.connect(self._on_sigred_mode)
         bar.addWidget(self.sigred_cb)
+        bar.addWidget(QLabel(tr("τ:")))
+        self.tau_cb = NoWheelComboBox()
+        self.tau_cb.addItem(tr("konzervativní (|τV|+|τt|)"), "conservative")
+        self.tau_cb.addItem(tr("přesné 2D pole (FEM)"), "exact")
+        self.tau_cb.setToolTip(tr(
+            "konzervativní = Žuravskij V·Q/(I·b) a torze sečtené velikostmi\n"
+            "přesné 2D pole = smykové funkce Ψ/Φ (Pilkey), vektorové skládání "
+            "s torzí; přesnější u tenkostěnných otevřených profilů, ale vyžaduje "
+            "FEM průřezu (první výpočet trvá jednotky sekund, pak se cachuje).\n"
+            "POZOR: u profilů s OSTRÝM vnitřním koutem (r=0) je špička v koutě "
+            "singulární a závisí na síti – zadej zaoblení r."))
+        self.tau_cb.setCurrentIndex(
+            max(0, self.tau_cb.findData(getattr(self.state, "tau_mode", "conservative"))))
+        self.tau_cb.currentIndexChanged.connect(self._on_tau_mode)
+        bar.addWidget(self.tau_cb)
         self.lc_btn = QPushButton(tr("⊞ Load Cases"))
         self.lc_btn.clicked.connect(self.open_loadcase_builder)
         bar.addWidget(self.lc_btn)
@@ -522,6 +537,21 @@ class MainWindow(QMainWindow):
             self.reserves = reserves_along_beam(self.result, self.state)
             self._refresh_views()
 
+    def _on_tau_mode(self, _):
+        """Změna modelu skládání smyku (konzervativní / přesné 2D pole). Přesný
+        režim staví průřez s FEM (build_section(exact=True)) – první přepočet
+        proto může trvat jednotky sekund, pak se cachuje."""
+        self.state.tau_mode = self.tau_cb.currentData()
+        self._modified = True
+        if self.result and self.result.is_stable and self.result.points:
+            from ..analysis import reserves_along_beam
+            self.statusBar().showMessage(tr("Počítám…"))
+            try:
+                self.reserves = reserves_along_beam(self.result, self.state)
+            finally:
+                self.statusBar().clearMessage()
+            self._refresh_views()
+
     def _apply_results_font(self):
         self.results_text.setStyleSheet(
             f"font-family:'Consolas',monospace; font-size:{self._results_font_pt}px;")
@@ -815,17 +845,34 @@ class MainWindow(QMainWindow):
                         try:
                             from ..sections_along import material_for_segment
                             from ..analysis import _assess
-                            sec_forced = build_section(def_for_segment(self.state, sg, xq))
+                            exact = (getattr(self.state, "tau_mode", "conservative") == "exact"
+                                     or getattr(self.state, "torsion_theory",
+                                                "saint-venant") == "vlasov")
+                            sec_forced = build_section(
+                                def_for_segment(self.state, sg, xq), exact=exact,
+                            )
                             pcrit = min(self.result.points, key=lambda p: abs(p.x - xq))
                             mat = material_for_segment(self.state, sg)
-                            assess = _assess(sec_forced, mat, self.state,
-                                             pcrit.N, pcrit.V, pcrit.M, pcrit.Mk, seg=sg)
+                            assess = _assess(
+                                sec_forced, mat, self.state,
+                                pcrit.N, pcrit.V, pcrit.M, pcrit.Mk, seg=sg,
+                                B=getattr(pcrit, "B", 0.0),
+                                T_sv=getattr(pcrit, "T_sv", pcrit.Mk),
+                                T_w=getattr(pcrit, "T_w", 0.0),
+                            )
                             self.section_canvas.plot(sec_forced)
                             self.stress_canvas.plot(
-                                sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
-                                Vy=getattr(pcrit, "V_y", 0.0),
-                                Mz=getattr(pcrit, "M_z", 0.0),
-                            )
+                                 sec_forced, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
+                                 Vy=getattr(pcrit, "V_y", 0.0),
+                                 Mz=getattr(pcrit, "M_z", 0.0),
+                                 B=getattr(pcrit, "B", 0.0),
+                                 T_sv=getattr(pcrit, "T_sv", pcrit.Mk),
+                                 T_w=getattr(pcrit, "T_w", 0.0),
+                                 warping=(getattr(self.state, "torsion_theory",
+                                                  "saint-venant") == "vlasov"),
+                                 tau_exact=(getattr(self.state, "tau_mode",
+                                                    "conservative") == "exact"),
+                             )
                             self.results_panel.set_section(sec_forced, title, assess)
                             return
                         except Exception:
@@ -847,9 +894,14 @@ class MainWindow(QMainWindow):
                 from ..analysis import _assess
                 from ..sections_along import segment_at
                 mat = resolver.material_at(pcrit.x)
-                assess = _assess(sec_crit, mat, self.state,
-                                 pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
-                                 seg=segment_at(self.state, pcrit.x))
+                assess = _assess(
+                    sec_crit, mat, self.state,
+                    pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
+                    seg=segment_at(self.state, pcrit.x),
+                    B=getattr(pcrit, "B", 0.0),
+                    T_sv=getattr(pcrit, "T_sv", pcrit.Mk),
+                    T_w=getattr(pcrit, "T_w", 0.0),
+                )
             except Exception:
                 pass
             self.section_canvas.plot(sec_crit)
@@ -857,6 +909,12 @@ class MainWindow(QMainWindow):
                 sec_crit, pcrit.N, pcrit.V, pcrit.M, pcrit.Mk,
                 Vy=getattr(pcrit, "V_y", 0.0),
                 Mz=getattr(pcrit, "M_z", 0.0),
+                B=getattr(pcrit, "B", 0.0),
+                T_sv=getattr(pcrit, "T_sv", pcrit.Mk),
+                T_w=getattr(pcrit, "T_w", 0.0),
+                warping=(getattr(self.state, "torsion_theory",
+                                 "saint-venant") == "vlasov"),
+                tau_exact=(getattr(self.state, "tau_mode", "conservative") == "exact"),
             )
             self.results_panel.set_section(sec_crit, title, assess)
         else:
@@ -925,7 +983,8 @@ class MainWindow(QMainWindow):
         self.input_panel.reload_from_state()
         # synchronizace přepínačů v horní liště se stavem (bez vyvolání přepočtu)
         for cb, attr, default in ((self.rf_basis_cb, "rf_basis", "min"),
-                                  (self.sigred_cb, "sigma_red_mode", "exact")):
+                                  (self.sigred_cb, "sigma_red_mode", "exact"),
+                                  (self.tau_cb, "tau_mode", "conservative")):
             cb.blockSignals(True)
             cb.setCurrentIndex(max(0, cb.findData(getattr(self.state, attr, default))))
             cb.blockSignals(False)

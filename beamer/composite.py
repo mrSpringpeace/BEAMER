@@ -100,6 +100,7 @@ class CompositeProps:
     Iz_eq: float
     multi_material: bool
     GJ: float | None = None     # (GJ)_eff torzní tuhost přes variabilní-G FEM [N·mm²]
+    EIw: float | None = None    # ∫E·ω²dA Vlasovova warpingová tuhost [N·mm⁴]
     GA: float | None = None     # Σ Gᵢ·Aᵢ – pro váženou smykovou tuhost GAs [N]
     EAalpha: float = 0.0  # Σ Eᵢ·αᵢ·Aᵢ – teplotní osová tuhost (bimetal) [N/°C]
     ESalpha: float = 0.0  # Σ Eᵢ·αᵢ·(z−z_NA)dA – teplotní moment (bimetal) [N·mm/°C]
@@ -282,7 +283,8 @@ def section_by_id_(state, sid):
 
 
 def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None,
-                     Mz=0.0, dT=0.0, Vy=0.0, dT_grad=0.0):
+                     Mz=0.0, dT=0.0, Vy=0.0, dT_grad=0.0,
+                     B=0.0, T_sv=None, T_w=0.0):
     """Posouzení složeného PID PER MATERIÁL. B2: plný von Mises přes FEM pole
     (σ v rozích elementů + τ_t z variabilní-G torze + τ_V E-vážený Žuravskij).
     Režim σ_red „combined" (state.sigma_red_mode) se aplikuje per materiál:
@@ -304,7 +306,7 @@ def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None
         from .composite_fem import composite_stress_field
         field = composite_stress_field(
             state, prop, N, M, Mk, V, Mz=Mz, dT=dT, Vy=Vy,
-            dT_grad=dT_grad,
+            dT_grad=dT_grad, B=B, T_sv=T_sv, T_w=T_w,
         )
     except Exception as exc:
         field = None

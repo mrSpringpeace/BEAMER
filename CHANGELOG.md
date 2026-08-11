@@ -2,6 +2,79 @@
 
 Version format: **X.XX**
 
+## 1.41
+
+Final product-closeout release before maintenance mode.
+
+- Added polygon import from text `y,z` coordinates with multiple bodies and
+  holes (`OUTER`, `HOLE`, `BODY`), decimal commas and comments.
+- Added a deliberately limited planar IGES/IGS importer for entities 100, 106,
+  110 and 126, including model units and transformation matrices. Open,
+  self-intersecting, touching or non-planar loops fail loudly.
+- Updated the English user manual and solved examples to the complete 1.41
+  feature set. The final theory and validation boundaries are frozen.
+- Project JSON now carries `format_version=1`; legacy files remain readable and
+  future unsupported formats are rejected explicitly.
+- The final 20-model golden snapshot showed no numerical drift from 1.40.
+
+## 1.40
+
+Local plate buckling and section crippling.
+
+- Parameterized I/T/L/U/box sections expose flat walls with width, thickness,
+  centerline and supported/supported or supported/free longitudinal edges.
+- Elastic buckling uses the classical plate equation with exact Navier minima
+  for supported plates and an eigenvalue solution for a free longitudinal edge.
+  A finite aspect ratio is used only when the actual transverse-support spacing
+  is entered explicitly; otherwise the conservative long-plate limit applies.
+- Needham/Gerard crippling is restricted to documented section families and
+  thin-walled ranges. `RF_local_buckling` and `RF_crippling` enter the common RF
+  minimum and are shown in plots and reports.
+
+## 1.39
+
+Optional restrained-warping torsion according to Vlasov.
+
+- Added a seventh nodal DOF `theta'` and a 14×14 Hermite element derived from
+  `GJ` and `EIomega` energy. The 6-DOF Saint-Venant model remains the default.
+- Supports can explicitly release or restrain warping. Recovery includes
+  Saint-Venant and warping torque, bimoment, twist rate and reactions.
+- Warping normal/shear stresses enter the pointwise stress field, von Mises
+  stress and RF. Multi-material sections integrate `EIomega` with local `E`.
+- Closed/solid sections and `Iomega -> 0` reduce to the original torsion model.
+
+## 1.38
+
+Exact cross-section shear flow and physical corner radii.
+
+- Added an optional 2D FEM shear field from the Pilkey Ψ/Φ functions, with
+  vector composition of transverse and torsional shear at the same point.
+- Parameterized profiles can request exact FEM properties on demand and cache
+  the result. Validation against `sectionproperties` exposed large errors in
+  historical analytical `Iomega` fallbacks for several open profiles.
+- I/T/L/U profiles gained a corner-radius parameter. The UI/report warns that
+  an ideal sharp re-entrant corner is a mesh-dependent elastic singularity.
+- The legacy shear option stays the default for backward compatibility; it is
+  not necessarily conservative for thin-walled open sections.
+
+## 1.37
+
+- Added horizontal distributed load components `qy1`/`qy2` through assembly,
+  recovery, diagrams, reports and serialization.
+- Verified simply supported, cantilever and trapezoidal-load closed solutions,
+  including 90° rotation invariance between both bending planes.
+
+## 1.36
+
+Technical-audit corrections.
+
+- Unified point stress with the full unsymmetric biaxial formula including
+  `Iyz`; rotated/unsymmetric section detail is no longer non-conservative.
+- Stress profiles evaluate every boundary point at a level, and transverse plus
+  torsional shear no longer cancel algebraically in the legacy model.
+- Combination envelopes now carry and display the horizontal plane (`V_y`,
+  `M_z`, `v`) as well as the vertical plane.
+
 ## 1.35
 - **Fix: a newly added load was silently zero.** Once the combination factors
   were converted to per-load keying – which happens when a **project is opened

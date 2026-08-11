@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from beamer.analysis import (
     _assess,
@@ -30,6 +31,11 @@ from beamer.model import (
     SectionSegment,
     Support,
 )
+from beamer.project_io import (
+    PROJECT_FORMAT_VERSION,
+    dict_to_state,
+    state_to_dict,
+)
 from beamer.section import build_section
 from beamer.solver import solve_beam
 
@@ -38,6 +44,14 @@ MAT = Material(
     "m", "Steel", E=210000.0, G=81000.0, nu=0.3, rho=7.85,
     Re=235.0, Rm=360.0, alpha=12e-6,
 )
+
+
+def test_project_format_is_versioned_and_rejects_newer_schema():
+    payload = state_to_dict(ProjectState())
+    assert payload["format_version"] == PROJECT_FORMAT_VERSION
+    payload["format_version"] += 1
+    with pytest.raises(ValueError, match="novější formát"):
+        dict_to_state(payload)
 
 
 def _state(length, supports, loads, section=None, hinges=None):

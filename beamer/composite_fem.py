@@ -1,9 +1,8 @@
-"""B2 – podpora vícemateriálového FEM (variabilní G/E po řezu).
+"""Vícemateriálový FEM s variabilním G/E po průřezu.
 
-První krok: přiřadit každému elementu sítě jeho materiál podle toho, ve které
-části sestavy leží těžiště elementu (point-in-polygon). Výsledné pole G/E per
-element pak půjde do vážené assembly warping/shear (torze/smyk) – jednomateriál
-se redukuje na dnešní stav (G se vytkne).
+Každému elementu sítě přiřadí materiál podle těžiště (point-in-polygon).
+Pole G/E vstupuje do torzního warpingu, smyku a Vlasovovy tuhosti; pro jeden
+materiál se výpočet redukuje na homogenní vztahy.
 """
 from __future__ import annotations
 
@@ -148,12 +147,24 @@ def _composite_mesh_and_warp_impl(state, prop):
         holes = [[(x, y) for x, y in r.coords[:-1]] for r in comp.interiors]
         nodes, elements = _fem.triangulate_section(outer, holes or None)
         g = _fem.compute_geometric_properties(nodes, elements)
-        cy, cz, Ixx, Iyy = g["cy"], g["cz"], g["Ixx_c"], g["Iyy_c"]
+        cy, cz, Ixx, Iyy, Ixy = (
+            g["cy"], g["cz"], g["Ixx_c"], g["Iyy_c"], g["Ixy_c"],
+        )
         tags = _tag_elements(nodes, elements, orig)
         elem_G = [t[0] for t in tags]
         omega, K = _fem.solve_warping_function(nodes, elements, cy, cz, elem_G=elem_G)
         GJc = _fem.compute_torsion_constant(nodes, elements, omega, K, Ixx, Iyy,
                                             elem_G=elem_G, cy=cy, cz=cz)
+        sc = _fem.compute_shear_center_and_warping(
+            nodes, elements, omega, cy, cz, Ixx, Iyy, Ixy,
+        )
+        elem_E = [t[1] for t in tags]
+        EIwc = _fem.integrate_weighted_warping(
+            nodes, elements, sc["omega_n"], elem_E,
+        )
+        chi = _fem.solve_warping_shear_function(
+            nodes, elements, cy, cz, sc["omega_n"],
+        )
         GJ += GJc
         # geometrie transverzálního smyku (E-vážený Žuravskij): z, E, plocha,
         # tětiva b(z) per element (nezávisí na zatížení → počítá se jednou)
@@ -174,6 +185,8 @@ def _composite_mesh_and_warp_impl(state, prop):
             he[ei] = _vertical_chord_length(comp, yc[ei], z0 - 1.0, z1 + 1.0)
         components.append({"nodes": nodes, "elements": elements, "elem_G": elem_G,
                            "tags": tags, "omega": omega, "cy": cy, "cz": cz, "GJ": GJc,
+                           "omega_n": sc["omega_n"], "Iw": sc["Iw"], "EIw": EIwc,
+                           "chi": chi,
                            "yc": yc, "zc": zc, "Ee": Ee, "Ae": Ae,
                            "be": be, "he": he})
     return components, GJ, orig
@@ -233,8 +246,16 @@ def composite_torsion_GJ(state, prop):
     return res[1]
 
 
+def composite_warping_EIw(state, prop):
+    """Efektivní Vlasovova tuhost Σ∫E·ω_n²dA složeného PID [N·mm⁴]."""
+    res = _composite_mesh_and_warp(state, prop)
+    if res is None:
+        return None
+    return sum(float(c.get("EIw", 0.0)) for c in res[0])
+
+
 def composite_stress_field(state, prop, N, My, Mk, V=0.0, Mz=0.0, dT=0.0,
-                           Vy=0.0, dT_grad=0.0):
+                           Vy=0.0, dT_grad=0.0, B=0.0, T_sv=None, T_w=0.0):
     """Plné per-materiálové napětí složeného PID přes FEM pole: v každém elementu
     kombinuje normálové σ (B1, modulem vážené; konvence M+ = sagging = tah dole,
     tedy σ = E·(N/EA − M·(z−z_NA)/EIy)), torzní smyk τ_t (variabilní-G warping)
@@ -263,13 +284,19 @@ def composite_stress_field(state, prop, N, My, Mk, V=0.0, Mz=0.0, dT=0.0,
            + grad*(w.ESalpha + (w.z_NA-z_mid)*w.EAalpha))
     mth = (dT*w.ESalpha
            + grad*(w.EIalpha + (w.z_NA-z_mid)*w.ESalpha))
-    thetap = (Mk / GJ) if (GJ and abs(GJ) > 1e-9) else 0.0
+    sv = Mk if T_sv is None else T_sv
+    thetap = (sv / GJ) if (GJ and abs(GJ) > 1e-9) else 0.0
+    EIw = sum(float(c.get("EIw", 0.0)) for c in components)
+    Iw = sum(float(c.get("Iw", 0.0)) for c in components)
     mats = {m.id: m for m in getattr(state, "materials", None) or []}
     agg = {}
     for comp in components:
         nodes, elements = comp["nodes"], comp["elements"]
         coords, shear = _fem.torsion_shear_centroids(
             nodes, elements, comp["omega"], comp["cy"], comp["cz"])
+        _wc, _omc, tau_w_field, _wnc, _wno = _fem.warping_fields_centroids(
+            nodes, elements, comp["omega_n"], comp["chi"], comp["cy"], comp["cz"],
+        )
         # transverzální smyk: E-vážený statický moment nad vláknem (kumulativně
         # od horního okraje) → τ_V = V·Q_E/(EIy·b)
         zc, Ee, Ae, be = comp["zc"], comp["Ee"], comp["Ae"], comp["be"]
@@ -314,17 +341,27 @@ def composite_stress_field(state, prop, N, My, Mk, V=0.0, Mz=0.0, dT=0.0,
                 sig += E_e * (_eps0 + _kth * dz - a_e * temperature)
             return sig
 
+        def _sig_with_warping(E_e, a_e, y, z, omega_n):
+            sig = _sig(E_e, a_e, y, z)
+            if EIw > 1e-30:
+                sig += E_e * B * float(omega_n) / EIw
+            return sig
+
         for ei, (G_e, E_e, mid) in enumerate(comp["tags"]):
             a_e = float(getattr(mats.get(mid), "alpha", 0.0) or 0.0)
             tau_t = G_e * thetap * float(np.hypot(shear[ei, 0], shear[ei, 1]))
+            tau_w = (abs(T_w/Iw) * float(np.hypot(tau_w_field[ei, 0],
+                                                   tau_w_field[ei, 1]))
+                     if Iw > 1e-30 else 0.0)
             tau_V = (abs(V * QE[ei] / (w.EIy * be[ei]))
                      if (be[ei] > 1e-9 and abs(w.EIy) > 1e-9) else 0.0)
             tau_Vy = (abs(Vy * QEy[ei] / (w.EIz * he[ei]))
                       if (he[ei] > 1e-9 and abs(w.EIz) > 1e-9) else 0.0)
-            tau = abs(tau_t) + tau_V + tau_Vy
+            tau = abs(tau_t) + tau_w + tau_V + tau_Vy
             # σ v rozích elementu (rohové uzly leží i na krajním vláknu)
-            sig = max((abs(_sig(E_e, a_e, nodes[ni][0], nodes[ni][1])) for ni in elements[ei][:3]),
-                      default=0.0)
+            sig = max((abs(_sig_with_warping(
+                E_e, a_e, nodes[ni][0], nodes[ni][1], comp["omega_n"][ni],
+            )) for ni in elements[ei][:3]), default=0.0)
             mis = float(np.sqrt(sig * sig + 3.0 * tau * tau))
             m = mats.get(mid)
             a = agg.setdefault(mid, {"material": getattr(m, "name", mid),

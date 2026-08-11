@@ -1925,9 +1925,9 @@ def test_plasticity_raises_ultimate_rf_along_beam():
     st.rf_basis = "ultimate"
     res = solve_beam(st)
     st.plasticity_enabled = False
-    rf_off = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    rf_off = min(mm.RF_ultimate for mm in reserves_along_beam(res, st, n_stations=40))
     st.plasticity_enabled = True
-    rf_on = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
+    rf_on = min(mm.RF_ultimate for mm in reserves_along_beam(res, st, n_stations=40))
     assert rf_on > rf_off * 1.05
     # při bázi min řídí mez kluzu → α_pl se (správně) neprojeví
     st.rf_basis = "min"
@@ -1936,3 +1936,323 @@ def test_plasticity_raises_ultimate_rf_along_beam():
     st.plasticity_enabled = True
     b = min(mm.RF for mm in reserves_along_beam(res, st, n_stations=40))
     assert _rel(a, b) < 1e-12
+
+
+def test_section_stress_uses_iyz_like_rf_path():
+    """Detailní napětí `CrossSection.stress()` musí dát STEJNÝ výsledek jako RF
+    cesta i pro natočený (nesymetrický) průřez – dřív používalo zjednodušený
+    vzorec bez Iyz a podhodnocovalo σ o ~26 % (nekonzervativně).
+
+    Reference: natočený průřez pod My == nenatočený průřez pod rozloženým
+    zatížením (My·cosα, −My·sinα) v hlavních osách."""
+    from beamer.analysis import build_influence, max_stresses_fast, stress_profile
+    b, h, ang, My = 40.0, 80.0, 30.0, 1.0e6
+    cs = build_section(CrossSectionDef(type="rectangle", params={"b": b, "h": h},
+                                       rotation=ang), fem=False)
+    plain = build_section(CrossSectionDef(type="rectangle",
+                                          params={"b": b, "h": h}), fem=False)
+    a = math.radians(ang)
+    ref = (abs(My * math.cos(a) * (h / 2) / plain.Iy)
+           + abs(My * math.sin(a) * (b / 2) / plain.Iz))
+
+    sg_rf, _t, _m = max_stresses_fast(build_influence(cs, n=80), 0.0, 0.0, My, 0.0)
+    assert _rel(sg_rf, ref) < 1e-3                       # RF cesta (byla OK)
+
+    prof = cs.profile({"Fx": 0.0, "Fy": 0.0, "Fz": 0.0,
+                       "My": My / 1e3, "Mz": 0.0, "Mk": 0.0}, N=200)
+    sg_sec = max(abs(p["sigma"]) / 1e6 for p in prof
+                 if not math.isnan(p["sigma"]))
+    assert _rel(sg_sec, ref) < 1e-2                      # detailní cesta (byla chybná)
+
+    sg_an = max(abs(s) for s in stress_profile(cs, 0.0, 0.0, My, 0.0, n=160).sigma
+                if not math.isnan(s))
+    assert _rel(sg_sec, sg_an) < 1e-2                    # obě cesty se shodují
+
+    # regrese: symetrický průřez (Iyz=0) zůstává na uniaxiálním vzorci
+    sym = build_section(CrossSectionDef(
+        type="i_section", params={"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                                  "bf2": 100, "tf2": 10}), fem=False)
+    s = sym.stress({"Fx": 0.0, "Fy": 0.0, "Fz": 0.0, "My": 1.0e6 / 1e3,
+                    "Mz": 0.0, "Mk": 0.0}, sym.z_top * 0.9999)
+    assert _rel(s["sigma"] / 1e6, -1.0e6 * sym.z_top * 0.9999 / sym.Iy) < 1e-3
+
+
+def test_section_stress_shear_is_magnitude_sum():
+    """Smyk se v `stress()` skládá součtem MAGNITUD – shodně s RF cestou.
+    Algebraický součet se při opačných znaménkách rušil (nekonzervativní a
+    nekonzistentní s RF)."""
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+    cs = build_section(rect, fem=False)
+    f = {"Fx": 0.0, "Fy": 0.0, "Fz": 5000.0, "My": 0.0, "Mz": 0.0, "Mk": -3.0e5 / 1e3}
+    s = cs.stress(f, 0.0)
+    assert s["tauVz"] * s["tauT"] < 0            # opačná znaménka (jinak netestuje nic)
+    assert _rel(s["tau"], abs(s["tauVz"]) + abs(s["tauVy"]) + abs(s["tauT"])) < 1e-12
+    assert s["tau"] > max(abs(s["tauVz"]), abs(s["tauT"]))
+
+
+def test_envelope_includes_lateral_bands():
+    """Obálka nese i pásma druhé (vodorovné) roviny V_y/M_z/v. RF obálka boční
+    případ zachycovala vždy; chyběla jen pásma VVÚ, takže v reportu nebylo
+    vidět, čím je řídicí kombinace nepříznivá."""
+    from beamer.analysis import envelope_over_combinations
+    rect = CrossSectionDef(type="rectangle", params={"b": 20, "h": 80})
+    L = 2000.0
+    fz = Load("fz", "point_force", "Fz", "lc", x=L / 2); fz.Fz = -3000.0
+    fy = Load("fy", "point_force", "Fy", "lc", x=L / 2); fy.Fy = 3000.0
+    st = ProjectState(
+        length=L, supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        load_combinations=[LoadCombination("c1", "Jen svisle", {"fz": 1.0, "fy": 0.0}),
+                           LoadCombination("c2", "Jen bočně", {"fz": 0.0, "fy": 1.0})],
+        loads=[fz, fy], materials=[MAT], selected_material_id=MAT.id,
+        cross_section=rect, section_segments=[SectionSegment(0.0, L, rect)],
+        additional_factor=1.0, selected_active_combination_id="c1")
+    env = envelope_over_combinations(st)
+    assert env is not None and env.n_combos == 2
+    # boční kombinace řídí (profil je na bok slabý) – RF to zachytí
+    assert "bočně" in env.crit_combo
+    # a nově jsou k dispozici i pásma VVÚ druhé roviny
+    assert _rel(max(abs(v) for v in env.Mz_min + env.Mz_max), 3000.0 * L / 4) < 1e-3
+    assert _rel(max(abs(v) for v in env.Vy_min + env.Vy_max), 1500.0) < 1e-3
+    assert max(abs(v) for v in env.v_min + env.v_max) > 1.0
+
+
+def test_horizontal_distributed_load():
+    """Etapa A: vodorovné spojité zatížení qy (rovina x–y).
+
+    Prostý nosník: v = 5qL⁴/(384·EIz), M_z = qL²/8, V_y = ±qL/2. Svislá rovina
+    zůstane netknutá. Invariance: profil otočený o 90° se SVISLÝM q musí dát
+    tytéž hodnoty (jen v druhé rovině) – to hlídá i znaménkovou konvenci."""
+    L, q = 2000.0, -2.0
+    rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
+
+    def mk(qv=0.0, qyv=0.0, sec=rect):
+        ld = Load("q", "distributed", "q", "lc")
+        ld.x1, ld.x2 = 0.0, L
+        ld.q1 = ld.q2 = qv
+        ld.qy1 = ld.qy2 = qyv
+        return ProjectState(
+            length=L, supports=[Support("a", 0, "pin", 0), Support("b", L, "roller", 0)],
+            load_cases=[LoadCase("lc", "LC", False)],
+            load_combinations=[LoadCombination("c", "C", {"q": 1.0})],
+            loads=[ld], materials=[MAT], selected_material_id=MAT.id,
+            cross_section=sec, section_segments=[SectionSegment(0.0, L, sec)],
+            additional_factor=1.0, selected_active_combination_id="c")
+
+    cs = build_section(rect, fem=False)
+    res = solve_beam(mk(qyv=q))
+    assert res.is_stable
+    assert _rel(max(abs(p.v) for p in res.points),
+                5 * abs(q) * L**4 / (384 * MAT.E * cs.Iz)) < 1e-3
+    assert _rel(max(abs(p.M_z) for p in res.points), abs(q) * L**2 / 8) < 1e-3
+    assert _rel(max(abs(p.V_y) for p in res.points), abs(q) * L / 2) < 1e-3
+    # svislá rovina se nesmí hnout
+    assert max(abs(p.w) for p in res.points) < 1e-9
+    assert max(abs(p.M) for p in res.points) < 1e-6
+
+    # invariance vůči záměně rovin (profil 80×40 + svislé q)
+    rot = CrossSectionDef(type="rectangle", params={"b": 80, "h": 40})
+    res2 = solve_beam(mk(qv=q, sec=rot))
+    assert _rel(max(abs(p.w) for p in res2.points),
+                max(abs(p.v) for p in res.points)) < 1e-9
+    assert _rel(max(abs(p.M) for p in res2.points),
+                max(abs(p.M_z) for p in res.points)) < 1e-9
+
+    # regrese: svislé q beze změny
+    res3 = solve_beam(mk(qv=q))
+    assert _rel(max(abs(p.w) for p in res3.points),
+                5 * abs(q) * L**4 / (384 * MAT.E * cs.Iy)) < 1e-3
+    assert max(abs(p.v) for p in res3.points) < 1e-9
+
+
+def test_horizontal_distributed_load_cantilever_and_trapezoid():
+    """Vetknutá konzola s vodorovným qy: v_konec = qL⁴/(8·EIz), M_z u vetknutí
+    = qL²/2. Lichoběžníkové qy (q1≠q2) dá správnou výslednici."""
+    L, q = 1000.0, -3.0
+    rect = CrossSectionDef(type="rectangle", params={"b": 30, "h": 60})
+    ld = Load("q", "distributed", "q", "lc")
+    ld.x1, ld.x2 = 0.0, L
+    ld.qy1 = ld.qy2 = q
+    st = ProjectState(
+        length=L, supports=[Support("a", 0, "fixed", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        load_combinations=[LoadCombination("c", "C", {"q": 1.0})],
+        loads=[ld], materials=[MAT], selected_material_id=MAT.id,
+        cross_section=rect, section_segments=[SectionSegment(0.0, L, rect)],
+        additional_factor=1.0, selected_active_combination_id="c")
+    cs = build_section(rect, fem=False)
+    res = solve_beam(st)
+    assert _rel(max(abs(p.v) for p in res.points),
+                abs(q) * L**4 / (8 * MAT.E * cs.Iz)) < 1e-3
+    assert _rel(max(abs(p.M_z) for p in res.points), abs(q) * L**2 / 2) < 1e-3
+
+    # lichoběžník: výslednice = (q1+q2)/2·L → posouvající síla u vetknutí
+    ld.qy1, ld.qy2 = -4.0, -1.0
+    res2 = solve_beam(st)
+    assert _rel(max(abs(p.V_y) for p in res2.points), (4.0 + 1.0) / 2 * L) < 1e-3
+
+
+def test_exact_mode_fixes_parametric_warping_properties():
+    """Etapa B0: parametrické profily jedou na analytických/scanline vzorcích,
+    jejichž Iω a střed smyku jsou u OTEVŘENÝCH profilů řádově mimo. Křížová
+    validace proti sectionproperties (2026-08-11) dala poměr aproximace/přesně:
+    I 1,36×, T 123×, L 56×, U 16×; FEM sedí na 3–4 platné číslice.
+
+    `build_section(..., exact=True)` musí dát přesné hodnoty (nutné pro warping
+    torzi a přesný smykový tok), výchozí cesta zůstává rychlá a nezměněná."""
+    # referenční hodnoty ze sectionproperties (viz validační běh)
+    cases = [
+        ("i_section", {"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                       "bf2": 100, "tf2": 10}, 1.50235e10, 7.7479e4),
+        ("t_section", {"h": 200, "b": 120, "tw": 8, "tf": 12}, 1.22788e8, 9.90311e4),
+        ("l_section", {"h": 100, "b": 100, "t": 10}, 4.67164e7, 6.20159e4),
+        ("c_section", {"h": 200, "b": 80, "t": 8}, 1.60071e10, 7.90442e4),
+    ]
+    for typ, params, iw_ref, it_ref in cases:
+        sdef = CrossSectionDef(type=typ, params=params)
+        fast = build_section(sdef)                       # výchozí (rychlá) cesta
+        try:
+            ex = build_section(sdef, exact=True)
+        except Exception:                                # bez scipy → přeskoč
+            pytest.skip("FEM (scipy) není k dispozici")
+        if not ex.fem_used:
+            pytest.skip("FEM neproběhl")
+        assert _rel(ex.Iw, iw_ref) < 5e-3, (typ, ex.Iw, iw_ref)
+        assert _rel(ex.IT, it_ref) < 1e-2, (typ, ex.IT, it_ref)
+        assert ex.shear_field is not None                # smykové pole k dispozici
+        # A a Iy se přesným režimem nesmí změnit (Green je přesný už teď)
+        assert _rel(ex.A, fast.A) < 1e-9
+        assert _rel(ex.Iy, fast.Iy) < 1e-6
+    # výchozí cesta musí zůstat rychlá a beze změny (aproximace u otevřených)
+    sdef = CrossSectionDef(type="t_section", params={"h": 200, "b": 120,
+                                                     "tw": 8, "tf": 12})
+    assert not build_section(sdef).fem_used
+
+
+def test_exact_shear_flow_matches_zhuravskii():
+    """Přesný smykový tok (Pilkey Ψ/Φ) proti Žuravskému na obdélníku: τ_max =
+    1,5·V/A, směr čistě podél zatížení, poloha na neutrální ose."""
+    import numpy as np
+    b, h = 40.0, 80.0
+    sdef = CrossSectionDef(type="rectangle", params={"b": b, "h": h})
+    try:
+        cs = build_section(sdef, exact=True)
+    except Exception:
+        pytest.skip("FEM (scipy) není k dispozici")
+    if cs.shear_field is None:
+        pytest.skip("smykové pole není k dispozici")
+    sf = cs.shear_field
+    V = 10000.0
+    ref = 1.5 * V / cs.A
+    for key, comp in (("t_vz", 1), ("t_vy", 0)):
+        t = sf[key] * V
+        mag = np.hypot(t[:, 0], t[:, 1])
+        i = int(np.argmax(mag))
+        assert _rel(mag[i], ref) < 5e-3, (key, mag[i], ref)
+        # v maximu je τ prakticky jednosměrné (podél působící síly)
+        assert abs(t[i, comp]) > 0.99 * mag[i]
+
+
+def test_fillet_reentrant_geometry_and_backward_compat():
+    """Zaoblení vnitřních koutů: aplikuje se JEN na re-entrant rohy (u I-profilu
+    čtyři kouty stojina/pásnice), vnější rohy zůstanou ostré. r=0 nechá obrys
+    beze změny (zpětná kompatibilita starých projektů)."""
+    from beamer.section import make_I, make_L, fillet_reentrant
+    base, _w, _s, _i = make_I(200, 100, 100, 6, 10, 10)
+    assert len(base) == 12
+    assert fillet_reentrant(base, 0.0) == base          # r=0 → beze změny
+    assert fillet_reentrant(base, -1.0) == base
+    n_arc = 8
+    fil = fillet_reentrant(base, 6.0, n_arc=n_arc)
+    # 4 kouty nahrazeny obloukem po n_arc+1 bodech
+    assert len(fil) == 12 - 4 + 4 * (n_arc + 1)
+    # zaoblení nesmí opustit původní bounding box
+    ys = [y for y, _ in fil]; zs = [z for _, z in fil]
+    assert min(ys) >= -50 - 1e-9 and max(ys) <= 50 + 1e-9
+    assert min(zs) >= -100 - 1e-9 and max(zs) <= 100 + 1e-9
+    # L-profil má jediný vnitřní kout
+    lbase, _w, _s, _i = make_L(100, 100, 10)
+    lfil = fillet_reentrant(lbase, 4.0, n_arc=n_arc)
+    assert len(lfil) == len(lbase) - 1 + (n_arc + 1)
+    # příliš velký poloměr se nevejde → roh zůstane ostrý (bez pádu)
+    assert fillet_reentrant(lbase, 1e6) == lbase
+
+
+def test_fillet_changes_section_properties_consistently():
+    """Zaoblený kout přidá materiál: plocha a torzní konstanta mírně vzrostou,
+    Iy se změní jen nepatrně. Profil bez zadaného `r` zůstává beze změny."""
+    sharp = build_section(CrossSectionDef(
+        type="i_section", params={"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                                  "bf2": 100, "tf2": 10}))
+    filled = build_section(CrossSectionDef(
+        type="i_section", params={"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                                  "bf2": 100, "tf2": 10, "r": 6.0}))
+    assert filled.A > sharp.A                       # kout přidá materiál
+    assert (filled.A - sharp.A) / sharp.A < 0.05    # ale jen málo
+    assert _rel(filled.Iy, sharp.Iy) < 0.02
+    # chybějící klíč "r" = ostrý roh (staré projekty se nezmění)
+    again = build_section(CrossSectionDef(
+        type="i_section", params={"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                                  "bf2": 100, "tf2": 10}))
+    assert again.A == sharp.A
+
+
+def test_exact_tau_mode_end_to_end():
+    """Etapa B end-to-end: přepínač `tau_mode="exact"` protečen až do posouzení.
+
+    Na ZAOBLENÉM profilu (bez singularity v koutě) musí přesný režim dát
+    konečné, konvergované hodnoty a odlišit se od konzervativního. Konzervativní
+    režim zůstává výchozí a nezměněný."""
+    L = 1000.0
+    sec = CrossSectionDef(type="i_section",
+                          params={"h": 200, "tw": 6, "bf1": 100, "tf1": 10,
+                                  "bf2": 100, "tf2": 10, "r": 6.0})
+    f = Load("f", "point_force", "F", "lc", x=L); f.Fz = -8000.0
+    t = Load("t", "torsion", "T", "lc", x=L); t.Mx = 3.0e5
+    st = ProjectState(
+        length=L, supports=[Support("a", 0, "fixed", 0)],
+        load_cases=[LoadCase("lc", "LC", False)],
+        load_combinations=[LoadCombination("c", "C", {"f": 1.0, "t": 1.0})],
+        loads=[f, t], materials=[MAT], selected_material_id=MAT.id,
+        cross_section=sec, section_segments=[SectionSegment(0.0, L, sec)],
+        additional_factor=1.0, selected_active_combination_id="c")
+    assert getattr(st, "tau_mode", "conservative") == "conservative"   # výchozí
+    pytest.importorskip("scipy")
+    from beamer.analysis import reserves_along_beam
+    res = solve_beam(st)
+    out = {}
+    for mode in ("conservative", "exact"):
+        st.tau_mode = mode
+        m = reserves_along_beam(res, st, n_stations=15)
+        i = min(range(len(m)), key=lambda k: m[k].RF)
+        out[mode] = (m[i].tau_max, m[i].mises_max, m[i].RF)
+    for mode, (tu, mz, rf) in out.items():
+        assert math.isfinite(tu) and math.isfinite(mz) and math.isfinite(rf), mode
+        assert tu > 0 and rf > 0
+    # přesný režim se od konzervativního u otevřeného profilu liší
+    assert abs(out["exact"][0] - out["conservative"][0]) / out["conservative"][0] > 0.02
+
+
+def test_exact_tau_is_mesh_independent_with_fillet():
+    """Se zaoblením koutu musí být τ_max KONVERGOVANÉ – dva různě jemné rozbory
+    téhož profilu se smějí lišit jen málo. U ostrého koutu (r=0) je maximum
+    singulární a s jemnější sítí roste; test to dokládá kontrastem."""
+    import numpy as np
+    _fem = pytest.importorskip("beamer._fem")
+    from beamer.section import make_I, fillet_reentrant
+    base, _w, _s, _i = make_I(200, 100, 100, 6, 10, 10)
+    Mk = 3.0e5
+
+    def tau_max(pts, max_area):
+        r = _fem.analyze_section([(float(y), float(z)) for y, z in pts],
+                                 holes=None, max_area=max_area, nu=0.3,
+                                 compute_shear=True)
+        tt = r["shear_t_tor"] * (Mk / r["J"])
+        return float(np.max(np.hypot(tt[:, 0], tt[:, 1])))
+
+    filled = fillet_reentrant(base, 6.0)
+    a, b = tau_max(filled, 6.0), tau_max(filled, 2.5)
+    assert abs(b - a) / a < 0.15            # zaoblený: konverguje
+    sharp_a, sharp_b = tau_max(base, 6.0), tau_max(base, 2.5)
+    # ostrý kout roste výrazně víc než zaoblený (singularita)
+    assert (sharp_b - sharp_a) / sharp_a > abs(b - a) / a

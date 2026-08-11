@@ -73,11 +73,15 @@ SECTION_PARAMS = {
     "tube": [("Do", "vnější ⌀ Do", 100), ("t", "tloušťka t", 5)],
     "i_section": [("h", "výška h", 200), ("tw", "stojina tw", 6),
                   ("bf1", "horní pásnice bf1", 100), ("tf1", "tl. tf1", 10),
-                  ("bf2", "dolní pásnice bf2", 100), ("tf2", "tl. tf2", 10)],
+                  ("bf2", "dolní pásnice bf2", 100), ("tf2", "tl. tf2", 10),
+                  ("r", "zaoblení koutů r", 6)],
     "t_section": [("h", "výška h", 200), ("b", "pásnice b", 120),
-                  ("tw", "stojina tw", 8), ("tf", "pásnice tf", 12)],
-    "l_section": [("h", "výška h", 100), ("b", "šířka b", 100), ("t", "tloušťka t", 10)],
-    "c_section": [("h", "výška h", 200), ("b", "šířka b", 80), ("t", "tloušťka t", 8)],
+                  ("tw", "stojina tw", 8), ("tf", "pásnice tf", 12),
+                  ("r", "zaoblení koutů r", 8)],
+    "l_section": [("h", "výška h", 100), ("b", "šířka b", 100), ("t", "tloušťka t", 10),
+                  ("r", "zaoblení koutů r", 10)],
+    "c_section": [("h", "výška h", 200), ("b", "šířka b", 80), ("t", "tloušťka t", 8),
+                  ("r", "zaoblení koutů r", 8)],
     "direct": [("A", "plocha A [mm²]", 1000.0),
                ("Iy", "moment setrvačnosti Iy [mm⁴]", 1.0e6),
                ("Iz", "moment setrvačnosti Iz [mm⁴]", 1.0e6),
@@ -368,7 +372,18 @@ class InputPanel(QWidget):
         idx = self.theory_cb.findData(self.state.theory)
         self.theory_cb.setCurrentIndex(max(0, idx))
         self.theory_cb.currentIndexChanged.connect(self._on_theory)
-        f.addRow(tr("Teorie:"), self.theory_cb)
+        f.addRow(tr("Teorie ohybu:"), self.theory_cb)
+        self.torsion_theory_cb = NoWheelComboBox()
+        self.torsion_theory_cb.addItem("Saint-Venant", "saint-venant")
+        self.torsion_theory_cb.addItem("Vlasov (warping)", "vlasov")
+        self.torsion_theory_cb.setToolTip(tr(
+            "Saint-Venant zachovává dosavadní model GJ. Vlasov přidává deplanaci, "
+            "bimoment a warpingové napětí; vyžaduje přesný FEM průřezu."))
+        idx = self.torsion_theory_cb.findData(
+            getattr(self.state, "torsion_theory", "saint-venant"))
+        self.torsion_theory_cb.setCurrentIndex(max(0, idx))
+        self.torsion_theory_cb.currentIndexChanged.connect(self._on_torsion_theory)
+        f.addRow(tr("Teorie torze:"), self.torsion_theory_cb)
         self.layout.addWidget(box)
 
     def _update_len_label(self):
@@ -381,6 +396,10 @@ class InputPanel(QWidget):
 
     def _on_theory(self, _):
         self.state.theory = self.theory_cb.currentData()
+        self._emit()
+
+    def _on_torsion_theory(self, _):
+        self.state.torsion_theory = self.torsion_theory_cb.currentData()
         self._emit()
 
     # ── materiál ──
@@ -999,6 +1018,20 @@ class InputPanel(QWidget):
                            "vetknutí-volný 2.0, vetknutí-kloub 0.7, vetknutí-vetknutí 0.5"))
         musp.valueChanged.connect(lambda val, s=seg: (setattr(s, "buckling_mu", val), self._emit()))
         f.addRow(tr("Vzpěr μ:"), musp)
+        # 0 = konzervativní dlouhá deska. Délka úseku není automaticky příčná
+        # podpora stěny; konečný poměr stran se smí použít jen po explicitním zadání.
+        alb = getattr(seg, "local_buckling_length", None)
+        asp = _spin(float(alb or 0.0), 0.0, 1e6, 10.0, 1, " mm")
+        asp.setSpecialValueText(tr("dlouhá deska"))
+        asp.setToolTip(tr("Rozteč příčných podpor stěny pro lokální boulení; "
+                          "0 = konzervativní dlouhá deska."))
+        asp.valueChanged.connect(
+            lambda val, s=seg: (
+                setattr(s, "local_buckling_length", val if val > 0.0 else None),
+                self._emit(),
+            )
+        )
+        f.addRow(tr("Pole boulení a:"), asp)
         # PID volba: (inline) nebo některá vlastnost
         pidcb = NoWheelComboBox()
         pidcb.addItem(tr("(inline – vlastní)"), None)
@@ -1347,9 +1380,11 @@ class InputPanel(QWidget):
             "restrain_y": True,
             "restrain_rz": sup.type == "fixed",
             "restrain_torsion": sup.type in ("fixed", "pin"),
+            "restrain_warping": sup.type == "fixed",
         }
         for attr, label in (("restrain_y", "y"), ("restrain_rz", "Rz"),
-                            ("restrain_torsion", "torze")):
+                            ("restrain_torsion", "torze"),
+                            ("restrain_warping", "deplanace")):
             chk = QCheckBox(tr(label))
             current = getattr(sup, attr, None)
             chk.setChecked(defaults[attr] if current is None else bool(current))
@@ -1600,6 +1635,8 @@ class InputPanel(QWidget):
                 v += f"  Fy={ld.Fy:.0f} N"
         elif ld.type == "distributed":
             v = f"  q={ld.q1:.1f}→{ld.q2:.1f} ({ld.x1:.0f}–{ld.x2:.0f})"
+            if abs(getattr(ld, "qy1", 0.0)) > 1e-9 or abs(getattr(ld, "qy2", 0.0)) > 1e-9:
+                v += f"  qy={ld.qy1:.1f}→{ld.qy2:.1f}"
         elif ld.type == "moment":
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
             if abs(getattr(ld, "Mz", 0.0)) > 1e-9:
@@ -1690,8 +1727,10 @@ class InputPanel(QWidget):
         elif ld.type == "distributed":
             f.addRow("x1:", bind("x1", " mm", 1, 50))
             f.addRow("x2:", bind("x2", " mm", 1, 50))
-            f.addRow("q1:", bind("q1", " N/mm"))
-            f.addRow("q2:", bind("q2", " N/mm"))
+            f.addRow(tr("q1 (svislé, +nahoru):"), bind("q1", " N/mm"))
+            f.addRow(tr("q2 (svislé):"), bind("q2", " N/mm"))
+            f.addRow(tr("qy1 (vodorovné, +y):"), bind("qy1", " N/mm"))
+            f.addRow(tr("qy2 (vodorovné):"), bind("qy2", " N/mm"))
         elif ld.type == "moment":
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow(tr("My (kolem y):"), bind("My", " N·mm"))
@@ -1932,8 +1971,18 @@ class ResultsPanel(QWidget):
             prows += [
                 ("RF_yield / RF_ult",
                  f"{fmt(assess.get('RF_yield', 0))} / {fmt(assess.get('RF_ultimate', 0))}"),
-                ("RF", f"{fmt(assess.get('RF', 0))} ({assess.get('critical','')})"),
             ]
+            if assess.get("RF_local_buckling") is not None:
+                wall = assess.get("critical_wall", "")
+                prows.append(("RF_local buckling",
+                              f"{fmt(assess['RF_local_buckling'])} ({wall})"))
+            if assess.get("RF_crippling") is not None:
+                prows.append(("RF_crippling", fmt(assess["RF_crippling"])))
+            if assess.get("local_stability_note"):
+                prows.append((tr("Lokální stabilita"),
+                              tr(assess["local_stability_note"])))
+            prows.append(("RF", f"{fmt(assess.get('RF', 0))} "
+                                  f"({assess.get('critical','')})"))
         # nadpis řezu (který úsek / kde) → do hlavičky boxu vlastností
         cap = (title or "").strip(" —")
         self.box_props.setTitle(tr("Vlastnosti průřezu") + (f" · {cap}" if cap else ""))
@@ -1981,8 +2030,22 @@ class ResultsPanel(QWidget):
                 ("Mk max/min [N·mm]", f"{fmt(max(Mk))} / {fmt(min(Mk))}"),
                 ("w max/min [mm]", f"{fmt(max(w))} / {fmt(min(w))}"),
             ]
+            if getattr(state, "torsion_theory", "saint-venant") == "vlasov":
+                B = [getattr(p, "B", 0.0) for p in result.points]
+                Tsv = [getattr(p, "T_sv", p.Mk) for p in result.points]
+                Tw = [getattr(p, "T_w", 0.0) for p in result.points]
+                beta = [getattr(p, "warping_rate", 0.0) for p in result.points]
+                vrows += [
+                    ("Tsv max/min [N·mm]", f"{fmt(max(Tsv))} / {fmt(min(Tsv))}"),
+                    ("Tω max/min [N·mm]", f"{fmt(max(Tw))} / {fmt(min(Tw))}"),
+                    ("B max/min [N·mm²]", f"{fmt(max(B))} / {fmt(min(B))}"),
+                    ("θ' max/min [1/mm]", f"{fmt(max(beta))} / {fmt(min(beta))}"),
+                ]
             for i, rc in enumerate(result.reactions):
                 vrows.append((f"{tr('Reakce')} {i+1} (x={rc.x:.0f}) Rz [N]", fmt(rc.Rz)))
+                if getattr(state, "torsion_theory", "saint-venant") == "vlasov":
+                    vrows.append((f"{tr('Reakce')} {i+1} B [N·mm²]",
+                                  fmt(getattr(rc, "B_warping", 0.0))))
         arows = []
         if margins:
             crit = min(margins, key=lambda m: m.RF)
@@ -1996,6 +2059,11 @@ class ResultsPanel(QWidget):
                 ("  RF_min", f"{fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f}"),
                 ("  RF_yield / RF_ult", f"{fmt(crit.RF_yield)} / {fmt(crit.RF_ultimate)}"),
             ]
+            if crit.RF_local_buckling is not None:
+                arows.append(("  RF_local buckling",
+                              f"{fmt(crit.RF_local_buckling)} ({crit.critical_wall})"))
+            if crit.RF_crippling is not None:
+                arows.append(("  RF_crippling", fmt(crit.RF_crippling)))
         self._fill(self.tbl_vvu, vrows or [(tr("(stiskněte Spočítat)"), "")])
         self._fill(self.tbl_assess, arows or [(tr("(stiskněte Spočítat)"), "")])
 
@@ -2153,6 +2221,13 @@ class ReportPanel(QWidget):
             ("φ (ohyb. pootočení) [°]", fmt(d0["phi"] * deg)),
             ("θ (torzní pootočení) [°]", fmt(d0["theta"] * deg)),
         ]
+        if getattr(self._state, "torsion_theory", "saint-venant") == "vlasov":
+            rows[6:6] = [
+                ("Tsv [N·mm]", fmt(d0["T_sv"])),
+                ("Tω [N·mm]", fmt(d0["T_w"])),
+                ("B [N·mm²]", fmt(d0["B"])),
+                ("θ' (deplanace) [1/mm]", fmt(d0["warping_rate"])),
+            ]
         if abs(d0.get("u", 0.0)) > 1e-9:       # osově zatížený prut
             rows.insert(5, (tr("u (osový posun) [mm]"), fmt(d0["u"])))
         # na rozhraní úseků: blok průřez/napětí/RF pro každý přiléhající úsek
@@ -2169,6 +2244,7 @@ class ReportPanel(QWidget):
                     ("A [mm²]", fmt(sec.A)),
                     ("Iy [mm⁴]", fmt(sec.Iy)),
                     ("IT [mm⁴]", fmt(sec.IT)),
+                    ("Iω [mm⁶]", fmt(sec.Iw)),
                 ]
             if mat is not None:
                 rows.append((tr("materiál"), getattr(mat, "name", "?")))
@@ -2177,8 +2253,15 @@ class ReportPanel(QWidget):
                 ("τ max [MPa]", fmt(d["tau_max"])),
                 ("σ_red (von Mises) [MPa]", fmt(d["mises_max"])),
                 ("RF_yield / RF_ult", f"{fmt(d['RF_yield'])} / {fmt(d['RF_ultimate'])}"),
-                ("RF", f"{fmt(d['RF'])}  ({d['critical']})"),
             ]
+            if d.get("RF_local_buckling") is not None:
+                rows.append(("RF_local buckling",
+                             f"{fmt(d['RF_local_buckling'])} ({d.get('critical_wall', '')})"))
+            if d.get("RF_crippling") is not None:
+                rows.append(("RF_crippling", fmt(d["RF_crippling"])))
+            if d.get("local_stability_note"):
+                rows.append((tr("Lokální stabilita"), tr(d["local_stability_note"])))
+            rows.append(("RF", f"{fmt(d['RF'])}  ({d['critical']})"))
             if d.get("materials"):        # složený PID → rozpad per materiál
                 rows.append((tr("  — per materiál (σ / τ / σ_red) —"), ""))
                 if d.get("b1_fallback"):

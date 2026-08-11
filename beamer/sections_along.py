@@ -191,10 +191,12 @@ class SectionResolver:
             w = composite_weighted(self.state, p)
             if w and w.multi_material:
                 try:                       # B2: variabilní-G torzní tuhost
-                    from .composite_fem import composite_torsion_GJ
+                    from .composite_fem import composite_torsion_GJ, composite_warping_EIw
                     w.GJ = composite_torsion_GJ(self.state, p)
+                    w.EIw = composite_warping_EIw(self.state, p)
                 except Exception:
                     w.GJ = None
+                    w.EIw = None
                 self._wcache[key] = w
             else:
                 self._wcache[key] = None
@@ -210,12 +212,16 @@ class SectionResolver:
         # vč. rotace/params/bodies), takže stačí volat ji přímo.
         seg = segment_at(self.state, x)
         sec1, sec2 = eff_defs(self.state, seg)
+        # přesný režim τ / warping potřebuje FEM i u parametrických profilů
+        # (přesné Iω, střed smyku a smykové pole) – viz build_section(exact=)
+        ex = (getattr(self.state, "tau_mode", "conservative") == "exact"
+              or getattr(self.state, "torsion_theory", "saint-venant") == "vlasov")
         if sec2 is None:
-            return build_section(sec1)
+            return build_section(sec1, exact=ex)
         # tapered – kvantizuj x na ~1 mm (build_section obsahově cachuje výsledek)
         span = seg.x2 - seg.x1
         t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (x - seg.x1)/span))
-        return build_section(interp_def(sec1, sec2, t))
+        return build_section(interp_def(sec1, sec2, t), exact=ex)
 
     def is_tapered_region(self, x: float) -> bool:
         _, sec2 = eff_defs(self.state, segment_at(self.state, x))

@@ -53,8 +53,10 @@ class SectionEditorDialog(QDialog):
         # importy jsou na úrovni výběru typu (ne tlačítko v každém typu)
         self.cb.insertSeparator(self.cb.count())
         self.cb.addItem(tr("Import z Ministatiku (.rez)…"), "__import_rez__")
+        self.cb.addItem(tr("Import z textu (y,z)…"), "__import_text__")
+        self.cb.addItem(tr("Import z IGES/IGS křivky…"), "__import_iges__")
         # ukázat všechny položky najednou, bez skrolování v rozbaleném seznamu
-        self.cb.setMaxVisibleItems(len(self._LABELS) + 3)
+        self.cb.setMaxVisibleItems(len(self._LABELS) + 5)
         self.cb.setStyleSheet("QComboBox{combobox-popup:0;}")
         i = self.cb.findData(self.sdef.type)
         self.cb.setCurrentIndex(max(0, i))
@@ -104,12 +106,15 @@ class SectionEditorDialog(QDialog):
 
     def _on_type(self, _):
         t = self.cb.currentData()
-        if t == "__import_rez__":
+        if t in ("__import_rez__", "__import_text__", "__import_iges__"):
             # vrať combo na předchozí typ; import si typ nastaví sám (nebo se zruší)
             self.cb.blockSignals(True)
             self.cb.setCurrentIndex(max(0, self.cb.findData(self.sdef.type)))
             self.cb.blockSignals(False)
-            self._on_import_rez()
+            if t == "__import_rez__":
+                self._on_import_rez()
+            else:
+                self._on_import_geometry("text" if t == "__import_text__" else "iges")
             return
         self.sdef.type = t
         if t == "polygon":
@@ -146,6 +151,47 @@ class SectionEditorDialog(QDialog):
         self.sdef.polygon_holes = None
         self.sdef.params = {}
         # přepni combo na "polygon" bez vyvolání _on_type smyčky
+        i = self.cb.findData("polygon")
+        if i >= 0:
+            self.cb.blockSignals(True)
+            self.cb.setCurrentIndex(i)
+            self.cb.blockSignals(False)
+        self._rebuild_form()
+        self._fem_dirty = True
+        self._changed()
+        QMessageBox.information(
+            self, tr("Import"),
+            tr("Načteno") + f": {len(new_sdef.bodies)} " + tr("těleso/těles."))
+
+    def _on_import_geometry(self, mode: str):
+        """Import uzavřených smyček z textových souřadnic nebo IGES/IGS."""
+        if mode == "text":
+            title = tr("Načíst průřez z textu")
+            file_filter = tr("Textové souřadnice") + " (*.txt *.csv *.dat);;" + tr("Všechny soubory") + " (*)"
+        else:
+            title = tr("Načíst průřez z IGES/IGS")
+            file_filter = "IGES/IGS (*.igs *.iges);;" + tr("Všechny soubory") + " (*)"
+        path, _ = QFileDialog.getOpenFileName(self, title, "", file_filter)
+        if not path:
+            return
+        try:
+            from ..section_import import load_iges, load_section_text
+            new_sdef = load_section_text(path) if mode == "text" else load_iges(path)
+            build_section(new_sdef, fem=False)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, tr("Chyba importu"), tr("Nelze načíst geometrii průřezu:\n") + f"{exc}")
+            return
+        self.sdef.type = "polygon"
+        self.sdef.bodies = new_sdef.bodies
+        self.sdef.polygon_points = None
+        self.sdef.polygon_holes = None
+        self.sdef.polygon_thickness = None
+        self.sdef.polygon_closed = True
+        self.sdef.params = {}
+        self.sdef.shapes = None
+        self.sdef.name = new_sdef.name
+        self.sdef.rotation = 0.0
         i = self.cb.findData("polygon")
         if i >= 0:
             self.cb.blockSignals(True)

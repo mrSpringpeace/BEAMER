@@ -51,6 +51,16 @@ EN = {
     "L-profil": "Angle (L)",
     "U/C-profil": "Channel (U/C)",
     "Vlastní (polygon)": "Custom (polygon)",
+    "Import z Ministatiku (.rez)…": "Import from Ministatik (.rez)…",
+    "Import z textu (y,z)…": "Import from text (y,z)…",
+    "Import z IGES/IGS křivky…": "Import from IGES/IGS curve…",
+    "Načíst průřez (.rez)": "Load cross-section (.rez)",
+    "Načíst průřez z textu": "Load cross-section from text",
+    "Načíst průřez z IGES/IGS": "Load cross-section from IGES/IGS",
+    "Textové souřadnice": "Text coordinates",
+    "Všechny soubory": "All files",
+    "Nelze načíst geometrii průřezu:\n": "Cannot load cross-section geometry:\n",
+    "těleso/těles.": "body/bodies",
     # rozměry průřezu
     "šířka b": "width b",
     "výška h": "height h",
@@ -474,12 +484,48 @@ EN = {
     "– otevři ⊞ Load Cases a nastav faktory.":
         "Combination “%s” includes no load (all factors are 0) – open "
         "⊞ Load Cases and set the factors.",
+    # obálka – vodorovná rovina (biaxiál)
+    "M_z – ohybový moment vodorovný [N·mm] (obálka)":
+        "M_z – horizontal bending moment [N·mm] (envelope)",
+    "V_y – posouvající síla vodorovná [N] (obálka)":
+        "V_y – horizontal shear force [N] (envelope)",
+    # vodorovné spojité zatížení
+    "q1 (svislé, +nahoru):": "q1 (vertical, +up):",
+    "q2 (svislé):": "q2 (vertical):",
+    "qy1 (vodorovné, +y):": "qy1 (horizontal, +y):",
+    "qy2 (vodorovné):": "qy2 (horizontal):",
+    # etapa B: presny smykovy tok + zaobleni koutu
+    "τ:": "τ:",
+    "konzervativní (|τV|+|τt|)": "conservative (|τV|+|τt|)",
+    "přesné 2D pole (FEM)": "exact 2D field (FEM)",
+    "zaoblení koutů r": "fillet radius r",
+    "  Smyk: přesné 2D pole (Pilkey Ψ/Φ, vektorové skládání s torzí)":
+        "  Shear: exact 2D field (Pilkey Ψ/Φ, vector combination with torsion)",
+    "  Smyk: konzervativní (Žuravskij, |τ_V|+|τ_t|)":
+        "  Shear: conservative (Zhuravskii, |τ_V|+|τ_t|)",
+    "    ⚠ Profil má ostrý vnitřní kout (r=0): špička τ v koutě je singulární a závisí na síti – zadej zaoblení r.":
+        "    ⚠ The profile has a sharp re-entrant corner (r=0): the τ peak there is singular and mesh-dependent – enter a fillet radius r.",
     # záložka výsledky + zobrazení
     "Výsledky": "Results",
     "Schéma (zadání + reakce)": "Scheme (input + reactions)",
     "Zobrazit průhyb a pootočení": "Show deflection and rotation",
     "deformovaný tvar": "deformed shape",
     "Všechny veličiny jsou nulové": "All quantities are zero",
+    # etapa D: lokální boulení a crippling
+    "Pole boulení a:": "Buckling bay a:",
+    "dlouhá deska": "long plate",
+    "Rozteč příčných podpor stěny pro lokální boulení; 0 = konzervativní dlouhá deska.":
+        "Spacing of transverse wall supports for local buckling; "
+        "0 = conservative long plate.",
+    "Lokální stabilita": "Local stability",
+    "  Lokální boulení: klasická desková teorie; crippling: empirická metoda "
+    "Needham/Gerard, jen pro známou topologii.":
+        "  Local buckling: classical plate theory; crippling: empirical "
+        "Needham/Gerard method, known topology only.",
+    "Lokální boulení: klasická desková teorie; crippling: empirická metoda "
+    "Needham/Gerard, jen pro známou topologii.":
+        "Local buckling: classical plate theory; crippling: empirical "
+        "Needham/Gerard method, known topology only.",
 }
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -50,6 +51,12 @@ class StressInfluence:
     corners: tuple = ()  # ((y,z), …) [m] – 4 rohy bounding boxu od těžiště
     y_mm: np.ndarray | None = None
     c_tVy: np.ndarray | None = None
+    # přesné 2D smykové pole (Pilkey Ψ/Φ + torzní ∇ω) v těžištích elementů –
+    # jen když průřez prošel FEM (build_section(..., exact=True))
+    shear_field: dict | None = None
+    warping_field: dict | None = None
+    A_si: float = 0.0        # plocha [m²] – pro σ v bodech pole
+    IT_mm4: float = 0.0      # torzní konstanta [mm⁴] – τ_t = (Mk/IT)·t_tor
 
 
 def build_influence(section: CrossSection, n=60) -> StressInfluence:
@@ -106,11 +113,87 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
         c_tVy[i] = Qy_si/(Iz_si*h_si) if (Iz_si > 1e-30 and h_si > 1e-15) else 0.0
     return StressInfluence(z, c_sN, c_sM, c_tV, c_tT,
                            Iy_si=Iy_si, Iz_si=Iz_si, Iyz_si=Iyz_si, corners=corners,
-                           y_mm=y, c_tVy=c_tVy)
+                            y_mm=y, c_tVy=c_tVy,
+                            shear_field=getattr(section, "shear_field", None),
+                            warping_field=getattr(section, "warping_field", None),
+                            A_si=A_si, IT_mm4=float(getattr(section, "IT", 0.0) or 0.0))
+
+
+def exact_stress_field(infl: StressInfluence, N, V, M, Mk, Mz=0.0, Vy=0.0,
+                       B=0.0, T_sv=None, T_w=0.0,
+                       combine_shear_vectors=True):
+    """Přesné 2D pole napětí z FEM smykových funkcí (Pilkey Ψ/Φ + torzní ∇ω).
+
+    Na rozdíl od konzervativní cesty (Žuravskij + součet velikostí τ) se zde
+    smyk skládá **vektorově** ve skutečném bodě průřezu:
+
+        τ_vec = Vz·t_vz + Vy·t_vy + (Mk/IT)·t_tor
+
+    (u torze se G vykrátí: τ_t = G·θ'·t_tor, θ' = Mk/(G·IT)). Normálové napětí
+    se vyhodnotí v týchž bodech plným vzorcem nesymetrického ohybu, takže
+    von Mises vzniká ze σ a τ ve STEJNÉM místě – ne ze špiček v různých
+    vláknech. Vrací (σ_max, τ_max, σ_red_max) v MPa, nebo None, není-li pole
+    k dispozici (průřez neprošel FEM)."""
+    sf = infl.shear_field
+    if not sf or infl.IT_mm4 <= 0:
+        return None
+    coords = sf["coords"]
+    if coords is None or len(coords) == 0:
+        return None
+    sv = Mk if T_sv is None else T_sv
+    parts = [sf["t_vz"]*V, sf["t_vy"]*Vy,
+             sf["t_tor"]*(sv/infl.IT_mm4)]
+    wf = infl.warping_field
+    Iw = float(wf.get("Iw", 0.0)) if wf else 0.0
+    if wf and Iw > 0.0 and abs(T_w) > 0.0:
+        parts.append(wf["t_w"]*(T_w/Iw))
+    if combine_shear_vectors:
+        tau = sum(parts, np.zeros_like(parts[0]))
+        tau_mag = np.hypot(tau[:, 0], tau[:, 1])
+    else:
+        # Konzervativní režim zachovává součet lokálních velikostí jednotlivých
+        # smykových příspěvků, pouze už pracuje na společném 2D FEM poli.
+        tau_mag = sum((np.hypot(p[:, 0], p[:, 1]) for p in parts),
+                      np.zeros(len(parts[0])))
+
+    # normálové napětí v týchž bodech (mm → SI konzistentně s c_sN/c_sM)
+    Iy = infl.Iy_si*1e12; Iz = infl.Iz_si*1e12; Iyz = infl.Iyz_si*1e12   # mm⁴
+    A_mm2 = 1.0/infl.c_sN*1e6 if infl.c_sN > 0 else 0.0
+    y = coords[:, 0]; z = coords[:, 1]
+    sig = np.full(len(coords), N/A_mm2 if A_mm2 > 0 else 0.0)
+    den = Iy*Iz - Iyz*Iyz
+    if den > 1e-30:
+        sig = sig - ((M*Iz - Mz*Iyz)*z + (Mz*Iy - M*Iyz)*y)/den
+    elif Iy > 1e-30:
+        sig = sig - M*z/Iy
+    if wf and Iw > 0.0 and abs(B) > 0.0:
+        sig = sig + (B/Iw)*wf["omega"]
+    mises = np.sqrt(sig**2 + 3.0*tau_mag**2)
+    if not np.all(np.isfinite(tau_mag)) or not np.all(np.isfinite(mises)):
+        # FEM smykových funkcí selhal (singulární matice u příliš jemného
+        # obrysu vůči síti) → radši spadnout zpět na konzervativní cestu,
+        # než vrátit NaN do posouzení
+        return None
+    sigma_max = float(np.max(np.abs(sig)))
+    if wf and Iw > 0.0 and abs(B) > 0.0:
+        nc = wf.get("node_coords")
+        no = wf.get("node_omega")
+        if nc is not None and no is not None and len(nc):
+            yn = nc[:, 0]; zn = nc[:, 1]
+            sign = np.full(len(nc), N/A_mm2 if A_mm2 > 0 else 0.0)
+            if den > 1e-30:
+                sign = sign - ((M*Iz-Mz*Iyz)*zn + (Mz*Iy-M*Iyz)*yn)/den
+            elif Iy > 1e-30:
+                sign = sign - M*zn/Iy
+            sign = sign + (B/Iw)*no
+            sigma_max = max(sigma_max, float(np.max(np.abs(sign))))
+    return (sigma_max, float(np.max(tau_mag)),
+            float(np.max(mises)))
 
 
 def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False,
-                      Vy=0.0):
+                      Vy=0.0, tau_exact=False, B=0.0, T_sv=None, T_w=0.0,
+                      warping=False):
     """Max |σ|, |τ|, σ_red [MPa] z předpočítaných koeficientů. Vektorizováno.
 
     combine=False → σ_red = skutečné maximum von Mises po řezu (špička σ a špička
@@ -170,6 +253,21 @@ def max_stresses_fast(infl: StressInfluence, N, V, M, Mk, Mz=0.0, combine=False,
             # Bez plného 2D pole nelze bezpečně určit společné místo špiček obou
             # smykových rovin. Konzervativně použijeme jejich horní mez.
             mz = max(mz, math.sqrt(sg**2 + 3*tu**2))
+
+    # Přesný režim: τ z plného 2D pole (vektorové skládání) místo součtu
+    # velikostí. σ_max zůstává ze scanu/rohů – ten trefí krajní vlákno přesněji
+    # než těžiště okrajových elementů; σ_red se bere jako maximum z pole a
+    # z čistě ohybové špičky.
+    if tau_exact or warping:
+        ex = exact_stress_field(
+            infl, N, V, M, Mk, Mz=Mz, Vy=Vy, B=B, T_sv=T_sv, T_w=T_w,
+            combine_shear_vectors=tau_exact,
+        )
+        if ex is not None:
+            sg_e, tu_e, mz_e = ex
+            sg = max(sg, sg_e)
+            tu = tu_e
+            mz = max(mz_e, sg) if not combine else math.sqrt(sg**2 + 3*tu_e**2)
     return sg, tu, mz
 
 
@@ -209,7 +307,8 @@ class StressProfile:
 
 
 def stress_profile(section: CrossSection, N, V, M, Mk, n=160, Mz=0.0,
-                   Vy=0.0) -> StressProfile:
+                   Vy=0.0, B=0.0, T_sv=None, T_w=0.0,
+                   warping=False, tau_exact=False) -> StressProfile:
     """Detailní průběh napětí po výšce (pro diagram). Výstup MPa.
     Používá rychlé vlivové koeficienty (vektorizováno)."""
     infl = build_influence(section, n=n)
@@ -247,6 +346,44 @@ def stress_profile(section: CrossSection, N, V, M, Mk, n=160, Mz=0.0,
     tau_pa = np.abs(V*infl.c_tV) + np.abs(Mk_nm*infl.c_tT)
     if infl.c_tVy is not None and abs(Vy) > 0.0:
         tau_pa += _maxabs_raw(Vy*infl.c_tVy)
+    wf = infl.warping_field
+    if warping and wf and float(wf.get("Iw", 0.0)) > 0.0:
+        # Svislý diagram je obálka přes šířku y. Pro každý z bereme nejbližší
+        # FEM uzly (σw) a centroidy elementů (τw); samotné 2D RF vyhodnocení výše
+        # zůstává přesné v původních bodech pole.
+        Iw = float(wf["Iw"])
+        nc = np.asarray(wf["node_coords"])
+        no = np.asarray(wf["node_omega"])
+        Iy = section.Iy; Iz = section.Iz; Iyz = getattr(section, "Iyz", 0.0)
+        den = Iy*Iz-Iyz*Iyz
+        A = section.A
+        sn = np.full(len(nc), N/A if A > 0.0 else 0.0)
+        if den > 1e-30:
+            sn -= ((M*Iz-Mz*Iyz)*nc[:, 1] + (Mz*Iy-M*Iyz)*nc[:, 0])/den
+        elif Iy > 1e-30:
+            sn -= M*nc[:, 1]/Iy
+        sn += (B/Iw)*no
+        k_nodes = min(12, len(nc))
+        for i, zi in enumerate(infl.z_mm):
+            idx = np.argpartition(np.abs(nc[:, 1]-zi), k_nodes-1)[:k_nodes]
+            sigma_pa[i] = sn[idx[np.argmax(np.abs(sn[idx]))]] * 1e6
+
+        sf = infl.shear_field
+        if sf and len(sf["coords"]):
+            sv = Mk if T_sv is None else T_sv
+            parts = [sf["t_vz"]*V, sf["t_vy"]*Vy,
+                     sf["t_tor"]*(sv/infl.IT_mm4), wf["t_w"]*(T_w/Iw)]
+            if tau_exact:
+                tv = sum(parts, np.zeros_like(parts[0]))
+                tm = np.hypot(tv[:, 0], tv[:, 1])
+            else:
+                tm = sum((np.hypot(p[:, 0], p[:, 1]) for p in parts),
+                         np.zeros(len(parts[0])))
+            c = np.asarray(sf["coords"])
+            k_elem = min(12, len(c))
+            for i, zi in enumerate(infl.z_mm):
+                idx = np.argpartition(np.abs(c[:, 1]-zi), k_elem-1)[:k_elem]
+                tau_pa[i] = float(np.max(tm[idx])) * 1e6
     sigma = sigma_pa/1e6
     tau = tau_pa/1e6
     mises = np.sqrt((sigma)**2 + 3*(tau)**2)
@@ -273,6 +410,31 @@ class ReserveResult:
     RF_ultimate: float     # Rm / σ_red
     RF: float              # min(RF_yield, RF_ultimate); ≥ 1 = vyhovuje
     critical: str
+    RF_local_buckling: float | None = None
+    RF_crippling: float | None = None
+    critical_wall: str = ""
+    local_stability_note: str = ""
+
+
+def _include_local_stability(section, mat, seg, state, N, M, Mz, B,
+                             RF, crit):
+    """Přidá nezávislé tlakové módy do společného RF a vrátí i detail."""
+    from .local_stability import assess_local_stability
+    length = float(getattr(seg, "local_buckling_length", 0.0) or 0.0)
+    if length <= 0.0:
+        # Hranice úseku nosníku nemusí být příčnou podporou desky. Bez výslovné
+        # rozteče proto použijeme dlouhý limit (a/b=20), který je konzervativní.
+        walls = list(getattr(section, "local_walls", None) or [])
+        length = 20.0*max((wall.width for wall in walls), default=1.0)
+    local = assess_local_stability(section, mat, length, N, M, Mz=Mz, B=B)
+    candidates = [
+        (local.RF_local_buckling, "local_buckling"),
+        (local.RF_crippling, "crippling"),
+    ]
+    for value, mode in candidates:
+        if value is not None and value < RF:
+            RF, crit = value, mode
+    return RF, crit, local
 
 
 def _principal_inertia_min(section):
@@ -393,6 +555,8 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     basis = getattr(state, "rf_basis", "min")
     combine = getattr(state, "sigma_red_mode", "exact") == "combined"
     plast = getattr(state, "plasticity_enabled", False)
+    tau_exact = getattr(state, "tau_mode", "conservative") == "exact"
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
     g_mat = state.material()
     resolver = getattr(result, "resolver", None)
 
@@ -420,12 +584,15 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     # několik unikátních průřezů; pro tapered na omezené reprezentativní mřížce
     # (margins-scan nepotřebuje řez v každém bodě). build_influence je drahé.
     if resolver is None:
+        if tau_exact and getattr(section, "shear_field", None) is None:
+            # bez resolveru nemáme definici k přestavbě → přesný režim by tiše
+            # spadl zpět na konzervativní; ať je to alespoň explicitní
+            tau_exact = False
         base_infl = (build_influence(section, n=60)
                      if getattr(section, "strength_available", True) else None)
         base_alpha = alpha_pl_for(section)
         def data_at(x):
-            return (base_infl, base_alpha, g_mat.Re, g_mat.Rm,
-                    getattr(g_mat, "Fsu", None))
+            return base_infl, base_alpha, g_mat
     else:
         # Vlivové koeficienty pro průřez SKUTEČNĚ v poloze x, cache dle identity
         # průřezu. resolver.at vrací u prizmatického úseku stejný objekt (→ jen
@@ -442,8 +609,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
             if key not in seen:
                 infl = (build_influence(cs, n=50)
                         if getattr(cs, "strength_available", True) else None)
-                seen[key] = (infl, alpha_pl_for(cs), mat.Re, mat.Rm,
-                             getattr(mat, "Fsu", None))
+                seen[key] = (infl, alpha_pl_for(cs), mat)
             return seen[key]
 
     if progress:
@@ -464,19 +630,29 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
             ca = composite_assess(state, pr, p.N, p.M, basis, Mk=p.Mk, V=p.V,
                                   Vy=getattr(p, "V_y", 0.0),
                                   Mz=getattr(p, "M_z", 0.0),
-                                  dT=dtemp, dT_grad=dtemp_grad)
+                                  dT=dtemp, dT_grad=dtemp_grad,
+                                  B=getattr(p, "B", 0.0),
+                                  T_sv=(getattr(p, "T_sv", p.Mk) if vlasov else p.Mk),
+                                  T_w=getattr(p, "T_w", 0.0))
             if ca is not None:
                 out.append(ReserveResult(p.x, ca["sigma_max"], ca["tau_max"], ca["mises_max"],
                                          ca["RF_yield"], ca["RF_ultimate"], ca["RF"],
                                          ca["critical"]))
                 continue
-        infl, alpha, Re, Rm, Fsu = data_at(p.x)
+        infl, alpha, mat = data_at(p.x)
         if infl is None:
             continue
+        Re, Rm = mat.Re, mat.Rm
+        Fsu = getattr(mat, "Fsu", None)
         vy = getattr(p, "V_y", 0.0)
         mz_b = getattr(p, "M_z", 0.0)
         sg, tu, mz = max_stresses_fast(infl, p.N, p.V, p.M, p.Mk,
-                                       Mz=mz_b, combine=combine, Vy=vy)
+                                       Mz=mz_b, combine=combine, Vy=vy,
+                                       tau_exact=tau_exact,
+                                       B=getattr(p, "B", 0.0),
+                                       T_sv=(getattr(p, "T_sv", p.Mk) if vlasov else p.Mk),
+                                       T_w=getattr(p, "T_w", 0.0),
+                                       warping=vlasov)
         RF_y = (Re/mz) if mz > 1e-9 else float("inf")
         # plastická rezerva (α_pl·M_pl) se uplatní jen v ultimate
         alpha_eff = _plastic_capacity_factor(
@@ -491,7 +667,15 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         else:
             RF = min(RF_y, RF_u)
             crit = "yield" if RF_y <= RF_u else "ultimate"
-        out.append(ReserveResult(p.x, sg, tu, mz, RF_y, RF_u, RF, crit))
+        cs = section if resolver is None else resolver.at(p.x)
+        RF, crit, local = _include_local_stability(
+            cs, mat, seg, state, p.N, p.M, mz_b, getattr(p, "B", 0.0), RF, crit,
+        )
+        out.append(ReserveResult(
+            p.x, sg, tu, mz, RF_y, RF_u, RF, crit,
+            local.RF_local_buckling, local.RF_crippling,
+            local.critical_wall, local.note,
+        ))
         if progress and i % 10 == 0:
             progress(0.5 + 0.5*i/n_stations)
     if progress:
@@ -500,7 +684,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
 
 
 def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
-            Vy=0.0, dT_grad=0.0):
+            Vy=0.0, dT_grad=0.0, B=0.0, T_sv=None, T_w=0.0):
     """Napětí (σ/τ/σ_red) a rezervní faktory pro daný průřez+materiál a VVÚ.
     Vrací dílčí dict (bez x/VVÚ). Pro složený PID z různých materiálů (seg s
     property_id) vrátí per-materiálové posouzení (normálové, B1). `Mz` = ohyb
@@ -514,7 +698,7 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
                 from .composite import composite_assess
                 ca = composite_assess(state, p, N, M, getattr(state, "rf_basis", "min"),
                                       Mk=Mk, V=V, Vy=Vy, Mz=Mz, dT=dT,
-                                      dT_grad=dT_grad)
+                                      dT_grad=dT_grad, B=B, T_sv=T_sv, T_w=T_w)
                 if ca is not None:
                     ca.update({"section": section, "material": mat, "alpha_pl": 1.0,
                                "sigma_z": None, "tau_z": None})
@@ -529,6 +713,8 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
             "sigma_max": None, "tau_max": None, "mises_max": None,
             "sigma_z": None, "tau_z": None,
             "RF_yield": None, "RF_ultimate": None, "RF": None,
+            "RF_local_buckling": None, "RF_crippling": None,
+            "critical_wall": "", "local_stability_note": "",
             "critical": "unavailable", "alpha_pl": 1.0,
         }
     sg = tu = mz = 0.0
@@ -537,7 +723,10 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
     if section is not None and getattr(section, "valid", False):
         infl = build_influence(section, n=80)
         sg, tu, mz = max_stresses_fast(
-            infl, N, V, M, Mk, Mz=Mz, combine=combine, Vy=Vy
+            infl, N, V, M, Mk, Mz=Mz, combine=combine, Vy=Vy,
+            tau_exact=(getattr(state, "tau_mode", "conservative") == "exact"),
+            B=B, T_sv=T_sv, T_w=T_w,
+            warping=(getattr(state, "torsion_theory", "saint-venant") == "vlasov"),
         )
         z_sg, z_tu = peak_locations(infl, N, V, M, Mk)
 
@@ -566,12 +755,22 @@ def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
     else:
         RF = min(RF_y, RF_u)
         crit = "yield" if RF_y <= RF_u else "ultimate"
+    local = None
+    if section is not None:
+        RF, crit, local = _include_local_stability(
+            section, mat, seg, state, N, M, Mz, B, RF, crit,
+        )
     return {
         "section": section, "material": mat,
         "sigma_max": sg, "tau_max": tu, "mises_max": mz,
         "sigma_z": z_sg, "tau_z": z_tu, "sigma_red_combined": combine,
         "RF_yield": RF_y, "RF_ultimate": RF_u, "RF": RF,
         "critical": crit, "alpha_pl": alpha, "alpha_pl_eff": alpha_eff,
+        "RF_local_buckling": (local.RF_local_buckling if local else None),
+        "RF_crippling": (local.RF_crippling if local else None),
+        "critical_wall": (local.critical_wall if local else ""),
+        "local_stability_note": (local.note if local else ""),
+        "local_stability": local,
     }
 
 
@@ -614,12 +813,27 @@ def values_at_x(result, state, x):
                             [getattr(p, "phi_z", 0.0) for p in result.points]))
     u_ax = float(np.interp(x, [p.x for p in result.points],
                            [getattr(p, "u", 0.0) for p in result.points]))
+    B = float(np.interp(x, [p.x for p in result.points],
+                        [getattr(p, "B", 0.0) for p in result.points]))
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
+    T_sv = float(np.interp(
+        x, [p.x for p in result.points],
+        [getattr(p, "T_sv", p.Mk) if vlasov else p.Mk for p in result.points],
+    ))
+    T_w = float(np.interp(x, [p.x for p in result.points],
+                          [getattr(p, "T_w", 0.0) for p in result.points]))
+    warp_rate = float(np.interp(
+        x, [p.x for p in result.points],
+        [getattr(p, "warping_rate", 0.0) for p in result.points],
+    ))
     d = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
          "Mk": Mk, "w": w, "v": v_y, "u": u_ax, "phi": phi, "phi_z": phi_z,
-         "theta": theta}
+         "theta": theta, "warping_rate": warp_rate, "B": B,
+         "T_sv": T_sv, "T_w": T_w}
     dtemp, dtemp_grad = _thermal_at(state, x)
     d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
-                     dT=dtemp, dT_grad=dtemp_grad, Vy=Vy))
+                     dT=dtemp, dT_grad=dtemp_grad, Vy=Vy,
+                     B=B, T_sv=T_sv, T_w=T_w))
     return d
 
 
@@ -643,23 +857,40 @@ def values_at_x_multi(result, state, x, tol=1e-3):
                             [getattr(p, "phi_z", 0.0) for p in result.points]))
     u_ax = float(np.interp(x, [p.x for p in result.points],
                            [getattr(p, "u", 0.0) for p in result.points]))
+    B = float(np.interp(x, [p.x for p in result.points],
+                        [getattr(p, "B", 0.0) for p in result.points]))
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
+    T_sv = float(np.interp(
+        x, [p.x for p in result.points],
+        [getattr(p, "T_sv", p.Mk) if vlasov else p.Mk for p in result.points],
+    ))
+    T_w = float(np.interp(x, [p.x for p in result.points],
+                          [getattr(p, "T_w", 0.0) for p in result.points]))
+    warp_rate = float(np.interp(
+        x, [p.x for p in result.points],
+        [getattr(p, "warping_rate", 0.0) for p in result.points],
+    ))
     base = {"x": x, "N": N, "V": V, "V_y": Vy, "M": M, "M_z": Mz,
             "Mk": Mk, "w": w, "v": v_y, "u": u_ax, "phi": phi, "phi_z": phi_z,
-            "theta": theta}
+            "theta": theta, "warping_rate": warp_rate, "B": B,
+            "T_sv": T_sv, "T_w": T_w}
 
     all_segs = normalized_segments(state)
     segs = segments_at(state, x, tol)
     out = []
     for seg in segs:
         try:
-            section = build_section(def_for_segment(state, seg, x))
+            exact = (getattr(state, "tau_mode", "conservative") == "exact"
+                     or vlasov)
+            section = build_section(def_for_segment(state, seg, x), exact=exact)
         except Exception:
             section = None
         mat = material_for_segment(state, seg)
         d = dict(base)
         dtemp, dtemp_grad = _thermal_at(state, x)
         d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
-                         dT=dtemp, dT_grad=dtemp_grad, Vy=Vy))
+                         dT=dtemp, dT_grad=dtemp_grad, Vy=Vy,
+                         B=B, T_sv=T_sv, T_w=T_w))
         try:
             d["seg_index"] = all_segs.index(seg)
         except ValueError:
@@ -693,6 +924,12 @@ class EnvelopeResult:
     crit_x: float
     crit_combo: str
     n_combos: int                  # počet stabilně spočtených kombinací
+    # druhá (vodorovná) rovina – biaxiál. RF obálka boční případ zachycovala
+    # vždy (reserves_along_beam bere Vy/Mz), ale pásma VVÚ pro ni chyběla, takže
+    # v reportu/grafu nebylo vidět, čím je řídicí kombinace nepříznivá.
+    Vy_min: Optional[list] = None; Vy_max: Optional[list] = None
+    Mz_min: Optional[list] = None; Mz_max: Optional[list] = None
+    v_min: Optional[list] = None; v_max: Optional[list] = None
 
 
 def envelope_over_combinations(state, n_stations=120, progress=None):
@@ -719,7 +956,7 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
         xc = np.array([p.x for p in res.points])
 
         def col(attr):
-            return np.array([getattr(p, attr) for p in res.points])
+            return np.array([getattr(p, attr, 0.0) for p in res.points])
 
         if xv is None:
             xv = xc
@@ -728,6 +965,9 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
             Mmn = col("M").copy(); Mmx = Mmn.copy()
             Kmn = col("Mk").copy(); Kmx = Kmn.copy()
             wmn = col("w").copy(); wmx = wmn.copy()
+            Vymn = col("V_y").copy(); Vymx = Vymn.copy()
+            Mzmn = col("M_z").copy(); Mzmx = Mzmn.copy()
+            vmn = col("v").copy(); vmx = vmn.copy()
         else:
             def env(mn, mx, attr):
                 y = np.interp(xv, xc, col(attr)) if len(xc) != len(xv) \
@@ -738,6 +978,9 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
             Mmn, Mmx = env(Mmn, Mmx, "M")
             Kmn, Kmx = env(Kmn, Kmx, "Mk")
             wmn, wmx = env(wmn, wmx, "w")
+            Vymn, Vymx = env(Vymn, Vymx, "V_y")
+            Mzmn, Mzmx = env(Mzmn, Mzmx, "M_z")
+            vmn, vmx = env(vmn, vmx, "v")
 
         rsv = reserves_along_beam(res, state, n_stations)
         if rsv:
@@ -769,7 +1012,10 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
         list(xv), list(Nmn), list(Nmx), list(Vmn), list(Vmx),
         list(Mmn), list(Mmx), list(Kmn), list(Kmx), list(wmn), list(wmx),
         list(xs), list(rf_min), list(rf_gov), list(sred_max),
-        float(rf_min[ci]), float(xs[ci]), rf_gov[ci], n_ok)
+        float(rf_min[ci]), float(xs[ci]), rf_gov[ci], n_ok,
+        Vy_min=list(Vymn), Vy_max=list(Vymx),
+        Mz_min=list(Mzmn), Mz_max=list(Mzmx),
+        v_min=list(vmn), v_max=list(vmx))
 
 
 @dataclass
@@ -1232,13 +1478,19 @@ def load_case_summary(state, factors, label=""):
     P = res.points
 
     def mm(attr):
-        vals = [getattr(p, attr) for p in P]
+        vals = [getattr(p, attr, 0.0) for p in P]
         return max(vals), min(vals)
 
     for a, unit in [("N", "N"), ("V", "N"), ("M", "N·mm"), ("Mk", "N·mm"), ("w", "mm")]:
         mx, mn = mm(a)
         cols.append((f"{a} max [{unit}]", mx))
         cols.append((f"{a} min [{unit}]", mn))
+    # vodorovná rovina jen když je nenulová (biaxiál) – ať tabulka nebobtná
+    for a, lbl, unit in [("V_y", "V_y", "N"), ("M_z", "M_z", "N·mm"), ("v", "v", "mm")]:
+        mx, mn = mm(a)
+        if max(abs(mx), abs(mn)) > 1e-9:
+            cols.append((f"{lbl} max [{unit}]", mx))
+            cols.append((f"{lbl} min [{unit}]", mn))
     rsv = reserves_along_beam(res, state)
     if rsv:
         crit = min(rsv, key=lambda r: r.RF)

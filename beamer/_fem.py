@@ -1011,6 +1011,54 @@ def torsion_shear_centroids(nodes, elements, omega, cy, cz):
     return coords, shear
 
 
+def shear_flow_centroids(nodes, elements, Psi, Phi, cy, cz,
+                         Ixx_c, Iyy_c, Ixy_c, nu=0.0):
+    """Jednotkový smykový tok od posouvajících sil v TĚŽIŠTI každého elementu.
+
+    Přesná Pilkeyho formulace (eq. 6.75) místo Žuravského τ = V·Q/(I·b):
+
+        τ_vec(Vy) = (1/Δs)·(∇Ψ − ν/2·[d1, d2])
+        τ_vec(Vz) = (1/Δs)·(∇Φ − ν/2·[h1, h2])
+        Δs = 2(1+ν)(Ixx·Iyy − Ixy²)
+
+    Vrací:
+      coords : (n_elem, 2) globální (y, z) těžiště,
+      t_vy   : (n_elem, 2) složky (τ_y, τ_z) na JEDNOTKOVOU sílu Vy,
+      t_vz   : (n_elem, 2) totéž pro Vz.
+    Skutečné napětí = Vy·t_vy + Vz·t_vz (vektorově, lze sčítat s torzním)."""
+    nodes_c = nodes - np.array([cy, cz])
+    ne = len(elements)
+    coords = np.zeros((ne, 2))
+    t_vy = np.zeros((ne, 2))
+    t_vz = np.zeros((ne, 2))
+    Delta_s = 2 * (1 + nu) * (Ixx_c * Iyy_c - Ixy_c**2)
+    if abs(Delta_s) < 1e-20:
+        return coords, t_vy, t_vz
+    N, dN_dL1, dN_dL2, dN_dL3 = _CURRENT_SHAPE_FUNC(1/3.0, 1/3.0, 1/3.0)
+    for ei, elem in enumerate(elements):
+        coords_c = nodes_c[elem]
+        J_det, dN_dy, dN_dz = element_jacobian(coords_c, dN_dL1, dN_dL2, dN_dL3)
+        if J_det <= 0 or dN_dy is None:
+            continue
+        y_c = float(np.dot(N, coords_c[:, 0]))
+        z_c = float(np.dot(N, coords_c[:, 1]))
+        coords[ei, 0] = y_c + cy
+        coords[ei, 1] = z_c + cz
+        r = y_c**2 - z_c**2
+        q = 2 * y_c * z_c
+        d1 = Ixx_c * r - Ixy_c * q
+        d2 = Ixy_c * r + Ixx_c * q
+        h1 = -Ixy_c * r + Iyy_c * q
+        h2 = -Iyy_c * r - Ixy_c * q
+        psi_e = Psi[elem]
+        phi_e = Phi[elem]
+        t_vy[ei, 0] = (float(np.dot(dN_dy, psi_e)) - (nu/2)*d1) / Delta_s
+        t_vy[ei, 1] = (float(np.dot(dN_dz, psi_e)) - (nu/2)*d2) / Delta_s
+        t_vz[ei, 0] = (float(np.dot(dN_dy, phi_e)) - (nu/2)*h1) / Delta_s
+        t_vz[ei, 1] = (float(np.dot(dN_dz, phi_e)) - (nu/2)*h2) / Delta_s
+    return coords, t_vy, t_vz
+
+
 def torsion_shear_at_corners(nodes, elements, omega, cy, cz):
     """Jednotkové torzní smykové „toky" v ROHOVÝCH uzlech každého elementu
     (rohy dosáhnou hranic/rozhraní, kde bývá extrém). Vrací:
@@ -1370,6 +1418,53 @@ def solve_warping_shear_function(nodes, elements, cy, cz, omega_n):
     return chi
 
 
+def warping_fields_centroids(nodes, elements, omega_n, chi, cy, cz):
+    """Pole pro Vlasovovo napětí v těžištích 2D elementů.
+
+    Vrací centroidální souřadnice (y,z), normalizovanou sektorovou souřadnici
+    ω_n [mm²] a ∇χ [mm³]. Skutečná napětí jsou
+    σ_w=(B/Iω)·ω_n a τ_w=(T_w/Iω)·∇χ.
+    """
+    nodes_c = nodes - np.array([cy, cz])
+    ne = len(elements)
+    coords = np.zeros((ne, 2))
+    omega_c = np.zeros(ne)
+    t_w = np.zeros((ne, 2))
+    N, dN_dL1, dN_dL2, dN_dL3 = _CURRENT_SHAPE_FUNC(1/3.0, 1/3.0, 1/3.0)
+    for ei, elem in enumerate(elements):
+        coords_c = nodes_c[elem]
+        J_det, dN_dy, dN_dz = element_jacobian(
+            coords_c, dN_dL1, dN_dL2, dN_dL3,
+        )
+        if J_det <= 0 or dN_dy is None:
+            continue
+        coords[ei] = N @ coords_c
+        omega_c[ei] = float(N @ omega_n[elem])
+        t_w[ei, 0] = float(dN_dy @ chi[elem])
+        t_w[ei, 1] = float(dN_dz @ chi[elem])
+    return coords, omega_c, t_w, nodes_c, omega_n.copy()
+
+
+def integrate_weighted_warping(nodes, elements, omega_n, elem_E):
+    """Vrátí ∫ E(y,z)·ω_n² dA [N·mm⁴] pro Vlasovovu tuhost EIw."""
+    total = 0.0
+    for ei, elem in enumerate(elements):
+        coords = nodes[elem]
+        omega_e = omega_n[elem]
+        E_e = float(elem_E[ei])
+        for gp in _CURRENT_GAUSS:
+            L1, L2, L3, weight = gp
+            N, dN_dL1, dN_dL2, dN_dL3 = _CURRENT_SHAPE_FUNC(L1, L2, L3)
+            J_det, _dy, _dz = element_jacobian(
+                coords, dN_dL1, dN_dL2, dN_dL3,
+            )
+            if J_det <= 0:
+                continue
+            dA = 0.5 * J_det * weight
+            total += E_e * float(N @ omega_e) ** 2 * dA
+    return total
+
+
 def compute_shear_areas_and_deformation_coeffs(
         nodes, elements, cy, cz, Psi, Phi,
         Ixx_c, Iyy_c, Ixy_c, A, nu=0.0):
@@ -1617,8 +1712,22 @@ def analyze_section(outer, holes=None, max_area=None, nu=0.0,
         # Monosymmetry konstanty
         monosym = compute_monosymmetry_constants(
             nodes, elements, cy, cz, Ixx, Iyy, y_sc, z_sc)
+        # Jednotkový smykový tok + torzní smyk v těžištích elementů – kompaktní
+        # pole pro přesné (vektorové) skládání τ v posouzení. Dřív se Ψ/Φ
+        # spočítaly jen kvůli smykovým plochám a pole se zahodila.
+        sf_coords, sf_vy, sf_vz = shear_flow_centroids(
+            nodes, elements, Psi, Phi, cy, cz, Ixx, Iyy, Ixy, nu)
+        _tc, t_tor = torsion_shear_centroids(nodes, elements, omega, cy, cz)
+        wc, omega_c, t_w, wn_coords, wn_values = warping_fields_centroids(
+            nodes, elements, sc['omega_n'], chi, cy, cz,
+        )
         result.update({
             'Psi': Psi, 'Phi': Phi, 'chi': chi,
+            'shear_coords': sf_coords, 'shear_t_vy': sf_vy,
+            'shear_t_vz': sf_vz, 'shear_t_tor': t_tor,
+            'warping_coords': wc, 'warping_omega': omega_c,
+            'warping_t_w': t_w, 'warping_node_coords': wn_coords,
+            'warping_node_omega': wn_values,
             'A_sy': shear['A_sy'], 'A_sz': shear['A_sz'],
             'beta_x': monosym['beta_x'], 'beta_y': monosym['beta_y'],
             'beta_x_plus': monosym['beta_x_plus'],

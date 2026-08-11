@@ -59,7 +59,9 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
     # ── 1 Nosník a model ──
     doc.add_heading(tr("1  Nosník a model"), 1)
     doc.add_paragraph(f"{tr('Délka L')} = {fmt(state.length)} mm    "
-                      f"{tr('Teorie')} = {state.theory}    "
+                      f"{tr('Teorie ohybu')} = {state.theory}    "
+                      f"{tr('Teorie torze')} = "
+                      f"{getattr(state, 'torsion_theory', 'saint-venant')}    "
                       f"{tr('Dodatečný součinitel')} = {fmt(state.additional_factor)}")
     try:
         comb = state.active_combination()
@@ -69,14 +71,23 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         pass
 
     doc.add_heading(tr("Podpory"), 2)
-    t = _tbl(doc, ["#", "x [mm]", tr("typ"), tr("úhel [°]"), tr("k / Δ")])
+    support_headers = ["#", "x [mm]", tr("typ"), tr("úhel [°]"), tr("k / Δ")]
+    vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
+    if vlasov:
+        support_headers.append(tr("deplanace"))
+    t = _tbl(doc, support_headers)
     for i, s in enumerate(state.supports):
         extra = ""
         if s.type == "spring":
             extra = f"k_z={fmt(getattr(s,'spring_z',0))} N/mm"
         elif abs(getattr(s, "settlement", 0.0)) > 1e-9:
             extra = f"Δ={fmt(s.settlement)} mm"
-        _row(t, [str(i + 1), fmt(s.x), s.type, fmt(s.angle), extra])
+        row = [str(i + 1), fmt(s.x), s.type, fmt(s.angle), extra]
+        if vlasov:
+            hold = getattr(s, "restrain_warping", None)
+            hold = (s.type == "fixed") if hold is None else bool(hold)
+            row.append(tr("bráněná") if hold else tr("volná"))
+        _row(t, row)
 
     doc.add_heading(tr("Zatížení"), 2)
     t = _tbl(doc, [tr("typ"), tr("popis")])
@@ -89,15 +100,17 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
     # ── 2 Úseky a průřezy ──
     doc.add_heading(tr("2  Úseky a průřezy"), 1)
     t = _tbl(doc, [tr("Úsek"), "x [mm]", tr("materiál"), tr("průřez"),
-                   "A [mm²]", "Iy [mm⁴]", "Iz [mm⁴]", "IT [mm⁴]"])
+                   "A [mm²]", "Iy [mm⁴]", "Iz [mm⁴]", "IT [mm⁴]", "Iω [mm⁶]"])
     for i, seg in enumerate(normalized_segments(state)):
         sec1, _ = eff_defs(state, seg)
         mat = material_for_segment(state, seg)
         try:
-            sc = build_section(sec1, fem=False)
-            avals = [fmt(sc.A), fmt(sc.Iy), fmt(sc.Iz), fmt(sc.IT)]
+            exact = (getattr(state, "tau_mode", "conservative") == "exact"
+                     or getattr(state, "torsion_theory", "saint-venant") == "vlasov")
+            sc = build_section(sec1, fem=exact, exact=exact)
+            avals = [fmt(sc.A), fmt(sc.Iy), fmt(sc.Iz), fmt(sc.IT), fmt(sc.Iw)]
         except Exception:
-            avals = ["—", "—", "—", "—"]
+            avals = ["—", "—", "—", "—", "—"]
         _row(t, [str(i + 1), f"{fmt(seg.x1)}–{fmt(seg.x2)}",
                  getattr(mat, "name", "?"), getattr(sec1, "type", "?")] + avals)
 
@@ -106,19 +119,29 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         P = result.points
         doc.add_heading(tr("3  Vnitřní účinky (extrémy) a reakce"), 1)
         t = _tbl(doc, [tr("veličina"), tr("min"), tr("max"), tr("jednotka")])
-        for a, unit in (("N", "N"), ("V", "N"), ("V_y", "N"),
-                        ("M", "N·mm"), ("M_z", "N·mm"), ("Mk", "N·mm"),
-                        ("w", "mm"), ("v", "mm"), ("phi_z", "rad")):
+        quantities = [("N", "N"), ("V", "N"), ("V_y", "N"),
+                         ("M", "N·mm"), ("M_z", "N·mm"), ("Mk", "N·mm"),
+                         ("w", "mm"), ("v", "mm"), ("phi_z", "rad")]
+        if getattr(state, "torsion_theory", "saint-venant") == "vlasov":
+            quantities += [("T_sv", "N·mm"), ("T_w", "N·mm"),
+                           ("B", "N·mm²"), ("warping_rate", "1/mm")]
+        for a, unit in quantities:
             vals = [getattr(p, a) for p in P]
             _row(t, [a, fmt(min(vals)), fmt(max(vals)), unit])
         _img(doc, images, "vvu")
 
         doc.add_heading(tr("Reakce"), 2)
-        t = _tbl(doc, ["x [mm]", "Rx [N]", "Ry [N]", "Rz [N]",
-                       "My [N·mm]", "Mz [N·mm]", "Mx [N·mm]"])
+        headers = ["x [mm]", "Rx [N]", "Ry [N]", "Rz [N]",
+                   "My [N·mm]", "Mz [N·mm]", "Mx [N·mm]"]
+        if getattr(state, "torsion_theory", "saint-venant") == "vlasov":
+            headers.append("B [N·mm²]")
+        t = _tbl(doc, headers)
         for rc in result.reactions:
-            _row(t, [fmt(rc.x), fmt(rc.Rx), fmt(rc.Ry_force), fmt(rc.Rz),
-                     fmt(rc.Ry), fmt(rc.Rz_moment), fmt(rc.Rx_torsion)])
+            row = [fmt(rc.x), fmt(rc.Rx), fmt(rc.Ry_force), fmt(rc.Rz),
+                   fmt(rc.Ry), fmt(rc.Rz_moment), fmt(rc.Rx_torsion)]
+            if getattr(state, "torsion_theory", "saint-venant") == "vlasov":
+                row.append(fmt(getattr(rc, "B_warping", 0.0)))
+            _row(t, row)
 
     # ── 4 Posouzení (RF) ──
     if margins:
@@ -127,6 +150,16 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         doc.add_paragraph(
             f"σ_red,max = {fmt(max(mm.mises_max for mm in margins))} MPa    "
             f"RF_min = {fmt(crit.RF)} ({crit.critical}) @ x = {fmt(crit.x)} mm")
+        if crit.RF_local_buckling is not None:
+            doc.add_paragraph(
+                f"RF_local = {fmt(crit.RF_local_buckling)} "
+                f"(stěna: {crit.critical_wall})")
+        if crit.RF_crippling is not None:
+            doc.add_paragraph(f"RF_crippling = {fmt(crit.RF_crippling)}")
+        doc.add_paragraph(tr(
+            "Lokální boulení: klasická desková teorie; crippling: empirická "
+            "metoda Needham/Gerard, jen pro známou topologii."
+        ))
         _img(doc, images, "margin")
 
     # ── Vzpěr, konzervativní kontrola (sdílená obálka přes kombinace) ──
