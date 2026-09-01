@@ -647,6 +647,9 @@ class SchemaCanvas(MplCanvas):
                          show_supports=show_supports,
                          filter_by_combination=filter_by_combination)
             ax.set_xlabel("x [mm]", fontsize=8)
+            # Svislé rozmístění je schematické (délky šipek a deformace
+            # jsou normalizované), proto označ pouze směr bez jednotky [mm].
+            ax.set_ylabel("z", fontsize=8)
             self.fig.subplots_adjust(left=ALIGN_LEFT, right=ALIGN_RIGHT,
                                      top=0.80, bottom=0.28)
         self.draw()
@@ -699,27 +702,27 @@ class BeamDiagramCanvas(MplCanvas):
 
     def _plot_separate(self, x, d):
         candidates = [
-            (tr("N – osová síla [N]"), d["N"], "#1565c0"),
-            (tr("V_z – posouvající síla svislá [N]"), d["V"], "#2e7d32"),
-            (tr("V_y – posouvající síla vodorovná [N]"), d["V_y"], "#66bb6a"),
-            (tr("M_y – ohybový moment (svislá rovina) [N·mm]"), d["M"], "#c62828"),
-            (tr("M_z – ohybový moment (vodorovná rovina) [N·mm]"), d["M_z"], "#ef5350"),
-            (tr("Mk – kroutící moment [N·mm]"), d["Mk"], "#6a1b9a"),
-            (tr("Tsv – Saint-Venantův moment [N·mm]"), d["T_sv"], "#8e24aa"),
-            (tr("Tω – warpingový moment [N·mm]"), d["T_w"], "#ab47bc"),
-            (tr("B – bimoment [N·mm²]"), d["B"], "#4527a0"),
+            (tr("N – osová síla [N]"), "N [N]", d["N"], "#1565c0"),
+            (tr("V_z – posouvající síla svislá [N]"), "V_z [N]", d["V"], "#2e7d32"),
+            (tr("V_y – posouvající síla vodorovná [N]"), "V_y [N]", d["V_y"], "#66bb6a"),
+            (tr("M_y – ohybový moment (svislá rovina) [N·mm]"), "M_y [N·mm]", d["M"], "#c62828"),
+            (tr("M_z – ohybový moment (vodorovná rovina) [N·mm]"), "M_z [N·mm]", d["M_z"], "#ef5350"),
+            (tr("Mk – kroutící moment [N·mm]"), "Mk [N·mm]", d["Mk"], "#6a1b9a"),
+            (tr("Tsv – Saint-Venantův moment [N·mm]"), "Tsv [N·mm]", d["T_sv"], "#8e24aa"),
+            (tr("Tω – warpingový moment [N·mm]"), "Tω [N·mm]", d["T_w"], "#ab47bc"),
+            (tr("B – bimoment [N·mm²]"), "B [N·mm²]", d["B"], "#4527a0"),
         ]
         if self.show_deform:
             candidates += [
-                (tr("w – průhyb svislý [mm]"), d["w"], "#00838f"),
-                (tr("v – průhyb vodorovný [mm]"), d["v"], "#26c6da"),
-                (tr("u – osový posun (prodloužení) [mm]"), d["u"], "#5d4037"),
-                (tr("φ – pootočení [rad]"), d["phi"], "#ef6c00"),
-                (tr("θ – torzní pootočení [rad]"), d["theta"], "#f9a825"),
-                (tr("θ' – deplanace [1/mm]"), d["warping_rate"], "#7b1fa2"),
+                (tr("w – průhyb svislý [mm]"), "w [mm]", d["w"], "#00838f"),
+                (tr("v – průhyb vodorovný [mm]"), "v [mm]", d["v"], "#26c6da"),
+                (tr("u – osový posun (prodloužení) [mm]"), "u [mm]", d["u"], "#5d4037"),
+                (tr("φ – pootočení [rad]"), "φ [rad]", d["phi"], "#ef6c00"),
+                (tr("θ – torzní pootočení [rad]"), "θ [rad]", d["theta"], "#f9a825"),
+                (tr("θ' – deplanace [1/mm]"), "θ' [1/mm]", d["warping_rate"], "#7b1fa2"),
             ]
         # nulové veličiny (např. N, Mk bez příslušného zatížení) se nezobrazují
-        specs = [s for s in candidates if self._nonzero(s[1])]
+        specs = [s for s in candidates if self._nonzero(s[2])]
         if not specs:
             ax = self.fig.add_subplot(111)
             ax.text(0.5, 0.5, tr("Všechny veličiny jsou nulové"),
@@ -732,12 +735,13 @@ class BeamDiagramCanvas(MplCanvas):
         if len(specs) == 1:
             axes = [axes]
         xL = float(x[-1]) if len(x) else 1.0
-        for ax, (title, arr, color) in zip(axes, specs):
+        for ax, (title, ylabel, arr, color) in zip(axes, specs):
             ax.axhline(0, color="#999", lw=0.8)
             ax.plot(x, arr, color=color, lw=1.4)
             ax.fill_between(x, arr, 0, color=color, alpha=0.15)
             _annotate_extremes(ax, x, arr, color)
             ax.set_title(title, fontsize=8, loc="left")
+            ax.set_ylabel(ylabel, fontsize=8)
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=7)
             # headroom: nahoře víc (aby se popisek maxima vešel pod titulek)
@@ -842,11 +846,11 @@ class StressAlongCanvas(MplCanvas):
         self.fig.set_layout_engine(None)
         x = np.array([r.x for r in reserves])
         specs = [
-            (tr("σ_red – redukované napětí (von Mises) [MPa]"),
+            (tr("σ_red – redukované napětí (von Mises) [MPa]"), "σ_red [MPa]",
              np.array([r.mises_max for r in reserves]), "#c62828"),
-            (tr("σ – normálové napětí [MPa]"),
+            (tr("σ – normálové napětí [MPa]"), "σ [MPa]",
              np.array([r.sigma_max for r in reserves]), "#1565c0"),
-            (tr("τ – smykové napětí [MPa]"),
+            (tr("τ – smykové napětí [MPa]"), "τ [MPa]",
              np.array([r.tau_max for r in reserves]), "#2e7d32"),
         ]
         self.setMinimumHeight(150 * len(specs))
@@ -854,12 +858,13 @@ class StressAlongCanvas(MplCanvas):
         if len(specs) == 1:
             axes = [axes]
         xL = float(x[-1]) if len(x) else 1.0
-        for ax, (title, arr, color) in zip(axes, specs):
+        for ax, (title, ylabel, arr, color) in zip(axes, specs):
             ax.axhline(0, color="#999", lw=0.8)
             ax.plot(x, arr, color=color, lw=1.4)
             ax.fill_between(x, arr, 0, color=color, alpha=0.15)
             _annotate_extremes(ax, x, arr, color)
             ax.set_title(title, fontsize=8, loc="left")
+            ax.set_ylabel(ylabel, fontsize=8)
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=7)
             amax = max(float(np.nanmax(arr)), 0.0)
@@ -893,21 +898,21 @@ class EnvelopeCanvas(MplCanvas):
         xs = np.array(env.xs)
         xv = np.array(env.xv)
         # pásma VVÚ: svislá rovina vždy, vodorovná (biaxiál) jen když je nenulová
-        bands = [(tr("M – ohybový moment [N·mm] (obálka)"),
+        bands = [(tr("M – ohybový moment [N·mm] (obálka)"), "M [N·mm]",
                   np.array(env.M_min), np.array(env.M_max), "#c62828"),
-                 (tr("V – posouvající síla [N] (obálka)"),
+                 (tr("V – posouvající síla [N] (obálka)"), "V [N]",
                   np.array(env.V_min), np.array(env.V_max), "#2e7d32")]
-        for title, lo_a, hi_a, col in (
-                (tr("M_z – ohybový moment vodorovný [N·mm] (obálka)"),
+        for title, ylabel, lo_a, hi_a, col in (
+                (tr("M_z – ohybový moment vodorovný [N·mm] (obálka)"), "M_z [N·mm]",
                  env.Mz_min, env.Mz_max, "#ef5350"),
-                (tr("V_y – posouvající síla vodorovná [N] (obálka)"),
+                (tr("V_y – posouvající síla vodorovná [N] (obálka)"), "V_y [N]",
                  env.Vy_min, env.Vy_max, "#66bb6a")):
             if lo_a is None or hi_a is None:
                 continue
             lo_arr, hi_arr = np.array(lo_a), np.array(hi_a)
             if max(float(np.nanmax(np.abs(lo_arr))),
                    float(np.nanmax(np.abs(hi_arr)))) > 1e-9:
-                bands.append((title, lo_arr, hi_arr, col))
+                bands.append((title, ylabel, lo_arr, hi_arr, col))
         axes = self.fig.subplots(1 + len(bands), 1)
         self.setMinimumHeight(190 * (1 + len(bands)))
         xL = float(xv[-1]) if len(xv) else 1.0
@@ -925,16 +930,18 @@ class EnvelopeCanvas(MplCanvas):
                     fontsize=7, color="#c62828")
         ax.set_title(tr("min RF podél nosníku (obálka přes %d kombinací)") % env.n_combos,
                      fontsize=8, loc="left")
+        ax.set_ylabel("RF [-]", fontsize=8)
         top = max(float(np.nanmax(rf)) * 1.1, 1.3)
         ax.set_ylim(0, top)
 
         # 2) M obálka (pás min–max), 3) V obálka
-        for ax, (title, lo, hi, color) in zip(axes[1:], bands):
+        for ax, (title, ylabel, lo, hi, color) in zip(axes[1:], bands):
             ax.axhline(0, color="#999", lw=0.8)
             ax.fill_between(xv, lo, hi, color=color, alpha=0.20)
             ax.plot(xv, lo, color=color, lw=1.0)
             ax.plot(xv, hi, color=color, lw=1.0)
             ax.set_title(title, fontsize=8, loc="left")
+            ax.set_ylabel(ylabel, fontsize=8)
             lo_v = min(float(np.nanmin(lo)), 0.0)
             hi_v = max(float(np.nanmax(hi)), 0.0)
             span = (hi_v - lo_v) or 1.0
@@ -1126,6 +1133,7 @@ class StressCanvas(MplCanvas):
             ax.plot(arr, z, color=color, lw=1.5)
             ax.fill_betweenx(z, arr, 0, color=color, alpha=0.15)
             ax.set_title(title, fontsize=8)
+            ax.set_xlabel(title, fontsize=8)
             ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=7)
             # legenda min/max přímo v grafu
@@ -1209,7 +1217,7 @@ class MarginCanvas(MplCanvas):
         if not clipped:
             ax.set_ylim(bottom=0)
         ax.set_xlabel("x [mm]", fontsize=8)
-        ax.set_ylabel("RF", fontsize=8)
+        ax.set_ylabel("RF [-]", fontsize=8)
         title = tr("Rezervní faktor podél nosníku")
         if clipped:
             title += tr("  (osa oříznuta)")
