@@ -2,6 +2,16 @@
 
 Version format: **X.XX**
 
+## 1.44
+
+- New **self-weight** load ("+ Self-weight"): q(x) = −ρ·A(x)·g acting
+  vertically downward over a chosen range x1–x2, evaluated per segment from
+  the material density and section area (tapers piecewise linear, composite
+  PIDs sum ρᵢ·Aᵢ of their parts). It is re-derived on every solve, so it
+  follows section and material changes; a load factor n is entered as the
+  load-case factor. The load card shows mass and weight, the schema draws a
+  hatched band, and the report lists mass and weight.
+
 ## 1.43
 
 Usability release.

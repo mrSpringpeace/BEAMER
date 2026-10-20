@@ -420,6 +420,9 @@ def solve_beam(state, factors=None) -> SolverResult:
         factors = dict(comb.factors) if comb else {}
     else:
         factors = dict(factors)
+    # vlastní tíha → obyčejná spojitá zatížení dle aktuálního průřezu/materiálu
+    from .selfweight import with_self_weight
+    state = with_self_weight(state)
     material = state.material()
     E, G = material.E, material.G
     vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"

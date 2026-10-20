@@ -63,7 +63,7 @@ def build_report(state, result, margins, include_envelope=False) -> str:
         L.append("  " + tr("Klouby:") + " " + ", ".join(f"x={h.x:.0f}" for h in state.hinges))
     L.append("  " + tr("Zatížení:"))
     for ld in state.loads:
-        L.append(f"    {ld.type}: " + _load_desc(ld))
+        L.append(f"    {ld.type}: " + _load_desc(ld, state))
     L.append("")
 
     # ── úseky: materiál, průřez, kritický RF ──
@@ -321,7 +321,7 @@ def build_report(state, result, margins, include_envelope=False) -> str:
     return "\n".join(L)
 
 
-def _load_desc(ld):
+def _load_desc(ld, state=None):
     if ld.type == "point_force":
         s = f"x={ld.x:.0f} Fx={ld.Fx} N Fz={ld.Fz} N"
         if abs(getattr(ld, "Fy", 0.0)) > 1e-9:
@@ -339,6 +339,16 @@ def _load_desc(ld):
         return s
     if ld.type == "torsion":
         return f"x={ld.x:.0f} Mx={ld.Mx} N·mm"
+    if ld.type == "self_weight":
+        s = f"x1={ld.x1:.0f} x2={ld.x2:.0f} q=−ρ·A(x)·g"
+        if state is not None:
+            try:
+                from .selfweight import summary
+                M, W = summary(state, ld)
+                s += f"  M={M:.3f} kg  G={W:.2f} N"
+            except Exception:
+                pass
+        return s
     if ld.type == "thermal":
         s = f"x1={ld.x1:.0f} x2={ld.x2:.0f} ΔT={ld.dT} °C"
         if abs(getattr(ld, "dT_grad", 0.0)) > 1e-9:

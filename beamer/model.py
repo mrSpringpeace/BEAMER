@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 SupportType = Literal["fixed", "pin", "roller", "spring"]
-LoadType = Literal["point_force", "moment", "torsion", "distributed", "thermal"]
+LoadType = Literal["point_force", "moment", "torsion", "distributed", "thermal",
+                   "self_weight"]   # self_weight: q = −ρ·A(x)·g na x1–x2 (selfweight.py)
 SectionType = Literal[
     "rectangle", "box", "circle", "tube",
     "i_section", "c_section", "t_section", "l_section", "u_section",

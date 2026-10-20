@@ -245,6 +245,29 @@ def _draw_schema(ax, state, result=None, show_loads=True, show_supports=True,
                     va="bottom" if y1 >= 0 else "top", fontsize=6.5, color=C_DIST)
             ax.text(x2, y2 + (2 if y2 >= 0 else -2), f"{q2:.1f} N/mm", ha="center",
                     va="bottom" if y2 >= 0 else "top", fontsize=6.5, color=C_DIST)
+        elif ld.type == "self_weight":
+            # vlastní tíha: samostatný šrafovaný pás pevné výšky (q je obvykle
+            # řádově menší než ostatní spojitá zatížení – v jejich měřítku by zanikla)
+            H = 6.0
+            x1, x2 = max(0.0, ld.x1), min(L, ld.x2)
+            ax.fill([x1, x2, x2, x1], [H, H, 0, 0], facecolor="none",
+                    edgecolor=C_DIST, hatch="////", lw=0.0, alpha=0.45)
+            ax.plot([x1, x2], [H, H], color=C_DIST, lw=1.0, ls=(0, (4, 2)))
+            nn = int(min(10, max(2, abs(x2 - x1) / max(L / 16, 1e-9))))
+            for k in range(nn + 1):
+                xi = x1 + (x2 - x1) * k / nn
+                ax.annotate("", xy=(xi, 0), xytext=(xi, H),
+                            arrowprops=dict(arrowstyle="-|>", color=C_DIST, lw=0.7))
+            txt = tr("G: vlastní tíha")
+            try:
+                from ..selfweight import summary
+                M, _W = summary(state, ld)
+                txt += f" {M * m:.3g} kg" if abs(m - 1.0) < 1e-12 else                     f" {M:.3g} kg ×{m:g}"
+            except Exception:
+                pass
+            # popisek pod nosník – nad ním bývá profil ostatních spojitých zatížení
+            ax.text((x1 + x2) / 2, -3, txt, ha="center", va="top",
+                    fontsize=6.5, color=C_DIST)
         elif ld.type == "point_force" and abs(Fx) > 1e-9:
             dx = -flen(Fx) if Fx > 0 else flen(Fx)
             ax.annotate("", xy=(ld.x, 0), xytext=(ld.x + dx, 0),
@@ -460,6 +483,19 @@ def _draw_schema_axo(ax, state, result=None, show_loads=True, show_supports=True
             u, v = P(x1, 0, z1)
             ax.text(u, v + 2, f"{code}: {ld.q1:.1f}/{ld.q2:.1f} N/mm", ha="center",
                     va="bottom", fontsize=6.5, color=C_DIST)
+        elif ld.type == "self_weight":
+            # vlastní tíha – přerušovaná linie pevné výšky se šipkami dolů
+            H = 6.0
+            x1, x2 = xof(max(0.0, ld.x1)), xof(min(state.length, ld.x2))
+            ax.plot(*seg2((x1, 0, H), (x2, 0, H)), color=C_DIST, lw=1.0,
+                    ls=(0, (4, 2)))
+            nn = int(min(10, max(2, abs(x2 - x1) / 10)))
+            for k in range(nn + 1):
+                xi = x1 + (x2 - x1) * k / nn
+                arrow(ax, (xi, 0, H), (xi, 0, 0), C_DIST, lw=0.7)
+            u, v = P((x1 + x2) / 2, 0, H)
+            ax.text(u, v + 2, tr("G: vlastní tíha"), ha="center", va="bottom",
+                    fontsize=6.5, color=C_DIST)
             # vodorovná složka qy – do hloubky (osa y), stejný profil i konvence
             qy1, qy2 = getattr(ld, "qy1", 0.0) * m, getattr(ld, "qy2", 0.0) * m
             if abs(qy1) > 1e-12 or abs(qy2) > 1e-12:

@@ -93,7 +93,7 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
     t = _tbl(doc, [tr("typ"), tr("popis")])
     from .report import _load_desc
     for ld in state.loads:
-        _row(t, [ld.type, _load_desc(ld)])
+        _row(t, [ld.type, _load_desc(ld, state)])
 
     _img(doc, images, "schema")
 

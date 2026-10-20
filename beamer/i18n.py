@@ -571,6 +571,16 @@ EN = {
         "Enlarges or shrinks the whole interface on top of the Windows scale (Settings → Display → Scale). Takes effect after restart.",
     "Windows: %d %%, celkem: %d %%.": "Windows: %d %%, total: %d %%.",
     "Projeví se po restartu aplikace.": "Takes effect after restarting the application.",
+    # vlastní tíha
+    "+ Vlastní tíha": "+ Self-weight",
+    "Vlastní tíha": "Self-weight",
+    "G: vlastní tíha": "G: self-weight",
+    "Vlastní tíha nosníku: q = −ρ·A·g po úsecích, z hustoty materiálu a plochy průřezu":
+        "Beam self-weight: q = −ρ·A·g per segment, from material density and section area",
+    "Hmotnost M = %.3f kg, tíha G = %.2f N": "Mass M = %.3f kg, weight G = %.2f N",
+    "Vlastní tíhu nelze spočítat: ": "Self-weight cannot be evaluated: ",
+    "q(x) = −ρ·A(x)·g svisle dolů, po úsecích z hustoty materiálu a plochy průřezu (náběh i složený PID). Přepočítá se při každé změně průřezu či materiálu. Přetížení n zadej faktorem zatěžovacího stavu.":
+        "q(x) = −ρ·A(x)·g vertically downward, per segment from material density and section area (tapers and composite PIDs included). Re-evaluated on every section or material change. Enter load factor n as the load-case factor.",
 }
 
 

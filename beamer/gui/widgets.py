@@ -114,6 +114,15 @@ def _fit_table(table):
 G_STD = 9.80665      # normální tíhové zrychlení [m/s²] – zadání zatížení hmotností
 
 
+def _alive(w) -> bool:
+    """False, pokud byl Qt objekt widgetu už smazán (deleteLater)."""
+    try:
+        w.objectName()
+        return True
+    except RuntimeError:
+        return False
+
+
 def _spin(val, mn=-1e9, mx=1e9, step=1.0, dec=3, suffix=""):
     sp = NoWheelDoubleSpinBox()
     sp.setRange(mn, mx)
@@ -417,6 +426,10 @@ class InputPanel(QWidget):
 
     def _emit(self, *_):
         self.changed.emit()
+        # hmotnost vlastní tíhy závisí na průřezu/materiálu kdekoli v panelu
+        for lbl, fn in getattr(self, "_sw_infos", []):
+            if _alive(lbl):
+                fn()
 
     def _group(self, title, expanded=True, persist_key=None):
         """Prostá skupina s tučným nadpisem (nahrazuje sbalitelný box u top-level
@@ -1656,12 +1669,15 @@ class InputPanel(QWidget):
         from .flow_layout import FlowLayout
         row = FlowLayout(h_spacing=6, v_spacing=6)   # v úzkém panelu se zalomí
         for tp, lbl in [("point_force", "+ Síla"), ("point_mass", "+ Hmotnost"),
-                        ("distributed", "+ Spojité"),
+                        ("distributed", "+ Spojité"), ("self_weight", "+ Vlastní tíha"),
                         ("moment", "+ Moment"), ("torsion", "+ Krut"),
                         ("thermal", "+ Teplota")]:
             b = QPushButton(tr(lbl))
             if tp == "point_mass":
                 b.setToolTip(tr("Bodové břemeno zadané hmotností (Fz = −m·g)"))
+            elif tp == "self_weight":
+                b.setToolTip(tr("Vlastní tíha nosníku: q = −ρ·A·g po úsecích, "
+                                "z hustoty materiálu a plochy průřezu"))
             b.clicked.connect(lambda _, t=tp: self._add_load(t))
             row.addWidget(b)
         v.addLayout(row)
@@ -1725,7 +1741,8 @@ class InputPanel(QWidget):
 
     def _load_title(self, ld):
         labels = {"point_force": "Bodová síla", "distributed": "Spojité",
-                  "moment": "Ohyb. moment", "torsion": "Krut", "thermal": "Teplota"}
+                  "moment": "Ohyb. moment", "torsion": "Krut", "thermal": "Teplota",
+                  "self_weight": "Vlastní tíha"}
         base = tr(labels.get(ld.type, ld.type))
         nm = f" · {ld.name}" if ld.name else ""
         if ld.type == "point_force":
@@ -1740,6 +1757,8 @@ class InputPanel(QWidget):
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
             if abs(getattr(ld, "Mz", 0.0)) > 1e-9:
                 v += f"  Mz={ld.Mz:.0f}"
+        elif ld.type == "self_weight":
+            v = f"  ({ld.x1:.0f}–{ld.x2:.0f})"
         elif ld.type == "thermal":
             v = f"  ΔT={ld.dT:.0f} °C ({ld.x1:.0f}–{ld.x2:.0f})"
             if abs(getattr(ld, "dT_grad", 0.0)) > 1e-9:
@@ -1864,6 +1883,35 @@ class InputPanel(QWidget):
         elif ld.type == "torsion":
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow("Mx:", bind("Mx", " N·mm"))
+        elif ld.type == "self_weight":
+            x1_sp = bind("x1", " mm", 1, 50)
+            x2_sp = bind("x2", " mm", 1, 50)
+            f.addRow("x1:", x1_sp)
+            f.addRow("x2:", x2_sp)
+            info = QLabel()
+            info.setObjectName("hint")
+            info.setWordWrap(True)
+
+            def _sw_info(*_):
+                try:
+                    from ..selfweight import summary
+                    M, W = summary(self.state, ld)
+                    info.setText(tr("Hmotnost M = %.3f kg, tíha G = %.2f N") % (M, W))
+                except Exception as e:
+                    info.setText(tr("Vlastní tíhu nelze spočítat: ") + str(e))
+
+            _sw_info()
+            x1_sp.valueChanged.connect(_sw_info)
+            x2_sp.valueChanged.connect(_sw_info)
+            self._sw_infos = [i for i in getattr(self, "_sw_infos", [])
+                              if _alive(i[0])] + [(info, _sw_info)]
+            cl.addWidget(info)
+            hint = QLabel(tr("q(x) = −ρ·A(x)·g svisle dolů, po úsecích z hustoty "
+                             "materiálu a plochy průřezu (náběh i složený PID). "
+                             "Přepočítá se při každé změně průřezu či materiálu. "
+                             "Přetížení n zadej faktorem zatěžovacího stavu."))
+            hint.setWordWrap(True); hint.setObjectName("hint")
+            cl.addWidget(hint)
         elif ld.type == "thermal":
             f.addRow("x1:", bind("x1", " mm", 1, 50))
             f.addRow("x2:", bind("x2", " mm", 1, 50))
@@ -1967,6 +2015,10 @@ class InputPanel(QWidget):
             ld.x1 = 0
             ld.x2 = self.state.length
             ld.q1 = ld.q2 = -1.0
+        elif tp == "self_weight":
+            ld.name = tr("Vlastní tíha")
+            ld.x1 = 0
+            ld.x2 = self.state.length
         elif tp == "point_force":
             ld.x = self.state.length/2
             ld.Fz = -1000.0
