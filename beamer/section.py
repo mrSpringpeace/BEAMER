@@ -1263,17 +1263,6 @@ def make_U(h, b, t):
     return _segs_to_pts(pts), [(h, t), (b-t, t), (b-t, t)], None, None
 
 
-def make_box(h, b, t):
-    """Dutý obdélníkový průřez (RHS). IT dle Bredt-Batho (uzavřený)."""
-    outer = [(-b/2, -h/2), (b/2, -h/2), (b/2, h/2), (-b/2, h/2)]
-    hi, bi = h-2*t, b-2*t
-    inner = [(-bi/2, -hi/2), (-bi/2, hi/2), (bi/2, hi/2), (bi/2, -hi/2)]
-    pts = _segs_to_pts(outer + inner)
-    Am = (h-t)*(b-t)
-    IT = 4*Am**2 / (2*(h-t)/t + 2*(b-t)/t)
-    return pts, None, None, IT
-
-
 def make_circle(D):
     r = D/2
     return None, None, slices_from_circle(0, 0, r, 0.0), None
@@ -1511,9 +1500,9 @@ def _build_section_impl(sdef, fem: bool = True, exact: bool = False) -> CrossSec
             # Pro jedno těleso (s libovolnými dírami) můžeme spustit FEM jádro
             # přes legacy single-polygon API (přesné IT/Iω/střed smyku/smyk. plochy).
             if len(bodies_pts) == 1:
-                outer, holes = bodies_pts[0]
                 cs = CrossSection(bodies=bodies_pts, rotation=rot)
                 if fem:
+                    outer, holes = cs._bodies_orig[0]
                     _apply_fem_properties(cs, outer, holes)
                 else:
                     cs.fem_used = False
@@ -1521,7 +1510,7 @@ def _build_section_impl(sdef, fem: bool = True, exact: bool = False) -> CrossSec
                 # multi-body FEM: per-body Saint-Venant + paralelní osy
                 cs = CrossSection(bodies=bodies_pts, rotation=rot)
                 if fem:
-                    _apply_fem_composite(cs, bodies_pts)
+                    _apply_fem_composite(cs, cs._bodies_orig)
                 else:
                     cs.fem_used = False
             cs.section_type = "polygon"
@@ -1533,9 +1522,13 @@ def _build_section_impl(sdef, fem: bool = True, exact: bool = False) -> CrossSec
             raise ValueError("Vlastní průřez potřebuje alespoň 3 body.")
         holes = [[(float(p["y"]), float(p["z"])) for p in h]
                  for h in (sdef.polygon_holes or []) if len(h) >= 3]
-        cs = CrossSection(pts_xy=pts, rotation=rot)
+        # I legacy zápis musí od začátku používat společnou reprezentaci
+        # outer+holes. Jinak se A/těžiště/I spočítají jen z vnějšího obrysu a
+        # FEM později opraví pouze část veličin.
+        cs = CrossSection(bodies=[(pts, holes)], rotation=rot)
         if fem:
-            _apply_fem_properties(cs, pts, holes)   # přesné IT, Iw, střed smyku, smyk. plochy
+            outer_fem, holes_fem = cs._bodies_orig[0]
+            _apply_fem_properties(cs, outer_fem, holes_fem)
         else:
             cs.fem_used = False
         cs.section_type = "polygon"
@@ -1547,16 +1540,16 @@ def _build_section_impl(sdef, fem: bool = True, exact: bool = False) -> CrossSec
         if not bodies_pts:
             raise ValueError("Konstrukční tvar je prázdný nebo neplatný.")
         if len(bodies_pts) == 1:
-            outer, holes = bodies_pts[0]
             cs = CrossSection(bodies=bodies_pts, rotation=rot)
             if fem:
+                outer, holes = cs._bodies_orig[0]
                 _apply_fem_properties(cs, outer, holes)
             else:
                 cs.fem_used = False
         else:
             cs = CrossSection(bodies=bodies_pts, rotation=rot)
             if fem:
-                _apply_fem_composite(cs, bodies_pts)
+                _apply_fem_composite(cs, cs._bodies_orig)
             else:
                 cs.fem_used = False
         cs.section_type = "construction"
@@ -1681,18 +1674,9 @@ def _apply_fem_properties(cs: CrossSection, outer, holes=None):
     cs.Iw = float(r["Iw"])
     cs.z_SC = float(r["z_sc"])
     cs.y_SC = float(r["y_sc"])
-    # U průřezů s dírami scanline geometrie plochu neodečítá → převezmi
-    # i A/I z FEM, aby beam solver a charakteristiky byly správné.
-    if holes:
-        cs.A = float(r["A"])
-        cs.Iy = float(r["Ixx_c"])
-        cs.Iz = float(r["Iyy_c"])
-        cs.Iyz = float(r["Ixy_c"])
-        cs.iy = (cs.Iy / cs.A) ** 0.5 if cs.A > 0 else 0.0
-        cs.iz = (cs.Iz / cs.A) ** 0.5 if cs.A > 0 else 0.0
-        cs.Wy_top = cs.Iy / abs(cs.z_top) if abs(cs.z_top) > 1e-9 else 0
-        cs.Wy_bot = cs.Iy / abs(cs.z_bot) if abs(cs.z_bot) > 1e-9 else 0
-        cs.Ip = cs.Iy + cs.Iz
+    # A, těžiště a I zůstávají z přesné Greenovy integrace téže transformované
+    # geometrie. FEM síť je aproximace a nesmí přepsat jen část vzájemně
+    # závislých geometrických charakteristik.
     # přesné smykové pole (Pilkey Ψ/Φ + torzní ∇ω) v těžištích elementů –
     # pro volitelné vektorové skládání τ místo konzervativního součtu velikostí
     if r.get("shear_coords") is not None:

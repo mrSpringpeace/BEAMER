@@ -28,6 +28,7 @@ class Settings:
     shared_library_dir: str = ""    # složka sdílené knihovny (materiály/profily); "" = vypnuto
     last_dir: str = ""              # naposledy použitý adresář v dialozích otevřít/uložit
     theme: str = "system"           # vzhled: "system" | "light" | "dark"
+    ui_scale: float = 1.0           # měřítko rozhraní NAD měřítkem Windows (QT_SCALE_FACTOR, po restartu)
     recent_files: list = field(default_factory=list)  # naposledy otevřené projekty (nejnovější první)
     panel_expanded: dict = field(default_factory=dict)  # stav rozbalení sekcí levého panelu {klíč: bool}
 
@@ -58,7 +59,7 @@ def _load() -> Settings:
         for k in ("language", "number_format", "decimals", "vvu_combined",
                   "vvu_show_deform", "schema_show_loads", "schema_show_supports",
                   "schema_all_loads", "schema_axo", "shared_library_dir", "last_dir",
-                  "theme", "recent_files", "panel_expanded"):
+                  "theme", "ui_scale", "recent_files", "panel_expanded"):
             if k in d:
                 setattr(s, k, d[k])
         return s

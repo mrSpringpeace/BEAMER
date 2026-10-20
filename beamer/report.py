@@ -24,9 +24,9 @@ def _has_sharp_reentrant(state):
         pass
     return False
 
-def build_report(state, result, margins, include_conservative=False) -> str:
-    """`include_conservative=True` doplní obálkové sekce (konzervativní kontrola,
-    vzpěr přes obálku N) – počítá obálku přes VŠECHNY kombinace (n×solve+reserves,
+def build_report(state, result, margins, include_envelope=False) -> str:
+    """`include_envelope=True` doplní obálkové sekce a vzpěr přes obálku N.
+    Počítá obálku přes VŠECHNY kombinace (n×solve+reserves,
     drahé). Živá karta Výsledky volá s False (rychlé); exporty s True."""
     L = []
     L.append("=" * 60)
@@ -93,7 +93,8 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             exact = (getattr(state, "tau_mode", "conservative") == "exact"
                      or getattr(state, "torsion_theory", "saint-venant") == "vlasov")
             sc = build_section(sec1, exact=exact)
-            L.append(f"     A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
+            L.append(f"     yT={fmt(sc.cx_raw)} mm  zT={fmt(sc.cz_raw)} mm  "
+                     f"A={fmt(sc.A)} mm²  Iy={fmt(sc.Iy)} mm⁴  Iz={fmt(sc.Iz)} mm⁴  "
                      f"IT={fmt(sc.IT)} mm⁴  Iω={fmt(sc.Iw)} mm⁶")
             if not getattr(sc, "strength_available", True):
                 L.append("     ⚠ " + getattr(sc, "analysis_note", "Posouzení není dostupné."))
@@ -201,18 +202,22 @@ def build_report(state, result, margins, include_conservative=False) -> str:
                     "empirická metoda Needham/Gerard, jen pro známou topologii."))
         L.append("")
 
-    # ── vzpěr + konzervativní obálková kontrola ──
+    # ── vzpěr + obálka kombinací ──
     # Obálka přes kombinace je DRAHÁ (n×solve+reserves) → jen na explicitní
-    # export (include_conservative=True); živá karta Výsledky ukáže vzpěr ze
+    # export (include_envelope=True); živá karta Výsledky ukáže vzpěr ze
     # zobrazené kombinace a odkáže na export/Load Case Builder.
     if result and result.is_stable and result.points:
-        from .analysis import buckling_check, conservative_check, envelope_over_combinations
+        from .analysis import buckling_check, envelope_over_combinations
         env = None
-        if include_conservative and getattr(state, "load_combinations", None):
+        if include_envelope and getattr(state, "load_combinations", None):
             try:
                 env = envelope_over_combinations(state)
             except Exception:
                 env = None
+        if env is not None and getattr(env, "failed_combos", None):
+            L.append(tr("VAROVÁNÍ: obálka je neúplná; nevyhodnocené kombinace: ")
+                     + ", ".join(env.failed_combos))
+            L.append("")
         try:
             bc = buckling_check(state, result, env=env)
         except Exception:
@@ -230,7 +235,7 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             L.append("")
 
         # fáze 2: bifurkace soustavy (vlastní čísla) – dražší (~0,3 s), jen export
-        if include_conservative:
+        if include_envelope:
             from .analysis import buckling_eigen_check
             try:
                 be = buckling_eigen_check(state, result)
@@ -274,25 +279,6 @@ def build_report(state, result, margins, include_conservative=False) -> str:
             L.append("  " + tr("(R_c + R_b/(1−R_c) ≤ 1; RF = 1/R_int, MS = RF−1; jen tlačené úseky)"))
             L.append("")
 
-        if env is not None:
-            try:
-                cc = conservative_check(state, env=env)
-            except Exception:
-                cc = None
-            if cc is not None:
-                L.append(tr("KONZERVATIVNÍ OBÁLKOVÁ KONTROLA (maxima naráz v řezu, přes všechny kombinace)"))
-                L.append(f"  {tr('Maxima')}: |N|={fmt(cc.N_max)} N  |V|={fmt(cc.V_max)} N  "
-                         f"|M|={fmt(cc.M_max)} N·mm  |Mk|={fmt(cc.Mk_max)} N·mm")
-                for r in cc.rows:
-                    L.append(f"    {r['label']}: σ={fmt(r['sigma'])} τ={fmt(r['tau'])} "
-                             f"σ_red={fmt(r['sred'])} MPa  RF={fmt(r['RF'])}")
-                L.append(f"  RF_konzervativní = {fmt(cc.rf_min)} ({tr('řídí')} {cc.crit_label})")
-                L.append("  " + tr("(horní odhad – maxima z různých poloh sečtena; přesné RF viz výše)"))
-                L.append("")
-        elif getattr(state, "load_combinations", None):
-            L.append(tr("(Konzervativní obálková kontrola a vzpěr přes obálku kombinací: "
-                        "v exportu protokolu nebo v Load Case Builderu – Graf obálky.)"))
-            L.append("")
 
     # ── kontrolní body (volitelné řezy) ──
     cps = getattr(state, "control_points", None) or []

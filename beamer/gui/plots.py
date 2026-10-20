@@ -43,16 +43,6 @@ def apply_chart_theme(theme: str = "system"):
     _PANEL = "#ffffff"
 
 
-def style_axes(ax):
-    """Společný technický vzhled os: bez horní/pravé čáry, jemný major+minor grid."""
-    ax.minorticks_on()
-    ax.set_axisbelow(True)
-    ax.grid(True, which="major", alpha=0.35, linewidth=0.7)
-    ax.grid(True, which="minor", alpha=0.15, linewidth=0.4)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-
-
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, nrows=1, ncols=1, figsize=(5, 4)):
         self.fig = Figure(figsize=figsize, layout="constrained")
@@ -928,8 +918,10 @@ class EnvelopeCanvas(MplCanvas):
         ax.annotate(f"RF_min={rf[i]:.2f} @ x={xs[i]:.0f}\n{tr('řídí')}: {env.crit_combo}",
                     (xs[i], rf[i]), textcoords="offset points", xytext=(6, 8),
                     fontsize=7, color="#c62828")
-        ax.set_title(tr("min RF podél nosníku (obálka přes %d kombinací)") % env.n_combos,
-                     fontsize=8, loc="left")
+        title = tr("min RF podél nosníku (obálka přes %d kombinací)") % env.n_combos
+        if getattr(env, "failed_combos", None):
+            title += " · " + tr("NEÚPLNÁ")
+        ax.set_title(title, fontsize=8, loc="left")
         ax.set_ylabel("RF [-]", fontsize=8)
         top = max(float(np.nanmax(rf)) * 1.1, 1.3)
         ax.set_ylim(0, top)

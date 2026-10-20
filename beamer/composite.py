@@ -28,6 +28,25 @@ def _circle_poly(r, n=64):
             for k in range(n)]
 
 
+def _assert_no_area_overlaps(geometries):
+    """Odmítne plošný překryv částí skladby; společná hrana/bod jsou přípustné."""
+    from shapely.geometry import Polygon
+    polys = []
+    for outer, holes in geometries:
+        poly = Polygon(outer, holes or [])
+        if not poly.is_valid:
+            raise ValueError("Složený profil obsahuje neplatnou geometrii části.")
+        polys.append(poly)
+    for i, a in enumerate(polys):
+        for j, b in enumerate(polys[i + 1:], i + 1):
+            overlap = a.intersection(b).area
+            tol = 1e-9 * max(a.area, b.area, 1.0)
+            if overlap > tol:
+                raise ValueError(
+                    f"Části složeného profilu {i + 1} a {j + 1} se plošně překrývají."
+                )
+
+
 def section_bodies_centroidal(sdef):
     """Geometrie průřezu jako [(outer, [holes]), …] v centroidálních souřadnicích
     (těžiště v 0,0). Pokrývá polygon/construction (vč. děr), kruh/trubku,
@@ -71,6 +90,11 @@ def assemble_parts(state, parts):
                 points=[{"y": y, "z": z} for y, z in o],
                 holes=[[{"y": y, "z": z} for y, z in h] for h in hs],
                 material_id=mid))
+    _assert_no_area_overlaps([
+        ([(p["y"], p["z"]) for p in b.points],
+         [[(p["y"], p["z"]) for p in h] for h in b.holes])
+        for b in bodies
+    ])
     return bodies
 
 
@@ -114,11 +138,6 @@ def _material_by_id(state, mid):
     return state.material() if hasattr(state, "material") else None
 
 
-def _material_E(state, mid, default=210000.0):
-    m = _material_by_id(state, mid)
-    return float(m.E) if m else default
-
-
 def _positioned_bodies(state, prop):
     """[( (outer, [holes]), material ), …] – části sestavy v cílové poloze
     (posun+úhel části) + CELKOVÉ natočení PID (prop.rotation), s jejich materiálem."""
@@ -139,6 +158,7 @@ def _positioned_bodies(state, prop):
                 o = _rot_trans(o, prot, 0.0, 0.0)
                 hs = [_rot_trans(h, prot, 0.0, 0.0) for h in hs]
             out.append(((o, hs), mat))
+    _assert_no_area_overlaps([g for g, _mat in out])
     return out
 
 
@@ -275,11 +295,6 @@ def composite_stress(state, prop, N, M, Mz=0.0, dT=0.0, dT_grad=0.0):
         a["RF_ultimate"] = (a["Rm"] / s) if s > 1e-9 else float("inf")
         rows.append(a)
     return rows
-
-
-def section_by_id_(state, sid):
-    from .sections_along import section_by_id
-    return section_by_id(state, sid)
 
 
 def composite_assess(state, prop, N, M, basis="min", Mk=0.0, V=0.0, combine=None,

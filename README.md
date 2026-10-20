@@ -10,7 +10,7 @@ reserve-factor assessment.
 
 Python · PySide6 · NumPy · Matplotlib · SciPy.
 
-Current release: **1.41**.
+Current release: **1.43**.
 
 [![tests](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml/badge.svg)](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml)
 

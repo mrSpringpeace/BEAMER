@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from .. import library
 from ..i18n import tr
 from ..model import CrossSectionDef, new_id
+from ..settings import fmt
 from .plots import SectionCanvas
 
 
@@ -33,7 +34,8 @@ class ProfileLibraryDialog(QDialog):
         # [(name, CrossSectionDef), …] v pořadí souboru
         self.profs: list = library.load_profiles()
         self.setWindowTitle(tr("Knihovna profilů"))
-        self.resize(860, 540)
+        from .screen import fit_resize
+        fit_resize(self, 860, 540)
 
         root = QVBoxLayout(self)
         split = QSplitter(Qt.Horizontal)
@@ -96,6 +98,9 @@ class ProfileLibraryDialog(QDialog):
         rv.setContentsMargins(6, 0, 0, 0)
         self.canvas = SectionCanvas()
         rv.addWidget(self.canvas, 1)
+        self.props = QLabel("")
+        self.props.setWordWrap(True)
+        rv.addWidget(self.props)
         hint = QLabel(tr("Změny se ukládají hned. Úprava knihovny nemění "
                          "průřezy už zkopírované do projektů."))
         hint.setObjectName("hint")
@@ -150,6 +155,7 @@ class ProfileLibraryDialog(QDialog):
         r = self.listw.currentRow()
         if not (0 <= r < len(self.profs)):
             self.canvas.plot(None)
+            self.props.setText("")
             return
         from ..section import build_section
         try:
@@ -157,6 +163,12 @@ class ProfileLibraryDialog(QDialog):
         except Exception:
             cs = None
         self.canvas.plot(cs)
+        if cs is not None and cs.valid:
+            self.props.setText(
+                f"{tr('Těžiště ve vstupní soustavě:')}  "
+                f"yT = {fmt(cs.cx_raw)} mm    zT = {fmt(cs.cz_raw)} mm")
+        else:
+            self.props.setText("")
 
     def _save(self):
         library.save_profiles(self.profs)

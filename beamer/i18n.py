@@ -225,6 +225,9 @@ EN = {
     "vlevo": "left",
     "vpravo": "right",
     "v kritickém řezu (RF_min):": "at the critical section (RF_min):",
+    "Těžiště ve vstupní soustavě:": "Centroid in the input coordinate system:",
+    "těžiště yT [mm]": "centroid yT [mm]",
+    "těžiště zT [mm]": "centroid zT [mm]",
     "— Napětí v tomto řezu —": "— Stress at this section —",
     "— Posouzení (celý nosník) —": "— Assessment (whole beam) —",
     # Load Case Builder
@@ -232,10 +235,20 @@ EN = {
     "Load Case Builder": "Load Case Builder",
     "Zatěžovací stavy": "Load cases",
     "Název stavu": "Case name",
+    "Již faktorované ULS": "Already factored ULS",
     "+ Přidat stav": "+ Add case",
     "Musí zůstat aspoň jeden stav.": "At least one case must remain.",
+    "Stav obsahuje zatížení. Nejprve je přesuňte do jiného stavu nebo smažte.":
+        "The case contains loads. Move them to another case or delete them first.",
     "Stav": "Case",
     "Kombinace (Σ faktor × stav)": "Combinations (Σ factor × case)",
+    "Kombinace (Σ faktor × zatěžovací stav)": "Combinations (Σ factor × load case)",
+    "Řádek = kombinace. U každého zatěžovacího stavu zadej faktor "
+    "(0 = nepoužito, 1 = plně, např. 1.35 / 1.5).":
+        "Each row is a combination. Enter a factor for every load case "
+        "(0 = excluded, 1 = full, e.g. 1.35 / 1.5).",
+    "Zapnuto: dodatečný součinitel projektu se na tento stav znovu nepoužije.":
+        "Enabled: the project additional factor is not applied to this case again.",
     "Název kombinace": "Combination name",
     "+ Kombinace": "+ Combination",
     "+ Stavy ×1 (auto)": "+ Cases ×1 (auto)",
@@ -251,6 +264,20 @@ EN = {
     "Stav (LC):": "Case (LC):",
     "stav": "status",
     "NESTABILNÍ": "UNSTABLE",
+    "Obálka je neúplná. Nevyhodnocené kombinace: ":
+        "The envelope is incomplete. Unevaluated combinations: ",
+    "NEÚPLNÁ": "INCOMPLETE",
+    "Výsledky nejsou aktuální": "Results are out of date",
+    "Po změně vstupů nejprve stiskněte Spočítat. Export byl zrušen.":
+        "After changing the inputs, run the calculation first. Export was cancelled.",
+    "vstupy se během výpočtu změnily – přepočítejte":
+        "inputs changed during the calculation — recalculate",
+    "Výsledek nebyl převzat, protože se během výpočtu změnily vstupy.":
+        "The result was discarded because the inputs changed during the calculation.",
+    "VAROVÁNÍ: obálka je neúplná; nevyhodnocené kombinace: ":
+        "WARNING: the envelope is incomplete; unevaluated combinations: ",
+    "min RF podél nosníku (obálka přes %d kombinací)":
+        "minimum RF along beam (envelope of %d combinations)",
     "min(Re,Rm)": "min(Re,Rm)",
     "Velikost písma:": "Font size:",
     "Tip: opakovaný klik na Max cykluje mezi špičkami veličiny.":
@@ -526,6 +553,24 @@ EN = {
     "Needham/Gerard, jen pro známou topologii.":
         "Local buckling: classical plate theory; crippling: empirical "
         "Needham/Gerard method, known topology only.",
+    # 1.43 – zatížení hmotností, měřítko rozhraní
+    "+ Hmotnost": "+ Mass",
+    "Hmotnost": "Mass",
+    "Bodové břemeno zadané hmotností (Fz = −m·g)": "Point mass load (Fz = −m·g)",
+    "hmotnost m (nebo):": "mass m (or):",
+    "Hmotnost břemene: Fz = −m·g (g = 9,80665 m/s²). Přetížení n zadej faktorem zatěžovacího stavu.":
+        "Mass of the item: Fz = −m·g (g = 9.80665 m/s²). Enter load factor n as the load-case factor.",
+    "Hmotnost na metr délky: q = −m'·g (tíha dolů).": "Mass per metre of length: q = −m'·g (weight, downward).",
+    "Celková hmotnost rozložená rovnoměrně na x1–x2 (q1 = q2 = −M·g/(x2−x1)). Přetížení n zadej faktorem zatěžovacího stavu.":
+        "Total mass spread uniformly over x1–x2 (q1 = q2 = −M·g/(x2−x1)). Enter load factor n as the load-case factor.",
+    "m'1 hmotnost (nebo):": "m'1 mass (or):",
+    "m'2 hmotnost:": "m'2 mass:",
+    "celková hmotnost M:": "total mass M:",
+    "Měřítko rozhraní": "Interface scale",
+    "Zvětší nebo zmenší celé rozhraní nad rámec měřítka Windows (Nastavení → Obrazovka → Měřítko). Projeví se po restartu aplikace.":
+        "Enlarges or shrinks the whole interface on top of the Windows scale (Settings → Display → Scale). Takes effect after restart.",
+    "Windows: %d %%, celkem: %d %%.": "Windows: %d %%, total: %d %%.",
+    "Projeví se po restartu aplikace.": "Takes effect after restarting the application.",
 }
 
 

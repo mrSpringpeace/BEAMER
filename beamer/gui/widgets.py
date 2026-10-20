@@ -6,8 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QPushButton, QScrollArea, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QLineEdit,
-    QCheckBox, QToolButton, QMessageBox, QStackedWidget, QListWidget,
-    QListWidgetItem,
+    QCheckBox, QToolButton, QMessageBox, QStackedWidget,
 )
 from PySide6.QtCore import Qt as _Qt, QSize
 
@@ -59,7 +58,6 @@ class CollapsibleBox(QWidget):
 
 from ..model import (
     Material, Support, Hinge, ControlPoint, Load, CrossSectionDef, SectionSegment, Property, new_id,
-    combination_factor, register_load_in_combinations,
 )
 from ..i18n import tr
 from ..settings import fmt, SETTINGS
@@ -113,6 +111,9 @@ def _fit_table(table):
     table.setMaximumHeight(h)
 
 
+G_STD = 9.80665      # normální tíhové zrychlení [m/s²] – zadání zatížení hmotností
+
+
 def _spin(val, mn=-1e9, mx=1e9, step=1.0, dec=3, suffix=""):
     sp = NoWheelDoubleSpinBox()
     sp.setRange(mn, mx)
@@ -145,6 +146,71 @@ def _same_material(a, b) -> bool:
         elif abs(float(va) - float(vb)) > 1e-9 * max(1.0, abs(float(va))):
             return False
     return True
+
+
+class CardRail(QFrame):
+    """Svislá ikonová lišta karet: sloupec vycentrovaných přepínacích tlačítek
+    se skupinovými oddělovači. Řádek = index stránky (oddělovače se nepočítají),
+    API kopíruje QListWidget (currentRow/setCurrentRow/count/currentRowChanged)."""
+    currentRowChanged = Signal(int)
+
+    BTN = 40          # strana tlačítka (logické px – škáluje se s DPI)
+    ICON = 24
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QButtonGroup
+        self.setObjectName("card_rail")
+        self.setFixedWidth(self.BTN + 12)
+        self._v = QVBoxLayout(self)
+        self._v.setContentsMargins(6, 8, 6, 8)
+        self._v.setSpacing(4)
+        self._v.addStretch(1)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._group.idClicked.connect(self._on_clicked)
+        self._btns = []
+
+    def _insert(self, w):
+        self._v.insertWidget(self._v.count() - 1, w, 0, _Qt.AlignHCenter)
+
+    def add_card(self, icon, tooltip):
+        b = QToolButton()
+        b.setObjectName("railBtn")
+        b.setCheckable(True)
+        b.setIcon(icon)
+        b.setIconSize(QSize(self.ICON, self.ICON))
+        b.setFixedSize(self.BTN, self.BTN)
+        b.setToolTip(tooltip)
+        b.setAccessibleName(tooltip)
+        b.setFocusPolicy(_Qt.NoFocus)
+        self._group.addButton(b, len(self._btns))
+        self._btns.append(b)
+        self._insert(b)
+
+    def add_separator(self):
+        line = QFrame()
+        line.setObjectName("railSep")
+        line.setFixedSize(self.BTN - 16, 1)
+        holder = QWidget()
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 5, 0, 5)
+        hl.addWidget(line, 0, _Qt.AlignHCenter)
+        self._insert(holder)
+
+    def count(self):
+        return len(self._btns)
+
+    def currentRow(self):
+        return self._group.checkedId()
+
+    def setCurrentRow(self, row):
+        if 0 <= row < len(self._btns) and row != self.currentRow():
+            self._btns[row].setChecked(True)
+            self.currentRowChanged.emit(row)
+
+    def _on_clicked(self, row):
+        self.currentRowChanged.emit(row)
 
 
 def fill_material_combo(combo, state, current_id=None):
@@ -307,18 +373,26 @@ class InputPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.rail = QListWidget()
-        self.rail.setObjectName("card_rail")
-        self.rail.setIconSize(QSize(22, 22))
-        self.rail.setFixedWidth(50)
-        self.rail.setHorizontalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
-        self.rail.setFocusPolicy(_Qt.NoFocus)
+        self.rail = CardRail()
         self.stack = QStackedWidget()
-        root.addWidget(self.rail)
+        # lišta v posuvné oblasti bez posuvníku: na nízké logické obrazovce
+        # (velké měřítko Windows) nevynucuje výšku okna, roluje se kolečkem
+        rail_scroll = QScrollArea()
+        rail_scroll.setObjectName("card_rail_scroll")
+        rail_scroll.setWidget(self.rail)
+        rail_scroll.setWidgetResizable(True)
+        rail_scroll.setFrameShape(QFrame.NoFrame)
+        rail_scroll.setHorizontalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
+        rail_scroll.setVerticalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
+        rail_scroll.setFixedWidth(self.rail.width())
+        root.addWidget(rail_scroll)
         root.addWidget(self.stack, 1)
 
         ink = tokens(SETTINGS.theme)["text2"]
+        accent = tokens(SETTINGS.theme)["accent_fg"]
         for key, label, builders in self._cards():
+            if key in self._RAIL_SEPARATOR_BEFORE:
+                self.rail.add_separator()
             page = QScrollArea()
             page.setWidgetResizable(True)
             page.setFrameShape(QFrame.NoFrame)
@@ -330,16 +404,16 @@ class InputPanel(QWidget):
                 b()
             self.layout.addStretch(1)
             self.stack.addWidget(page)
-            item = QListWidgetItem(card_icon(key, ink), "")
-            item.setToolTip(label)
-            item.setSizeHint(QSize(48, 46))
-            item.setTextAlignment(_Qt.AlignCenter)
-            self.rail.addItem(item)
+            self.rail.add_card(card_icon(key, ink, CardRail.ICON, accent), label)
 
-        self.rail.setCurrentRow(0)
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.rail.setCurrentRow(0)
         self._outer.addWidget(host)
         self._host = host
+
+    # Karty lišty jsou seskupené: nosník | materiál–průřez–PID | úseky–podpory–
+    # zatížení | vyhodnocení.
+    _RAIL_SEPARATOR_BEFORE = ("material", "segs", "eval")
 
     def _emit(self, *_):
         self.changed.emit()
@@ -359,6 +433,14 @@ class InputPanel(QWidget):
         w.content_layout.setContentsMargins(2, 0, 0, 0)
         v.addWidget(inner)
         return w
+
+    @staticmethod
+    def _hsep():
+        """Tenká vodorovná čára: odděluje seznam položek od tlačítek „+ Přidat…“."""
+        line = QFrame()
+        line.setObjectName("panelSep")
+        line.setFixedHeight(1)
+        return line
 
     # ── obecné ──
     def _build_general(self):
@@ -441,19 +523,21 @@ class InputPanel(QWidget):
         self._refresh_material_view()
 
     def _reload_mat_combo(self):
-        self.mat_cb.blockSignals(True)
-        self.mat_cb.clear()
-        for m in self.state.materials:
-            label = m.name + (tr(" (vlastní)") if getattr(m, "is_custom", False) else "")
-            self.mat_cb.addItem(label, m.id)
-        idx = self.mat_cb.findData(self.state.selected_material_id)
-        self.mat_cb.setCurrentIndex(max(0, idx))
-        self.mat_cb.blockSignals(False)
+        # stejná „živá" nabídka jako u úseků/PID: projekt + uživatelská/sdílená
+        # knihovna; volba knihovní položky ji zkopíruje do projektu
+        fill_material_combo(self.mat_cb, self.state, self.state.selected_material_id)
 
     def _on_material(self, _):
-        self.state.selected_material_id = self.mat_cb.currentData()
-        self._refresh_material_view()
+        mid, created = resolve_material_choice(self.state, self.mat_cb.currentData())
+        if mid is None:
+            return
+        self.state.selected_material_id = mid
         self._emit()
+        if created:                     # kopie z knihovny → obnov comba všude
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._after_material_import)
+        else:
+            self._refresh_material_view()
 
     def _add_custom_material(self):
         m = Material(new_id("mat"), tr("Vlastní materiál"),
@@ -499,7 +583,7 @@ class InputPanel(QWidget):
         m = self.state.material()
         m.is_custom = True
         if idx >= 0:
-            self.mat_cb.setItemText(idx, m.name + tr(" (vlastní)"))
+            self.mat_cb.setItemText(idx, m.name)
         self._emit()
 
     def _material_save_menu(self):
@@ -608,6 +692,7 @@ class InputPanel(QWidget):
         self.seclib_layout = QVBoxLayout(self.seclib_host)
         self.seclib_layout.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.seclib_host)
+        v.addWidget(self._hsep())
         brow = QHBoxLayout()
         addb = QPushButton(tr("+ Přidat průřez"))
         addb.clicked.connect(self._add_library_section)
@@ -633,17 +718,23 @@ class InputPanel(QWidget):
             self.seclib_layout.addWidget(self._library_section_row(s))
 
     def _library_section_row(self, s):
+        # dvouřádkově: název přes celou šířku (nemění se s délkou názvu typu),
+        # pod ním typ definice a akce
         w = QWidget()
-        h = QHBoxLayout(w)
-        h.setContentsMargins(0, 0, 0, 0)
+        col = QVBoxLayout(w)
+        col.setContentsMargins(0, 0, 0, 6)
+        col.setSpacing(3)
         nm = QLineEdit(s.name)
         nm.setPlaceholderText(tr("název průřezu"))
         nm.textChanged.connect(lambda t, sec=s: (setattr(sec, "name", t),
                                                  self._on_library_renamed()))
-        h.addWidget(nm, 1)
+        col.addWidget(nm)
+        h = QHBoxLayout()
+        h.setContentsMargins(0, 0, 0, 0)
+        col.addLayout(h)
         tlbl = QLabel(tr(SECTION_LABELS.get(s.type, s.type)))
         tlbl.setObjectName("hint")
-        h.addWidget(tlbl)
+        h.addWidget(tlbl, 1)
         edit = QPushButton(tr("Upravit…"))
         edit.clicked.connect(lambda _, sec=s: self._edit_library_section(sec))
         h.addWidget(edit)
@@ -800,6 +891,7 @@ class InputPanel(QWidget):
         self.props_layout = QVBoxLayout(self.props_host)
         self.props_layout.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.props_host)
+        v.addWidget(self._hsep())
         addb = QPushButton(tr("+ Přidat PID"))
         addb.clicked.connect(self._add_property)
         v.addWidget(addb)
@@ -972,6 +1064,7 @@ class InputPanel(QWidget):
         self.parts_layout = QVBoxLayout(self.parts_host)
         self.parts_layout.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.parts_host)
+        v.addWidget(self._hsep())
         addb = QPushButton(tr("+ Přidat úsek"))
         addb.clicked.connect(self._add_part)
         v.addWidget(addb)
@@ -1558,11 +1651,17 @@ class InputPanel(QWidget):
         self.loads_layout = QVBoxLayout(self.loads_host)
         self.loads_layout.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.loads_host)
-        row = QHBoxLayout()
-        for tp, lbl in [("point_force", "+ Síla"), ("distributed", "+ Spojité"),
+        self.loads_sep = self._hsep()
+        v.addWidget(self.loads_sep)
+        from .flow_layout import FlowLayout
+        row = FlowLayout(h_spacing=6, v_spacing=6)   # v úzkém panelu se zalomí
+        for tp, lbl in [("point_force", "+ Síla"), ("point_mass", "+ Hmotnost"),
+                        ("distributed", "+ Spojité"),
                         ("moment", "+ Moment"), ("torsion", "+ Krut"),
                         ("thermal", "+ Teplota")]:
             b = QPushButton(tr(lbl))
+            if tp == "point_mass":
+                b.setToolTip(tr("Bodové břemeno zadané hmotností (Fz = −m·g)"))
             b.clicked.connect(lambda _, t=tp: self._add_load(t))
             row.addWidget(b)
         v.addLayout(row)
@@ -1603,8 +1702,6 @@ class InputPanel(QWidget):
         lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
         new_loads = loads_from_curve(pts, lc_id, nm)
         self.state.loads.extend(new_loads)
-        for _new in new_loads:            # jinak by načtená křivka byla nulová
-            register_load_in_combinations(self.state, _new)
         if new_loads:
             self._expand_obj = new_loads[-1]
         self._refresh_loads()
@@ -1619,9 +1716,11 @@ class InputPanel(QWidget):
         while self.loads_layout.count():
             w = self.loads_layout.takeAt(0).widget()
             if w:
+                w.hide()                # do deleteLater by jinak přečníval
                 w.deleteLater()
         for ld in self.state.loads:
             self.loads_layout.addWidget(self._load_row(ld))
+        self.loads_sep.setVisible(bool(self.state.loads))
         self._expand_obj = None
 
     def _load_title(self, ld):
@@ -1634,9 +1733,9 @@ class InputPanel(QWidget):
             if abs(getattr(ld, "Fy", 0.0)) > 1e-9:
                 v += f"  Fy={ld.Fy:.0f} N"
         elif ld.type == "distributed":
-            v = f"  q={ld.q1:.1f}→{ld.q2:.1f} ({ld.x1:.0f}–{ld.x2:.0f})"
+            v = f"  q={ld.q1:.4g}→{ld.q2:.4g} ({ld.x1:.0f}–{ld.x2:.0f})"
             if abs(getattr(ld, "qy1", 0.0)) > 1e-9 or abs(getattr(ld, "qy2", 0.0)) > 1e-9:
-                v += f"  qy={ld.qy1:.1f}→{ld.qy2:.1f}"
+                v += f"  qy={ld.qy1:.4g}→{ld.qy2:.4g}"
         elif ld.type == "moment":
             v = f"  My={ld.My:.0f} @ x={ld.x:.0f}"
             if abs(getattr(ld, "Mz", 0.0)) > 1e-9:
@@ -1720,6 +1819,30 @@ class InputPanel(QWidget):
             fy_sp.valueChanged.connect(lambda _v: _from_comp())
             f.addRow(tr("│F│ příčná (nebo):"), mag_sp)
             f.addRow(tr("úhel od svislé [°]:"), ang_sp)
+            # Zadání hmotností: Fz = −m·g (tíha dolů; násobek g/přetížení dá
+            # faktor zatěžovacího stavu/kombinace). Provázané obousměrně s Fz.
+            m_sp = _spin(-ld.Fz / G_STD, -1e9, 1e9, 1.0, 3, " kg")
+            m_sp.setToolTip(tr("Hmotnost břemene: Fz = −m·g (g = 9,80665 m/s²). "
+                               "Přetížení n zadej faktorem zatěžovacího stavu."))
+            _mlock = {"on": False}
+
+            def _from_mass(val):
+                if _mlock["on"]:
+                    return
+                _mlock["on"] = True
+                fz_sp.setValue(-val * G_STD)
+                _mlock["on"] = False
+
+            def _to_mass(_v):
+                if _mlock["on"]:
+                    return
+                _mlock["on"] = True
+                m_sp.setValue(-ld.Fz / G_STD)
+                _mlock["on"] = False
+
+            m_sp.valueChanged.connect(_from_mass)
+            fz_sp.valueChanged.connect(_to_mass)
+            f.addRow(tr("hmotnost m (nebo):"), m_sp)
             f.addRow(tr("excentricita:"), bind("eccentricity", " mm"))
             repl = QPushButton(tr("↦ Nahradit spojitým…"))
             repl.clicked.connect(lambda _, l=ld: self._open_loadgen(l))
@@ -1727,10 +1850,13 @@ class InputPanel(QWidget):
         elif ld.type == "distributed":
             f.addRow("x1:", bind("x1", " mm", 1, 50))
             f.addRow("x2:", bind("x2", " mm", 1, 50))
-            f.addRow(tr("q1 (svislé, +nahoru):"), bind("q1", " N/mm"))
-            f.addRow(tr("q2 (svislé):"), bind("q2", " N/mm"))
-            f.addRow(tr("qy1 (vodorovné, +y):"), bind("qy1", " N/mm"))
-            f.addRow(tr("qy2 (vodorovné):"), bind("qy2", " N/mm"))
+            q1_sp = bind("q1", " N/mm", 3, 0.1)
+            q2_sp = bind("q2", " N/mm", 3, 0.1)
+            f.addRow(tr("q1 (svislé, +nahoru):"), q1_sp)
+            f.addRow(tr("q2 (svislé):"), q2_sp)
+            f.addRow(tr("qy1 (vodorovné, +y):"), bind("qy1", " N/mm", 3, 0.1))
+            f.addRow(tr("qy2 (vodorovné):"), bind("qy2", " N/mm", 3, 0.1))
+            self._mass_rows_distributed(f, ld, box, q1_sp, q2_sp)
         elif ld.type == "moment":
             f.addRow("x:", bind("x", " mm", 1, 50))
             f.addRow(tr("My (kolem y):"), bind("My", " N·mm"))
@@ -1754,10 +1880,90 @@ class InputPanel(QWidget):
             tr("Smazat zatížení"), lambda: self._del_load(ld)))
         return box
 
+    def _mass_rows_distributed(self, f, ld, box, q1_sp, q2_sp):
+        """Zadání spojitého zatížení hmotností: m' [kg/m] na začátku/konci
+        (q = −m'·g/1000 N/mm) nebo celková hmotnost M [kg] rozložená rovnoměrně
+        na x1–x2. Vše obousměrně provázané s q1/q2; do modelu se zapíše přesná
+        hodnota (pole q ukazuje zaokrouhleně), takže se nic neztratí."""
+        k = G_STD / 1000.0                 # kg/m → N/mm
+        m1 = _spin(-ld.q1 / k, -1e9, 1e9, 0.1, 3, " kg/m")
+        m2 = _spin(-ld.q2 / k, -1e9, 1e9, 0.1, 3, " kg/m")
+        mt = _spin(0.0, -1e9, 1e9, 1.0, 3, " kg")
+        for w in (m1, m2):
+            w.setToolTip(tr("Hmotnost na metr délky: q = −m'·g (tíha dolů)."))
+        mt.setToolTip(tr("Celková hmotnost rozložená rovnoměrně na x1–x2 "
+                         "(q1 = q2 = −M·g/(x2−x1)). Přetížení n zadej faktorem "
+                         "zatěžovacího stavu."))
+        lock = {"on": False}
+
+        def total():
+            L = ld.x2 - ld.x1
+            return -(ld.q1 + ld.q2) / 2.0 * L / G_STD
+
+        def sync_from_q(*_):
+            if lock["on"]:
+                return
+            lock["on"] = True
+            m1.setValue(-ld.q1 / k)
+            m2.setValue(-ld.q2 / k)
+            mt.setValue(total())
+            lock["on"] = False
+
+        def set_q(q1, q2):
+            lock["on"] = True
+            for sp, a, v in ((q1_sp, "q1", q1), (q2_sp, "q2", q2)):
+                sp.blockSignals(True)
+                sp.setValue(v)
+                sp.blockSignals(False)
+                setattr(ld, a, v)          # přesně, bez zaokrouhlení pole
+            m1.setValue(-ld.q1 / k)
+            m2.setValue(-ld.q2 / k)
+            mt.setValue(total())
+            lock["on"] = False
+            box.setTitle(self._load_title(ld))
+            self._emit()
+
+        def from_m1(v):
+            if not lock["on"]:
+                set_q(-v * k, ld.q2)
+
+        def from_m2(v):
+            if not lock["on"]:
+                set_q(ld.q1, -v * k)
+
+        def from_total(v):
+            L = ld.x2 - ld.x1
+            if lock["on"] or abs(L) < 1e-9:
+                return
+            q = -v * G_STD / L
+            set_q(q, q)
+
+        sync_from_q()
+        m1.valueChanged.connect(from_m1)
+        m2.valueChanged.connect(from_m2)
+        mt.valueChanged.connect(from_total)
+        # q1/q2 i x1/x2 mění celkovou hmotnost → přepočet zobrazených hmotností
+        for sp in (q1_sp, q2_sp):
+            sp.valueChanged.connect(sync_from_q)
+        for i in range(f.rowCount()):
+            it = f.itemAt(i, QFormLayout.FieldRole)
+            w = it.widget() if it is not None else None
+            if isinstance(w, NoWheelDoubleSpinBox) and w.suffix() == " mm":
+                w.valueChanged.connect(sync_from_q)
+        f.addRow(tr("m'1 hmotnost (nebo):"), m1)
+        f.addRow(tr("m'2 hmotnost:"), m2)
+        f.addRow(tr("celková hmotnost M:"), mt)
+
     def _add_load(self, tp):
         lc_id = self.state.load_cases[0].id if self.state.load_cases else ""
-        ld = Load(new_id("load"), tp, "Zatížení", lc_id)
-        if tp == "distributed":
+        mass = tp == "point_mass"          # bodová síla zadaná hmotností
+        if mass:
+            tp = "point_force"
+        ld = Load(new_id("load"), tp, tr("Hmotnost") if mass else "Zatížení", lc_id)
+        if mass:
+            ld.x = self.state.length/2
+            ld.Fz = -10.0 * G_STD          # 10 kg
+        elif tp == "distributed":
             ld.x1 = 0
             ld.x2 = self.state.length
             ld.q1 = ld.q2 = -1.0
@@ -1775,7 +1981,6 @@ class InputPanel(QWidget):
             ld.x2 = self.state.length
             ld.dT = 50.0
         self.state.loads.append(ld)
-        register_load_in_combinations(self.state, ld)   # jinak tichá nula
         self._expand_obj = ld
         self._refresh_loads()
         self._emit()
@@ -1787,10 +1992,7 @@ class InputPanel(QWidget):
         dup.name = (ld.name + " " + tr("(kopie)")) if ld.name else tr("(kopie)")
         i = self.state.loads.index(ld)
         self.state.loads.insert(i + 1, dup)
-        # kopie převezme faktory originálu (kde je zná), jinak ×1
-        for comb in self.state.load_combinations or []:
-            f = combination_factor(comb, ld)
-            comb.factors[dup.id] = 1.0 if f is None else f
+        # Kopie patří do stejného stavu a automaticky tedy sdílí jeho faktor.
         self._expand_obj = dup
         self._refresh_loads()
         self._emit()
@@ -1989,6 +2191,8 @@ class ResultsPanel(QWidget):
         rows = []
         if sec and sec.valid:
             rows += [
+                (tr("těžiště yT [mm]"), fmt(getattr(sec, "cx_raw", 0.0))),
+                (tr("těžiště zT [mm]"), fmt(getattr(sec, "cz_raw", 0.0))),
                 ("A [mm²]", fmt(sec.A)),
                 ("Iy [mm⁴]", fmt(sec.Iy)),
                 ("Iz [mm⁴]", fmt(sec.Iz)),

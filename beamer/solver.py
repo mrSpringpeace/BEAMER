@@ -70,22 +70,19 @@ class SolverResult:
     section: CrossSection | None = None
     error_message: str = ""
     resolver: object = None      # SectionResolver (proměnný průřez)
+    factors: dict | None = None  # faktory kombinace použité pro tento výsledek
 
 
 def _load_multiplier(state, ld, factors=None):
-    """Násobitel zatížení `ld` v dané kombinaci. Faktory jsou primárně klíčované
-    podle id zatížení (nový model „vyber zatížení do kombinace"); pokud klíč
-    chybí, zkusí se id zatěžovacího stavu (zpětná kompatibilita se starým
-    modelem faktor×stav)."""
+    """Násobitel zatížení: faktor jeho stavu × případný provozní součinitel."""
     if factors is None:
         comb = state.active_combination()
         factors = comb.factors if comb else {}
-    comb_f = factors.get(getattr(ld, "id", None))
+    comb_f = factors.get(getattr(ld, "load_case_id", None))
     if comb_f is None:
-        # zpětná kompatibilita: faktor zatěžovacího stavu. Chybí-li i ten,
-        # kombinace o zatížení nic neříká → 0 (nové zatížení se registruje
-        # přes model.register_load_in_combinations, viz tam)
-        comb_f = factors.get(getattr(ld, "load_case_id", None), 0.0)
+        # Pouze pro dosud nemigrovaný objekt v paměti; načítání projektu provede
+        # deterministickou migraci na faktory stavů.
+        comb_f = factors.get(getattr(ld, "id", None), 0.0)
     # ULS stav je již početní/faktorovaný. Dodatečný součinitel se aplikuje jen
     # na provozní stav; tím má LoadCase.is_ultimate jednoznačnou výpočetní roli.
     case = next((case for case in getattr(state, "load_cases", [])
@@ -418,6 +415,11 @@ def _recover_beam(elements, U, state, factors, timo):
 def solve_beam(state, factors=None) -> SolverResult:
     """`factors` (dict lc_id→faktor) přepíše aktivní kombinaci – umožní spočítat
     libovolnou kombinaci/stav bez mutace state (pro Load Case Builder)."""
+    if factors is None:
+        comb = state.active_combination()
+        factors = dict(comb.factors) if comb else {}
+    else:
+        factors = dict(factors)
     material = state.material()
     E, G = material.E, material.G
     vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
@@ -1028,4 +1030,5 @@ def solve_beam(state, factors=None) -> SolverResult:
 
     res = SolverResult(all_points, reactions, elem_results, True, rep_section)
     res.resolver = resolver
+    res.factors = factors
     return res

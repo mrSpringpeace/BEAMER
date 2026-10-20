@@ -88,7 +88,13 @@ def build_influence(section: CrossSection, n=60) -> StressInfluence:
     # kruh/trubka perimetr; jinak fallback rohy bounding boxu.
     Iz_si = section.Iz/1e12
     Iyz_si = getattr(section, "Iyz", 0.0)/1e12
-    bpts = getattr(section, "_pts_c", None)
+    bodies_c = getattr(section, "bodies_c", None)
+    if bodies_c:
+        # Vícetělesový profil: maximum může ležet na libovolném tělese. Starší
+        # cesta používala _pts_c, což je jen první vnější obrys.
+        bpts = [p for outer, holes in bodies_c for ring in (outer, *holes) for p in ring]
+    else:
+        bpts = list(getattr(section, "_pts_c", None) or [])
     if bpts:
         corners = tuple((y/1e3, zc/1e3) for y, zc in bpts)
     elif getattr(section, "_circle_r_out", 0.0):
@@ -527,7 +533,7 @@ def _plastic_capacity_factor(alpha, enabled, N, V, M, Mk, Mz=0.0, Vy=0.0,
     return 1.0 + (alpha - 1.0) * (1.0 - (R_v / PLASTIC_SHEAR_LIMIT) ** 2)
 
 
-def _thermal_at(state, x):
+def _thermal_at(state, x, factors=None):
     """Efektivní (rovnoměrné ΔT, gradient ΔT) v poloze x."""
     from .solver import _load_multiplier
     v = vg = 0.0
@@ -535,14 +541,10 @@ def _thermal_at(state, x):
         if getattr(ld, "type", None) != "thermal":
             continue
         if ld.x1 - 1e-9 <= x <= ld.x2 + 1e-9:
-            v += float(getattr(ld, "dT", 0.0) or 0.0) * _load_multiplier(state, ld)
-            vg += float(getattr(ld, "dT_grad", 0.0) or 0.0) * _load_multiplier(state, ld)
+            mult = _load_multiplier(state, ld, factors)
+            v += float(getattr(ld, "dT", 0.0) or 0.0) * mult
+            vg += float(getattr(ld, "dT_grad", 0.0) or 0.0) * mult
     return v, vg
-
-
-def _thermal_dT_at(state, x):
-    """Kompatibilní wrapper vracející pouze rovnoměrnou složku."""
-    return _thermal_at(state, x)[0]
 
 
 def reserves_along_beam(result, state, n_stations=120, progress=None):
@@ -559,6 +561,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
     vlasov = getattr(state, "torsion_theory", "saint-venant") == "vlasov"
     g_mat = state.material()
     resolver = getattr(result, "resolver", None)
+    factors = getattr(result, "factors", None)
 
     def mat_at(x):
         if resolver is not None:
@@ -616,17 +619,59 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         progress(0.5)
 
     from .sections_along import segment_at, property_by_id
+    # Pravidelná síť sama nestačí: může úplně přeskočit krátký slabý úsek nebo
+    # minout skok VVÚ. Přidáme vnitřní body úseků i všechny diskontinuity.
+    targets = [xs[0] + (xs[-1]-xs[0])*i/max(n_stations-1, 1)
+               for i in range(max(n_stations, 2))]
+    from .sections_along import normalized_segments
+    critical_x = [float(xs[0]), float(xs[-1])]
+    for sg in normalized_segments(state):
+        span = max(float(sg.x2) - float(sg.x1), 0.0)
+        critical_x.extend([float(sg.x1), float(sg.x2)])
+        if span > 1e-9:
+            targets.extend([sg.x1 + 0.01*span, sg.x1 + 0.5*span,
+                            sg.x2 - 0.01*span])
+    for obj in [*(getattr(state, "supports", None) or []),
+                *(getattr(state, "hinges", None) or []),
+                *(getattr(state, "control_points", None) or [])]:
+        critical_x.append(float(obj.x))
+    for ld in getattr(state, "loads", None) or []:
+        if getattr(ld, "type", None) in ("distributed", "thermal"):
+            critical_x.extend([float(ld.x1), float(ld.x2)])
+        else:
+            critical_x.append(float(ld.x))
+    critical_x = sorted(set(critical_x))
+    targets.extend(critical_x)
+
+    # `result.points` obsahuje na společném uzlu jen konec levého prvku.
+    # Lokální výsledky prvků uchovávají oba břehy skoku; přidej je pro všechny
+    # diskontinuity a pro volbu průřezu použij bod těsně uvnitř daného prvku.
+    samples = {}
+    for xq in targets:
+        p = pts[int(np.argmin(np.abs(xs - xq)))]
+        samples[id(p)] = (p, float(p.x))
+    tol_x = max(1e-8, abs(float(xs[-1] - xs[0])) * 1e-10)
+    for er in getattr(result, "elements", None) or []:
+        local = er.get("points", [])
+        span = float(er.get("xe", 0.0)) - float(er.get("xs", 0.0))
+        if not local or span <= 0.0:
+            continue
+        eps = min(0.25*span, max(2e-6, 1e-8*span))
+        sides = ((local[0], float(er["xs"]) + eps),
+                 (local[-1], float(er["xe"]) - eps))
+        for p, x_eval in sides:
+            if any(abs(float(p.x) - xq) <= tol_x for xq in critical_x):
+                samples[id(p)] = (p, x_eval)
+    scan_samples = sorted(samples.values(), key=lambda item: (item[0].x, item[1]))
+
     out = []
-    for i in range(n_stations):
-        xq = xs[0] + (xs[-1]-xs[0])*i/(n_stations-1)
-        idx = int(np.argmin(np.abs(xs - xq)))
-        p = pts[idx]
+    for i, (p, x_eval) in enumerate(scan_samples):
         # složený PID z různých materiálů → RF per materiál (min)
-        seg = segment_at(state, p.x)
+        seg = segment_at(state, x_eval)
         pr = property_by_id(state, getattr(seg, "property_id", None))
         if pr is not None and getattr(pr, "composite_parts", None):
             from .composite import composite_assess
-            dtemp, dtemp_grad = _thermal_at(state, p.x)
+            dtemp, dtemp_grad = _thermal_at(state, x_eval, factors)
             ca = composite_assess(state, pr, p.N, p.M, basis, Mk=p.Mk, V=p.V,
                                   Vy=getattr(p, "V_y", 0.0),
                                   Mz=getattr(p, "M_z", 0.0),
@@ -639,7 +684,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
                                          ca["RF_yield"], ca["RF_ultimate"], ca["RF"],
                                          ca["critical"]))
                 continue
-        infl, alpha, mat = data_at(p.x)
+        infl, alpha, mat = data_at(x_eval)
         if infl is None:
             continue
         Re, Rm = mat.Re, mat.Rm
@@ -667,7 +712,7 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
         else:
             RF = min(RF_y, RF_u)
             crit = "yield" if RF_y <= RF_u else "ultimate"
-        cs = section if resolver is None else resolver.at(p.x)
+        cs = section if resolver is None else resolver.at(x_eval)
         RF, crit, local = _include_local_stability(
             cs, mat, seg, state, p.N, p.M, mz_b, getattr(p, "B", 0.0), RF, crit,
         )
@@ -677,10 +722,18 @@ def reserves_along_beam(result, state, n_stations=120, progress=None):
             local.critical_wall, local.note,
         ))
         if progress and i % 10 == 0:
-            progress(0.5 + 0.5*i/n_stations)
+            progress(0.5 + 0.5*i/max(len(scan_samples), 1))
     if progress:
         progress(1.0)
-    return out
+    # Na diskontinuitě mohou existovat dva výsledky se stejným x. Pro veřejné
+    # pole ponecháme řídicí stranu, aby x zůstalo striktně rostoucí pro obálky.
+    governing = {}
+    for item in out:
+        key = round(float(item.x), 9)
+        previous = governing.get(key)
+        if previous is None or (item.RF, -item.mises_max) < (previous.RF, -previous.mises_max):
+            governing[key] = item
+    return [governing[key] for key in sorted(governing)]
 
 
 def _assess(section, mat, state, N, V, M, Mk, seg=None, Mz=0.0, dT=0.0,
@@ -830,7 +883,7 @@ def values_at_x(result, state, x):
          "Mk": Mk, "w": w, "v": v_y, "u": u_ax, "phi": phi, "phi_z": phi_z,
          "theta": theta, "warping_rate": warp_rate, "B": B,
          "T_sv": T_sv, "T_w": T_w}
-    dtemp, dtemp_grad = _thermal_at(state, x)
+    dtemp, dtemp_grad = _thermal_at(state, x, getattr(result, "factors", None))
     d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
                      dT=dtemp, dT_grad=dtemp_grad, Vy=Vy,
                      B=B, T_sv=T_sv, T_w=T_w))
@@ -887,7 +940,7 @@ def values_at_x_multi(result, state, x, tol=1e-3):
             section = None
         mat = material_for_segment(state, seg)
         d = dict(base)
-        dtemp, dtemp_grad = _thermal_at(state, x)
+        dtemp, dtemp_grad = _thermal_at(state, x, getattr(result, "factors", None))
         d.update(_assess(section, mat, state, N, V, M, Mk, seg=seg, Mz=Mz,
                          dT=dtemp, dT_grad=dtemp_grad, Vy=Vy,
                          B=B, T_sv=T_sv, T_w=T_w))
@@ -924,6 +977,7 @@ class EnvelopeResult:
     crit_x: float
     crit_combo: str
     n_combos: int                  # počet stabilně spočtených kombinací
+    failed_combos: Optional[list] = None  # kombinace, které nebylo možné vyhodnotit
     # druhá (vodorovná) rovina – biaxiál. RF obálka boční případ zachycovala
     # vždy (reserves_along_beam bere Vy/Mz), ale pásma VVÚ pro ni chyběla, takže
     # v reportu/grafu nebylo vidět, čím je řídicí kombinace nepříznivá.
@@ -948,9 +1002,11 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
     rf_gov = None
     sred_max = None
     n_ok = 0
+    failed = []
     for ci, comb in enumerate(combos):
         res = solve_beam(state, factors=comb.factors)
         if not res.is_stable or not res.points:
+            failed.append(comb.name)
             continue
         n_ok += 1
         xc = np.array([p.x for p in res.points])
@@ -1013,91 +1069,10 @@ def envelope_over_combinations(state, n_stations=120, progress=None):
         list(Mmn), list(Mmx), list(Kmn), list(Kmx), list(wmn), list(wmx),
         list(xs), list(rf_min), list(rf_gov), list(sred_max),
         float(rf_min[ci]), float(xs[ci]), rf_gov[ci], n_ok,
+        failed_combos=failed,
         Vy_min=list(Vymn), Vy_max=list(Vymx),
         Mz_min=list(Mzmn), Mz_max=list(Mzmx),
         v_min=list(vmn), v_max=list(vmx))
-
-
-@dataclass
-class ConservativeResult:
-    """Konzervativní obálková kontrola (styl ruční analýzy): maxima vnitřních sil
-    přes CELÝ nosník a všechny kombinace se dosadí na každý průřez, jako by
-    působila naráz v jednom řezu. σ_red = √(σ_max²+3·τ_max²) ze špiček (σ=N/A+M/W,
-    τ=V·Q/(Iy·b)+Mk·t/IT). RF_konz = min přes průřezy. Vždy horní odhad vůči
-    přesnému řezovému RF."""
-    N_max: float; V_max: float; M_max: float; Mk_max: float
-    rows: list                    # [{seg, label, material, sigma, tau, sred, RF}]
-    rf_min: float
-    crit_label: str
-    crit_material: str
-    n_combos: int
-
-
-def conservative_check(state, basis=None, env=None):
-    """Konzervativní obálková kontrola. `basis` (min/yield/ultimate) jinak
-    state.rf_basis. `env` = předpočítaná obálka (envelope_over_combinations) –
-    předávat, kde už existuje; jinak se spočítá (n_kombinací × solve+reserves,
-    DRAHÉ – nevolat v horké cestě). Vrací ConservativeResult, nebo None."""
-    if env is None:
-        env = envelope_over_combinations(state)
-    if env is None:
-        return None
-    def _amax(lo, hi):
-        return max(max(abs(v) for v in lo), max(abs(v) for v in hi))
-    N_max = _amax(env.N_min, env.N_max)
-    V_max = _amax(env.V_min, env.V_max)
-    M_max = _amax(env.M_min, env.M_max)
-    Mk_max = _amax(env.Mk_min, env.Mk_max)
-
-    from .sections_along import (normalized_segments, def_for_segment,
-                                 material_for_segment, property_by_id)
-    from .section import build_section
-    basis = basis or getattr(state, "rf_basis", "min")
-    inf = float("inf")
-    rows = []
-    for i, seg in enumerate(normalized_segments(state)):
-        xm = (seg.x1 + seg.x2) / 2.0
-        mat = material_for_segment(state, seg)
-        Re = getattr(mat, "Re", 0.0); Rm = getattr(mat, "Rm", 0.0)
-        pid = getattr(seg, "property_id", None)
-        p = property_by_id(state, pid)
-        # složený PID → per-materiálové posouzení (konzervativně kombinované;
-        # combine=True parametrem, bez mutace state – bezpečné vůči workeru)
-        if p is not None and getattr(p, "composite_parts", None):
-            from .composite import composite_assess
-            ca = composite_assess(state, p, N_max, M_max, basis,
-                                  Mk=Mk_max, V=V_max, combine=True)
-            if ca:
-                rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1} (kompozit)",
-                             "material": "—", "sigma": ca["sigma_max"],
-                             "tau": ca["tau_max"], "sred": ca["mises_max"],
-                             "RF": ca["RF"]})
-            continue
-        try:
-            section = build_section(def_for_segment(state, seg, xm))
-        except Exception:
-            continue
-        if section is None or not getattr(section, "valid", False):
-            continue
-        infl = build_influence(section, n=80)
-        sg, tu, mz = max_stresses_fast(infl, N_max, V_max, M_max, Mk_max, combine=True)
-        RF_y = (Re / mz) if mz > 1e-9 else inf
-        RF_u = (Rm / mz) if mz > 1e-9 else inf   # bez plast. rezervy (konzervativní)
-        if basis == "yield":
-            RF = RF_y
-        elif basis == "ultimate":
-            RF = RF_u
-        else:
-            RF = min(RF_y, RF_u)
-        tp = getattr(section, "section_type", "?")
-        rows.append({"seg": i, "label": f"{tr_('Úsek')} {i+1} · {tp}",
-                     "material": getattr(mat, "name", "?"),
-                     "sigma": sg, "tau": tu, "sred": mz, "RF": RF})
-    if not rows:
-        return None
-    crit = min(rows, key=lambda r: r["RF"])
-    return ConservativeResult(N_max, V_max, M_max, Mk_max, rows,
-                              crit["RF"], crit["label"], crit["material"], env.n_combos)
 
 
 @dataclass

@@ -255,51 +255,63 @@ def new_id(prefix: str = "id") -> str:
     return f"{prefix}_{int(time.time()*1000)}_{next(_counter)}"
 
 
-def combination_factor(comb, ld):
-    """Explicitní faktor zatížení `ld` v kombinaci `comb`, nebo None, když o něm
-    kombinace nic neříká (ani klíčem zatížení, ani klíčem zatěžovacího stavu).
-    None ≠ 0.0: „nevím" se řeší registrací, „nula" je vědomé vyřazení."""
-    f = (comb.factors or {}).get(getattr(ld, "id", None))
-    if f is not None:
-        return f
-    return (comb.factors or {}).get(getattr(ld, "load_case_id", None))
-
-
-def register_load_in_combinations(state, ld, factor: float = 1.0) -> None:
-    """Zaregistruje nově vzniklé zatížení do kombinací, které o něm zatím nic
-    neříkají, faktorem `factor`.
-
-    Bez toho je nové zatížení TICHÁ NULA: jakmile jsou faktory klíčované podle
-    id zatížení (což nastane po otevření projektu ze souboru nebo po otevření
-    Load Case Builderu – viz `migrate_combinations_to_loads`), nové zatížení
-    v mapě chybí a `solver._load_multiplier` vrátí 0. Uživatel zadá sílu a
-    „nic se nepočítá“. Kombinace, které zatížení znají (byť s faktorem 0.0 =
-    vědomé vyřazení), se nemění – explicitní volba uživatele má přednost."""
-    for comb in getattr(state, "load_combinations", None) or []:
-        if combination_factor(comb, ld) is None:
-            if comb.factors is None:
-                comb.factors = {}
-            comb.factors[ld.id] = factor
-
-
 def migrate_combinations_to_loads(state) -> None:
-    """Převede faktory kombinací ze starého modelu (klíč = id stavu) na nový
-    (klíč = id zatížení): faktor stavu se rozkopíruje na všechna jeho zatížení.
-    Idempotentní – klíče, které už odkazují na zatížení, ponechá; neznámé klíče
-    zahodí. Volá se při otevření projektu / Load Case Builderu."""
+    """Jednorázově převede legacy faktor×zatížení na faktor×stav.
+
+    Když mají dvě zatížení původně stejného stavu odlišný vektor faktorů přes
+    kombinace, rozdělí se do samostatných automatických stavů. Tím se zachová
+    přesná fyzika starého projektu bez nejednoznačného sčítání faktorů.
+    Funkce je idempotentní; čistý model faktor×stav pouze zbaví neznámých klíčů.
+    """
     loads = getattr(state, "loads", []) or []
+    cases = getattr(state, "load_cases", []) or []
+    combos = getattr(state, "load_combinations", []) or []
     load_ids = {l.id for l in loads}
-    lc_ids = {c.id for c in (getattr(state, "load_cases", []) or [])}
-    loads_by_lc: dict[str | None, list[str]] = {}
-    for l in loads:
-        loads_by_lc.setdefault(getattr(l, "load_case_id", None), []).append(l.id)
-    for comb in getattr(state, "load_combinations", []) or []:
-        new: dict[str, float] = {}
-        for key, f in (comb.factors or {}).items():
-            if key in load_ids:
-                new[key] = new.get(key, 0.0) + f
-            elif key in lc_ids:
-                for lid in loads_by_lc.get(key, []):
-                    new[lid] = new.get(lid, 0.0) + f
-            # neznámý klíč (smazané zatížení/stav) → zahodit
-        comb.factors = new
+    case_ids = {c.id for c in cases}
+    has_load_keys = any(any(k in load_ids for k in (c.factors or {})) for c in combos)
+    if not has_load_keys:
+        for comb in combos:
+            comb.factors = {k: float(v) for k, v in (comb.factors or {}).items()
+                            if k in case_ids}
+        return
+
+    by_case: dict[str, list] = {c.id: [] for c in cases}
+    for ld in loads:
+        if ld.load_case_id not in by_case:
+            auto = LoadCase(ld.load_case_id or new_id("lc"), "Importovaný stav", False)
+            cases.append(auto)
+            by_case[auto.id] = []
+            ld.load_case_id = auto.id
+        by_case[ld.load_case_id].append(ld)
+
+    new_cases = []
+    case_vectors: dict[str, tuple[float, ...]] = {}
+    used_ids = {c.id for c in cases}
+    for case in cases:
+        members = by_case.get(case.id, [])
+        groups: dict[tuple[float, ...], list] = {}
+        for ld in members:
+            vec = tuple(float((comb.factors or {}).get(
+                ld.id, (comb.factors or {}).get(case.id, 0.0))) for comb in combos)
+            groups.setdefault(vec, []).append(ld)
+        if not groups:
+            vec = tuple(float((comb.factors or {}).get(case.id, 0.0)) for comb in combos)
+            groups[vec] = []
+        for gi, (vec, group) in enumerate(groups.items(), 1):
+            if gi == 1:
+                target = case
+            else:
+                base = f"{case.id}__legacy_{gi}"
+                cid = base
+                suffix = 2
+                while cid in used_ids:
+                    cid = f"{base}_{suffix}"; suffix += 1
+                used_ids.add(cid)
+                target = LoadCase(cid, f"{case.name} · část {gi}", case.is_ultimate)
+            new_cases.append(target)
+            case_vectors[target.id] = vec
+            for ld in group:
+                ld.load_case_id = target.id
+    state.load_cases = new_cases
+    for ci, comb in enumerate(combos):
+        comb.factors = {cid: vec[ci] for cid, vec in case_vectors.items()}

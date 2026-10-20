@@ -1,9 +1,9 @@
 """Load Case Builder – nemodální okno pro správu zatěžovacích stavů (LC),
 kombinací a souhrnné tabulky výsledků (extrémy VVÚ, reakce, RF, kontrolní body).
 
-Sjednocený model A+B:
+Jednoznačný model:
   • zatížení patří do stavu (LC) – přiřazení v hlavním panelu,
-  • kombinace = Σ faktor·LC (A-tábor) nebo „stav ×1" (B-tábor, tlačítko auto),
+  • kombinace = Σ faktor·LC,
   • tabulka: 1 řádek = 1 kombinace; CSV / schránka (TSV pro Excel) / zobrazení
     vybrané kombinace v hlavním okně.
 """
@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QLabel, QLineEdit, QFileDialog,
-    QMessageBox, QApplication, QAbstractItemView,
+    QMessageBox, QApplication, QAbstractItemView, QCheckBox,
 )
 
 from ..i18n import tr
@@ -31,7 +31,8 @@ class LoadCaseBuilderDialog(QDialog):
         super().__init__(parent)
         self.state = state
         self.setWindowTitle(tr("Load Case Builder"))
-        self.resize(1000, 640)
+        from .screen import fit_resize
+        fit_resize(self, 1000, 640)
         self.setModal(False)
         root = QVBoxLayout(self)
 
@@ -67,10 +68,11 @@ class LoadCaseBuilderDialog(QDialog):
         env_wrap = _QW()
         ev = _VB(env_wrap)
         ev.setContentsMargins(0, 0, 0, 0)
-        self._cons_lbl = QLabel("")     # konzervativní obálková kontrola (text)
-        self._cons_lbl.setWordWrap(True)
-        self._cons_lbl.setStyleSheet("background:#fff3d6; padding:4px; font-size:11px;")
-        ev.addWidget(self._cons_lbl)
+        self._env_status_lbl = QLabel("")
+        self._env_status_lbl.setWordWrap(True)
+        self._env_status_lbl.setStyleSheet("background:#fff3d6; padding:4px; font-size:11px;")
+        self._env_status_lbl.setVisible(False)
+        ev.addWidget(self._env_status_lbl)
         self.env_canvas = EnvelopeCanvas()
         env_scroll = QScrollArea()
         env_scroll.setWidgetResizable(True)
@@ -97,24 +99,11 @@ class LoadCaseBuilderDialog(QDialog):
             except Exception:
                 env = None
             self.env_canvas.plot(env)
-            self._cons_lbl.setText(self._conservative_text(env))
-
-    def _conservative_text(self, env):
-        """Text konzervativní obálkové kontroly (ruční styl: maxima → σ_red);
-        `env` = už spočítaná obálka (nepočítá se znovu)."""
-        from ..analysis import conservative_check
-        try:
-            cc = conservative_check(self.state, env=env) if env is not None else None
-        except Exception:
-            cc = None
-        if cc is None:
-            return tr("Konzervativní kontrola: nedostupná (žádné kombinace).")
-        exact = " · " + tr("přesný RF_min = %.2f") % env.crit_rf
-        return (tr("◆ Konzervativní obálková kontrola (maxima naráz v řezu): ")
-                + tr("|N|=%.0f  |V|=%.0f  |M|=%.0f  |Mk|=%.0f N/N·mm  →  ")
-                % (cc.N_max, cc.V_max, cc.M_max, cc.Mk_max)
-                + tr("RF_konz = %.2f (řídí %s)") % (cc.rf_min, cc.crit_label)
-                + exact)
+            failed = list(getattr(env, "failed_combos", None) or []) if env else []
+            self._env_status_lbl.setVisible(bool(failed))
+            self._env_status_lbl.setText(
+                tr("Obálka je neúplná. Nevyhodnocené kombinace: ") + ", ".join(failed)
+                if failed else "")
 
     # ── set_state (po načtení projektu) ──
     def set_state(self, state):
@@ -122,19 +111,10 @@ class LoadCaseBuilderDialog(QDialog):
         self._reload_all()
 
     def _reload_all(self):
-        migrate_combinations_to_loads(self.state)   # starý faktor×stav → faktor×zatížení
+        migrate_combinations_to_loads(self.state)
         self._refresh_cases()
         self._refresh_combos()
         self._rebuild_table()
-
-    def _load_label(self, ld):
-        """Krátký popisek zatížení pro hlavičku sloupce kombinace."""
-        ab = {"point_force": "F", "distributed": "q", "moment": "M",
-              "torsion": "Mk", "thermal": "ΔT"}
-        base = ld.name or tr(ab.get(ld.type, "?"))
-        if ld.type in ("distributed", "thermal"):
-            return f"{base} ({ld.x1:.0f}–{ld.x2:.0f})"
-        return f"{base} @{ld.x:.0f}"
 
     # ════════════════════════════════════════════════════════════
     #  ZATĚŽOVACÍ STAVY (LC)
@@ -142,8 +122,9 @@ class LoadCaseBuilderDialog(QDialog):
     def _build_cases_box(self):
         g = QGroupBox(tr("Zatěžovací stavy"))
         v = QVBoxLayout(g)
-        self.cases_tbl = QTableWidget(0, 2)
-        self.cases_tbl.setHorizontalHeaderLabels([tr("Název stavu"), ""])
+        self.cases_tbl = QTableWidget(0, 3)
+        self.cases_tbl.setHorizontalHeaderLabels(
+            [tr("Název stavu"), tr("Již faktorované ULS"), ""])
         self.cases_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.cases_tbl.verticalHeader().setVisible(False)
         v.addWidget(self.cases_tbl)
@@ -158,9 +139,14 @@ class LoadCaseBuilderDialog(QDialog):
             nm = QLineEdit(lc.name)
             nm.textChanged.connect(lambda s, c=lc: (setattr(c, "name", s), self._on_cases_renamed()))
             self.cases_tbl.setCellWidget(r, 0, nm)
+            uls = QCheckBox()
+            uls.setChecked(bool(lc.is_ultimate))
+            uls.setToolTip(tr("Zapnuto: dodatečný součinitel projektu se na tento stav znovu nepoužije."))
+            uls.toggled.connect(lambda on, c=lc: (setattr(c, "is_ultimate", on), self.changed.emit()))
+            self.cases_tbl.setCellWidget(r, 1, uls)
             db = QPushButton("✕"); db.setMaximumWidth(30)
             db.clicked.connect(lambda _, c=lc: self._del_case(c))
-            self.cases_tbl.setCellWidget(r, 1, db)
+            self.cases_tbl.setCellWidget(r, 2, db)
 
     def _on_cases_renamed(self):
         self._refresh_combos()      # hlavičky faktorů nesou názvy stavů
@@ -175,12 +161,12 @@ class LoadCaseBuilderDialog(QDialog):
             QMessageBox.information(self, tr("Zatěžovací stavy"),
                                    tr("Musí zůstat aspoň jeden stav."))
             return
+        if any(ld.load_case_id == lc.id for ld in self.state.loads):
+            QMessageBox.information(
+                self, tr("Zatěžovací stavy"),
+                tr("Stav obsahuje zatížení. Nejprve je přesuňte do jiného stavu nebo smažte."))
+            return
         self.state.load_cases.remove(lc)
-        # zatížení z mazaného stavu přesuň do prvního
-        first = self.state.load_cases[0].id
-        for ld in self.state.loads:
-            if ld.load_case_id == lc.id:
-                ld.load_case_id = first
         for comb in self.state.load_combinations:
             comb.factors.pop(lc.id, None)
         self._refresh_cases(); self._refresh_combos(); self.changed.emit()
@@ -189,9 +175,9 @@ class LoadCaseBuilderDialog(QDialog):
     #  KOMBINACE
     # ════════════════════════════════════════════════════════════
     def _build_combos_box(self):
-        g = QGroupBox(tr("Kombinace (Σ faktor × zatížení)"))
+        g = QGroupBox(tr("Kombinace (Σ faktor × zatěžovací stav)"))
         v = QVBoxLayout(g)
-        hint = QLabel(tr("Řádek = kombinace. U každého zatížení zadej faktor "
+        hint = QLabel(tr("Řádek = kombinace. U každého zatěžovacího stavu zadej faktor "
                          "(0 = nepoužito, 1 = plně, např. 1.35 / 1.5)."))
         hint.setWordWrap(True); hint.setObjectName("hint")
         v.addWidget(hint)
@@ -206,8 +192,8 @@ class LoadCaseBuilderDialog(QDialog):
         return g
 
     def _refresh_combos(self):
-        loads = self.state.loads
-        headers = [tr("Název kombinace")] + [self._load_label(l) for l in loads] + [""]
+        cases = self.state.load_cases
+        headers = [tr("Název kombinace")] + [c.name for c in cases] + [""]
         self.combos_tbl.clear()
         self.combos_tbl.setColumnCount(len(headers))
         self.combos_tbl.setHorizontalHeaderLabels(headers)
@@ -218,15 +204,15 @@ class LoadCaseBuilderDialog(QDialog):
             nm = QLineEdit(comb.name)
             nm.textChanged.connect(lambda s, cb=comb: (setattr(cb, "name", s), self.changed.emit()))
             self.combos_tbl.setCellWidget(r, 0, nm)
-            for j, ld in enumerate(loads):
+            for j, lc in enumerate(cases):
                 sp = NoWheelDoubleSpinBox(); sp.setRange(-100, 100); sp.setDecimals(2); sp.setSingleStep(0.05)
-                sp.setValue(float(comb.factors.get(ld.id, 0.0)))
+                sp.setValue(float(comb.factors.get(lc.id, 0.0)))
                 sp.valueChanged.connect(
-                    lambda val, cb=comb, lid=ld.id: (cb.factors.__setitem__(lid, val), self.changed.emit()))
+                    lambda val, cb=comb, cid=lc.id: (cb.factors.__setitem__(cid, val), self.changed.emit()))
                 self.combos_tbl.setCellWidget(r, 1 + j, sp)
             db = QPushButton("✕"); db.setMaximumWidth(30)
             db.clicked.connect(lambda _, cb=comb: self._del_combo(cb))
-            self.combos_tbl.setCellWidget(r, len(loads) + 1, db)
+            self.combos_tbl.setCellWidget(r, len(cases) + 1, db)
 
     def _add_combo(self):
         n = len(self.state.load_combinations) + 1
@@ -235,9 +221,9 @@ class LoadCaseBuilderDialog(QDialog):
         self._refresh_combos(); self.changed.emit()
 
     def _add_all_combo(self):
-        """Vytvoří kombinaci se VŠEMI zatíženími faktorem 1 (rychlá analýza vše)."""
+        """Vytvoří kombinaci se všemi zatěžovacími stavy faktorem 1."""
         n = len(self.state.load_combinations) + 1
-        factors = {l.id: 1.0 for l in self.state.loads}
+        factors = {c.id: 1.0 for c in self.state.load_cases}
         self.state.load_combinations.append(
             LoadCombination(new_id("comb"), tr("Vše ×1") + f" ({n})", factors))
         self._refresh_combos(); self._rebuild_table(); self.changed.emit()
@@ -276,6 +262,10 @@ class LoadCaseBuilderDialog(QDialog):
         if len(num_rows) < 2:                 # obálka má smysl až od 2 kombinací
             return None
         env = {"Kombinace": "◆ OBÁLKA", "_combo_id": None, "_envelope": True}
+        failed = [d.get("Kombinace", "") for d in num_rows
+                  if d.get(tr("stav")) == tr("NESTABILNÍ")]
+        if failed:
+            env["Kombinace"] = "◆ OBÁLKA NEÚPLNÁ"
         for col in col_order:
             if col == "Kombinace":
                 continue
@@ -293,7 +283,8 @@ class LoadCaseBuilderDialog(QDialog):
             env["RF min"] = gov.get("RF min")
             if "x(RFmin) [mm]" in col_order:
                 env["x(RFmin) [mm]"] = gov.get("x(RFmin) [mm]")
-            env["Kombinace"] = "◆ OBÁLKA · řídí " + str(gov.get("Kombinace", ""))
+            prefix = "◆ OBÁLKA NEÚPLNÁ" if failed else "◆ OBÁLKA"
+            env["Kombinace"] = prefix + " · řídí " + str(gov.get("Kombinace", ""))
         return env
 
     def _rebuild_table(self):

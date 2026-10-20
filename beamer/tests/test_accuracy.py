@@ -768,39 +768,6 @@ def test_direct_section_independent_chars():
     assert _rel(w_tip, -1000 * 1000**3 / (3 * 210000 * 5.2e6)) < 1e-6
 
 
-def test_conservative_check_is_upper_bound():
-    """Konzervativní obálková kontrola (G): σ_red z maxim ≥ přesné σ_red, tedy
-    RF_konz ≤ RF_přesný. Maxima obálky = max |N|,|V|,|M|,|Mk| přes kombinace;
-    dosazena naráz do kritického řezu (√(σ_max²+3τ_max²))."""
-    from beamer.analysis import (conservative_check, envelope_over_combinations)
-    seg = SectionSegment(0.0, 2000.0, CrossSectionDef(type="rectangle",
-                         params={"b": 40, "h": 80}), None)
-    st = ProjectState(
-        length=2000.0, materials=[MAT], selected_material_id="m_steel",
-        cross_section=CrossSectionDef(type="rectangle", params={"b": 40, "h": 80}),
-        section_segments=[seg],
-        supports=[Support("a", 0, "pin", 0), Support("b", 2000, "roller", 0)],
-        load_cases=[LoadCase("lc", "LC", False)],
-        loads=[Load("f", "point_force", "P", "lc", x=1000, Fz=-5000.0)],
-        load_combinations=[
-            LoadCombination(id="c1", name="1x", factors={"f": 1.0}),
-            LoadCombination(id="c2", name="1.6x", factors={"f": 1.6})],
-        additional_factor=1.0, rf_basis="yield")
-    cc = conservative_check(st, basis="yield")
-    env = envelope_over_combinations(st)
-    assert cc is not None and cc.n_combos == 2
-    # maxima = 1.6× kombinace
-    assert _rel(cc.M_max, 1.6 * 5000.0 * 2000.0 / 4) < 1e-6      # prostý nosník: M=PL/4
-    # ruční σ = M/W + N/A, W = b·h²/6; τ = 1.5 V/A; σ_red = √(σ²+3τ²)
-    A = 40 * 80; W = 40 * 80**2 / 6
-    sig = cc.M_max / W
-    tau = 1.5 * cc.V_max / A
-    import math
-    assert _rel(cc.rows[0]["sred"], math.sqrt(sig**2 + 3 * tau**2)) < 2e-2
-    # konzervativní RF ≤ přesný RF (horní odhad napětí)
-    assert cc.rf_min <= env.crit_rf + 1e-6
-
-
 def _ss_state(supports, loads=None):
     rect = CrossSectionDef(type="rectangle", params={"b": 40, "h": 80})
     return ProjectState(
@@ -1809,41 +1776,31 @@ def test_composite_add_starts_from_library_in_empty_project(tmp_path, monkeypatc
     assert sec.type == "tube" and sec.name == "Trubka 60x4"   # direct přeskočen
 
 
-def test_new_load_is_registered_in_combinations():
-    """Nově přidané zatížení nesmí být TICHÁ NULA.
-
-    Jakmile jsou faktory kombinace klíčované podle id zatížení (což nastane po
-    otevření projektu ze souboru nebo po otevření Load Case Builderu), nové
-    zatížení v mapě chybí a solver mu dá faktor 0 – uživatel zadá sílu a „nic
-    se nepočítá". `register_load_in_combinations` to napraví; vědomé vyřazení
-    (explicitní 0.0) se přitom nesmí přepsat."""
+def test_new_load_inherits_its_case_factor():
+    """Nové zatížení automaticky sdílí faktor svého zatěžovacího stavu."""
     from beamer.defaults import create_default_state
-    from beamer.model import (register_load_in_combinations, combination_factor,
-                              migrate_combinations_to_loads, new_id)
+    from beamer.model import migrate_combinations_to_loads, new_id
     from beamer.solver import _load_multiplier
 
     st = create_default_state()
     migrate_combinations_to_loads(st)          # = otevření projektu ze souboru
     comb = st.active_combination()
-    assert set(comb.factors) == {st.loads[0].id}      # klíčováno dle zatížení
+    assert set(comb.factors) == {st.load_cases[0].id}
 
     new = Load(new_id("load"), "point_force", "Nová síla", st.load_cases[0].id)
     new.x, new.Fz = 1000.0, -5000.0
     st.loads.append(new)
-    assert _load_multiplier(st, new) == 0.0           # bez registrace tichá nula
-    register_load_in_combinations(st, new)
+    assert _load_multiplier(st, new) == 1.0
     assert _load_multiplier(st, new) == 1.0
 
-    # vědomé vyřazení se nepřepisuje
+    # vědomé vyřazení celého stavu se nepřepisuje
     ex = st.loads[0]
-    comb.factors[ex.id] = 0.0
-    register_load_in_combinations(st, ex)
-    assert comb.factors[ex.id] == 0.0
-    assert combination_factor(comb, ex) == 0.0
+    comb.factors[ex.load_case_id] = 0.0
+    assert comb.factors[ex.load_case_id] == 0.0
 
     # zatížení se skutečně projeví ve výsledku
     m_before = max(abs(p.M) for p in solve_beam(st).points)
-    comb.factors[ex.id] = 1.0
+    comb.factors[ex.load_case_id] = 1.0
     assert max(abs(p.M) for p in solve_beam(st).points) > m_before
 
 

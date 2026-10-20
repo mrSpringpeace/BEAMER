@@ -44,7 +44,8 @@ class MaterialLibraryDialog(QDialog):
         self.state = state
         self.mats: list[Material] = library.load_materials()
         self.setWindowTitle(tr("Knihovna materiálů"))
-        self.resize(760, 520)
+        from .screen import fit_resize
+        fit_resize(self, 760, 520)
 
         root = QVBoxLayout(self)
         split = QSplitter(Qt.Horizontal)

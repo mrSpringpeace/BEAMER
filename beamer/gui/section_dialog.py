@@ -34,7 +34,8 @@ class SectionEditorDialog(QDialog):
         self._DEFAULT_POLY = DEFAULT_POLYGON
         self.sdef = sdef
         self.setWindowTitle(tr("Editor průřezu"))
-        self.resize(1280, 820)
+        from .screen import fit_resize
+        fit_resize(self, 1280, 820)
         self._fem_dirty = False    # pro polygon: zda je třeba spočítat FEM
 
         root = QHBoxLayout(self)
@@ -298,6 +299,8 @@ class SectionEditorDialog(QDialog):
                     if nb > 1 else ""
         self.props.setText(
             comp_line +
+            f"{tr('Těžiště ve vstupní soustavě:')}  yT = {fmt(sec.cx_raw)} mm   "
+            f"zT = {fmt(sec.cz_raw)} mm\n"
             f"A   = {fmt(sec.A)} mm²\n"
             f"Iy  = {fmt(sec.Iy)} mm⁴      Iz = {fmt(sec.Iz)} mm⁴\n"
             f"Iyz = {fmt(sec.Iyz)} mm⁴\n"

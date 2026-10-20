@@ -172,7 +172,7 @@ def test_composite_warping_rigidity_scales_with_material_E():
             {"section_id": "web", "material_id": "mw", "dy": 0.0,
              "dz": 0.0, "angle": 0.0},
             {"section_id": "flange", "material_id": "mf", "dy": 0.0,
-             "dz": 36.0, "angle": 0.0},
+             "dz": 44.0, "angle": 0.0},
         ],
     )
     state = ProjectState(

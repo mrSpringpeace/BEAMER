@@ -12,6 +12,15 @@ from ..i18n import tr
 from .spin import NoWheelSpinBox, NoWheelComboBox
 
 
+def _startup_scale() -> float:
+    """Měřítko, se kterým aplikace běží (QT_SCALE_FACTOR při startu)."""
+    import os
+    try:
+        return float(os.environ.get("QT_SCALE_FACTOR", "1") or 1)
+    except ValueError:
+        return 1.0
+
+
 class SettingsDialog(QDialog):
     # signály: změna jazyka (vyžaduje přestavbu UI), změna formátu/zobrazení (jen překreslení)
     language_changed = Signal()
@@ -40,6 +49,25 @@ class SettingsDialog(QDialog):
         self.theme_cb.setCurrentIndex(max(0, self.theme_cb.findData(SETTINGS.theme)))
         self.theme_cb.currentIndexChanged.connect(self._on_theme)
         f.addRow(tr("Vzhled"), self.theme_cb)
+
+        # měřítko rozhraní – násobí se s měřítkem Windows (pro slabozraké
+        # zvětšit, při 200–300 % ve Windows naopak zmenšit, aby se vše vešlo)
+        self.scale_cb = NoWheelComboBox()
+        for pct in (50, 67, 75, 85, 100, 115, 125, 150, 175, 200):
+            self.scale_cb.addItem(f"{pct} %", pct / 100.0)
+        cur = float(getattr(SETTINGS, "ui_scale", 1.0) or 1.0)
+        idx = min(range(self.scale_cb.count()),
+                  key=lambda i: abs(self.scale_cb.itemData(i) - cur))
+        self.scale_cb.setCurrentIndex(idx)
+        self.scale_cb.setToolTip(tr(
+            "Zvětší nebo zmenší celé rozhraní nad rámec měřítka Windows "
+            "(Nastavení → Obrazovka → Měřítko). Projeví se po restartu aplikace."))
+        self.scale_cb.currentIndexChanged.connect(self._on_scale)
+        f.addRow(tr("Měřítko rozhraní"), self.scale_cb)
+        self.scale_note = QLabel(self._scale_note_text())
+        self.scale_note.setObjectName("hint")
+        self.scale_note.setWordWrap(True)
+        f.addRow(self.scale_note)
 
         self.fmt_cb = NoWheelComboBox()
         self.fmt_cb.addItem(tr("Fixed (pevný)"), "fixed")
@@ -113,6 +141,23 @@ class SettingsDialog(QDialog):
         apply_theme(QApplication.instance(), SETTINGS.theme)
         apply_chart_theme(SETTINGS.theme)
         self.display_changed.emit()
+
+    def _scale_note_text(self):
+        from PySide6.QtWidgets import QApplication
+        scr = QApplication.primaryScreen()
+        # devicePixelRatio už obsahuje QT_SCALE_FACTOR → podíl = měřítko Windows
+        dpr = scr.devicePixelRatio() if scr is not None else 1.0
+        win = round(dpr / _startup_scale() * 100)
+        txt = tr("Windows: %d %%, celkem: %d %%.") % (
+            win, round(win * self.scale_cb.currentData()))
+        if abs(self.scale_cb.currentData() - _startup_scale()) > 1e-6:
+            txt += " " + tr("Projeví se po restartu aplikace.")
+        return txt
+
+    def _on_scale(self, _):
+        SETTINGS.ui_scale = float(self.scale_cb.currentData())
+        SETTINGS.save()
+        self.scale_note.setText(self._scale_note_text())
 
     def _on_format(self, _):
         SETTINGS.number_format = self.fmt_cb.currentData()

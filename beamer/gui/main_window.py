@@ -15,10 +15,22 @@ from .. import project_io
 from ..i18n import tr
 from ..settings import SETTINGS
 from .widgets import InputPanel, ResultsPanel, ReportPanel
+from .flow_layout import FlowLayout
 from .plots import (BeamDiagramCanvas, SchemaCanvas, SectionCanvas, StressCanvas,
                     MarginCanvas, StressAlongCanvas, BucklingCanvas)
 from .worker import ComputeWorker
 from .spin import NoWheelComboBox
+
+
+def _labeled(text, widget):
+    """Popisek + prvek jako jeden celek (v zalamovací liště se nerozdělí)."""
+    w = QWidget()
+    h = QHBoxLayout(w)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(4)
+    h.addWidget(QLabel(text))
+    h.addWidget(widget)
+    return w
 
 
 class MainWindow(QMainWindow):
@@ -27,13 +39,18 @@ class MainWindow(QMainWindow):
         self._current_file = None     # cesta k aktuálnímu projektu (pro titulek)
         self._update_title()
         self._apply_icon()
-        self.resize(1500, 950)
+        from .screen import fit_resize
+        if fit_resize(self, 1500, 950):
+            # malá logická plocha (velké měřítko Windows) → využít celou obrazovku
+            self.setWindowState(Qt.WindowMaximized)
         self.state = create_empty_state()
         self.result = None
         self.reserves = []
         self._parts_crit = []
         self._worker = None
+        self._recompute_after_worker = False
         self._dirty = True            # výsledky je třeba přepočítat
+        self._input_revision = 0      # mění se při každé změně výpočetních vstupů
         self._modified = False        # dokument má neuložené změny (ochrana práce)
         self._lc_dialog = None        # Load Case Builder (nemodální, persistentní)
         self._sec_sig = None
@@ -62,7 +79,8 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(4, 4, 4, 4)
 
         # ── horní lišta: tlačítko Spočítat + přepínač VVÚ + progress bar ──
-        bar = QHBoxLayout()
+        # zalamovací řádek: při velkém měřítku Windows se nevejde na šířku
+        bar = FlowLayout(h_spacing=8, v_spacing=4)
         self.compute_btn = QPushButton(tr("▶  Spočítat  (F5)"))
         self.compute_btn.setStyleSheet(
             "QPushButton{background:#1565c0;color:white;font-weight:bold;"
@@ -73,7 +91,6 @@ class MainWindow(QMainWindow):
         self.dirty_lbl = QLabel("")
         self.dirty_lbl.setStyleSheet("color:#c62828; font-weight:bold;")
         bar.addWidget(self.dirty_lbl)
-        bar.addStretch(1)
         self.vvu_combined_cb = QCheckBox(tr("VVÚ v jednom grafu"))
         self.vvu_combined_cb.setChecked(SETTINGS.vvu_combined)
         self.vvu_combined_cb.toggled.connect(self._on_vvu_combined)
@@ -108,7 +125,6 @@ class MainWindow(QMainWindow):
         self.schema_axo_cb.setChecked(getattr(SETTINGS, "schema_axo", False))
         self.schema_axo_cb.toggled.connect(self._on_schema_vis)
         bar.addWidget(self.schema_axo_cb)
-        bar.addWidget(QLabel(tr("RF k:")))
         self.rf_basis_cb = NoWheelComboBox()
         self.rf_basis_cb.addItem(tr("min(Re,Rm)"), "min")
         self.rf_basis_cb.addItem("Re", "yield")
@@ -116,8 +132,7 @@ class MainWindow(QMainWindow):
         self.rf_basis_cb.setCurrentIndex(
             max(0, self.rf_basis_cb.findData(getattr(self.state, "rf_basis", "min"))))
         self.rf_basis_cb.currentIndexChanged.connect(self._on_rf_basis)
-        bar.addWidget(self.rf_basis_cb)
-        bar.addWidget(QLabel(tr("σ_red:")))
+        bar.addWidget(_labeled(tr("RF k:"), self.rf_basis_cb))
         self.sigred_cb = NoWheelComboBox()
         self.sigred_cb.addItem(tr("přesné max"), "exact")
         self.sigred_cb.addItem(tr("konzervativní (σ⊕τ)"), "combined")
@@ -128,8 +143,7 @@ class MainWindow(QMainWindow):
         self.sigred_cb.setCurrentIndex(
             max(0, self.sigred_cb.findData(getattr(self.state, "sigma_red_mode", "exact"))))
         self.sigred_cb.currentIndexChanged.connect(self._on_sigred_mode)
-        bar.addWidget(self.sigred_cb)
-        bar.addWidget(QLabel(tr("τ:")))
+        bar.addWidget(_labeled(tr("σ_red:"), self.sigred_cb))
         self.tau_cb = NoWheelComboBox()
         self.tau_cb.addItem(tr("konzervativní (|τV|+|τt|)"), "conservative")
         self.tau_cb.addItem(tr("přesné 2D pole (FEM)"), "exact")
@@ -143,7 +157,7 @@ class MainWindow(QMainWindow):
         self.tau_cb.setCurrentIndex(
             max(0, self.tau_cb.findData(getattr(self.state, "tau_mode", "conservative"))))
         self.tau_cb.currentIndexChanged.connect(self._on_tau_mode)
-        bar.addWidget(self.tau_cb)
+        bar.addWidget(_labeled(tr("τ:"), self.tau_cb))
         self.lc_btn = QPushButton(tr("⊞ Load Cases"))
         self.lc_btn.clicked.connect(self.open_loadcase_builder)
         bar.addWidget(self.lc_btn)
@@ -164,13 +178,17 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter, 1)
 
         self.input_panel = InputPanel(self.state)
-        self.input_panel.setMinimumWidth(300)   # bez horní meze → volně tažitelné
+        # bez horní meze → volně tažitelné. Explicitní (malá) minima všech tří
+        # panelů přebijí minima obsahu: při velkém měřítku Windows (malá logická
+        # plocha) by se jinak panely nevešly a překrývaly.
+        self.input_panel.setMinimumWidth(260)
         splitter.addWidget(self.input_panel)
 
         # ── STŘED: karty [VVÚ | Průřez a napjatost] ──
         # pozadí středu je ZÁMĚRNĚ vždy světlé (i v tmavém režimu) – grafy působí
         # jako inženýrský výkres a zůstávají přehledné.
         self.center_tabs = QTabWidget()
+        self.center_tabs.setMinimumWidth(220)
 
         # karta VVÚ: nahoře schéma nosníku (1/3), dole scrollovatelné diagramy (2/3)
         vvu_tab = QWidget()
@@ -252,6 +270,7 @@ class MainWindow(QMainWindow):
 
         # ── PRAVÝ panel: karty Výsledky / Posouzení / Report ──
         self.right_tabs = QTabWidget()
+        self.right_tabs.setMinimumWidth(180)
 
         from PySide6.QtWidgets import QTextEdit
         results_tab = QWidget()
@@ -481,17 +500,17 @@ class MainWindow(QMainWindow):
         self._lc_dialog.activateWindow()
 
     def _on_lc_changed(self):
-        self._modified = True
         # nové/přejmenované stavy → obnov LC selektory u zatížení
         try:
             self.input_panel._refresh_loads()
         except Exception:
             pass
+        self._on_input_changed(refresh_loadcase=False)
 
     def _on_show_combination(self, combo_id):
         self.state.selected_active_combination_id = combo_id
-        self._modified = True
         self._update_combo_label()
+        self._on_input_changed(refresh_loadcase=False)
         self.compute()
 
     def _active_combo_name(self):
@@ -578,10 +597,11 @@ class MainWindow(QMainWindow):
         self._refresh_views()
 
     # ── přepočet (worker thread) ──
-    def _on_input_changed(self):
+    def _on_input_changed(self, refresh_loadcase=True):
         """Vstup se změnil – real-time překreslí schéma a (debounced) náhled
         průřezu + charakteristiky; VVÚ a MS se počítají až tlačítkem."""
         self._dirty = True
+        self._input_revision += 1
         was_mod = self._modified
         self._modified = True
         if not was_mod:
@@ -592,9 +612,10 @@ class MainWindow(QMainWindow):
             self._plot_schema()                   # živý náhled zadání (bez reakcí)
         except Exception:
             pass
-        # Load Case Builder (pokud je otevřený): sloupce kombinací = zatížení,
-        # takže přidání/odebrání zatížení musí přerovnat jeho tabulku kombinací
-        if getattr(self, "_lc_dialog", None) is not None and self._lc_dialog.isVisible():
+        # Load Case Builder obnovujeme při změně modelu mimo samotný dialog.
+        # Faktorová editace v dialogu nesmí během signálu přestavět jeho widgety.
+        if (refresh_loadcase and getattr(self, "_lc_dialog", None) is not None
+                and self._lc_dialog.isVisible()):
             try:
                 self._lc_dialog._refresh_combos()
             except Exception:
@@ -606,11 +627,12 @@ class MainWindow(QMainWindow):
         FEM přesné hodnoty IT/Iω/střed smyku se počítají až při výpočtu
         (Spočítat) nebo v editoru průřezu tlačítkem „Spočítat (FEM)"."""
         from ..section import build_section
-        from ..sections_along import segment_at
+        from ..sections_along import segment_at, def_for_segment
         try:
             if self.state.section_segments:
-                seg = segment_at(self.state, self.state.length/2)
-                return build_section(seg.sec1, fem=False), True
+                x = self.state.length/2
+                seg = segment_at(self.state, x)
+                return build_section(def_for_segment(self.state, seg, x), fem=False), True
             return build_section(self.state.cross_section, fem=False), False
         except Exception:
             return None, False
@@ -622,7 +644,8 @@ class MainWindow(QMainWindow):
             if d is None:
                 return None
             return (d.type, dict(d.params or {}), d.polygon_points, d.polygon_holes,
-                    d.shapes, getattr(d, "id", None))
+                    d.bodies, d.shapes, getattr(d, "rotation", 0.0),
+                    getattr(d, "id", None))
 
         segs = [(s.x1, s.x2, sig_def(s.sec1), sig_def(s.sec2),
                  getattr(s, "sec1_id", None), getattr(s, "sec2_id", None),
@@ -631,7 +654,8 @@ class MainWindow(QMainWindow):
         # knihovní průřezy a PID (změna se propíše do náhledu)
         lib = [sig_def(x) for x in getattr(self.state, "sections", [])]
         props = [(getattr(p, "id", None), getattr(p, "sec1_id", None),
-                  getattr(p, "sec2_id", None), sig_def(p.sec1), sig_def(p.sec2))
+                  getattr(p, "sec2_id", None), sig_def(p.sec1), sig_def(p.sec2),
+                  getattr(p, "rotation", 0.0), getattr(p, "composite_parts", None))
                  for p in getattr(self.state, "properties", [])]
         return json.dumps([self.state.variable_section, self.state.length,
                            sig_def(self.state.cross_section), segs, lib, props],
@@ -655,12 +679,31 @@ class MainWindow(QMainWindow):
         self.compute_btn.setEnabled(False)
         self.progress.setValue(0)
         self.statusBar().showMessage(tr("Počítám…"))
+        revision = self._input_revision
         self._worker = ComputeWorker(self.state, n_stations=120)
+        worker = self._worker
         self._worker.progress.connect(lambda f: self.progress.setValue(int(f*100)))
-        self._worker.done.connect(self._on_compute_done)
+        self._worker.done.connect(
+            lambda result, reserves, rev=revision, w=worker:
+            self._on_compute_done(result, reserves, rev, w))
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
-    def _on_compute_done(self, result, reserves):
+    def _on_worker_finished(self):
+        if self._recompute_after_worker:
+            self._recompute_after_worker = False
+            QTimer.singleShot(0, self.compute)
+
+    def _on_compute_done(self, result, reserves, revision=None, worker=None):
+        # Vstupy se mohly změnit, zatímco worker počítal deepcopy snapshotu.
+        # Takový výsledek nesmí být vydáván za aktuální ani exportován.
+        if revision is not None and revision != self._input_revision:
+            self.compute_btn.setEnabled(True)
+            self.progress.setValue(0)
+            self._dirty = True
+            self.dirty_lbl.setText("● " + tr("vstupy se během výpočtu změnily – přepočítejte"))
+            self.statusBar().showMessage(tr("Výsledek nebyl převzat, protože se během výpočtu změnily vstupy."))
+            return
         self.result = result
         self.reserves = reserves
         self._dirty = False
@@ -978,6 +1021,12 @@ class MainWindow(QMainWindow):
     def _load_state(self, state):
         from ..defaults import ensure_parts
         ensure_parts(state)
+        worker_running = self._worker is not None and self._worker.isRunning()
+        self._input_revision += 1
+        self._dirty = True
+        self.result = None
+        self.reserves = []
+        self.results_panel.clear_analysis()
         self.state = state
         self.input_panel.state = self.state
         self.input_panel.reload_from_state()
@@ -994,7 +1043,11 @@ class MainWindow(QMainWindow):
         if self._lc_dialog is not None:
             self._lc_dialog.set_state(self.state)
         self._live_update_section()
-        self.compute()
+        self._refresh_views()
+        if worker_running:
+            self._recompute_after_worker = True
+        else:
+            self.compute()
         # čerstvě načtený dokument = bez neuložených změn (reload mohl emitovat
         # `changed`, proto reset až tady, na konci)
         self._modified = False
@@ -1061,7 +1114,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze uložit: ") + str(e))
             return False
 
+    def _results_are_current(self, notify=True):
+        ok = bool(not self._dirty and self.result is not None)
+        if not ok and notify:
+            QMessageBox.information(
+                self, tr("Výsledky nejsou aktuální"),
+                tr("Po změně vstupů nejprve stiskněte Spočítat. Export byl zrušen."))
+        return ok
+
     def export_report(self):
+        if not self._results_are_current():
+            return
         path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu"), self._start("protokol.txt"), "Text (*.txt)")
         if not path:
             return
@@ -1070,12 +1133,14 @@ class MainWindow(QMainWindow):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(build_report(self.state, self.result, self.reserves,
-                                     include_conservative=True))
+                                     include_envelope=True))
             self.statusBar().showMessage(tr("Protokol uložen: ") + path)
         except Exception as e:
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat: ") + str(e))
 
     def export_report_docx(self):
+        if not self._results_are_current():
+            return
         path, _ = QFileDialog.getSaveFileName(self, tr("Export protokolu (DOCX)"),
                                               self._start("protokol.docx"), "Word (*.docx)")
         if not path:
@@ -1116,6 +1181,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, tr("Chyba"), tr("Nelze exportovat protokol: ") + str(e))
 
     def export_png(self):
+        if not self._results_are_current():
+            return
         path, _ = QFileDialog.getSaveFileName(self, tr("Export VVÚ"), self._start("vvu.png"), "PNG (*.png)")
         if not path:
             return
@@ -1124,6 +1191,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(tr("Obrázek uložen: ") + path)
 
     def export_csv(self):
+        if not self._results_are_current():
+            return
         if not (self.result and self.result.is_stable and self.result.points):
             QMessageBox.information(self, tr("Export křivek (CSV)…"),
                                     tr("Nejsou k dispozici výsledky."))

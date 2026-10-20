@@ -44,8 +44,9 @@ class DrawingCanvas(QWidget):
         self._drag = None         # index taženého bodu
         self._panning = None      # (px, py) poslední pozice myši při panu
         self._user_view = False   # uživatel ručně panoval/zoomoval → neresetovat
-        self.setMinimumHeight(520)
-        self.setMinimumWidth(560)
+        # skromné minimum – při velkém měřítku Windows se dialog musí vejít
+        self.setMinimumHeight(320)
+        self.setMinimumWidth(360)
         self.setMouseTracking(True)
         self.setStyleSheet("background:#ffffff; border:1px solid #bbb;")
 

@@ -100,7 +100,8 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
     # ── 2 Úseky a průřezy ──
     doc.add_heading(tr("2  Úseky a průřezy"), 1)
     t = _tbl(doc, [tr("Úsek"), "x [mm]", tr("materiál"), tr("průřez"),
-                   "A [mm²]", "Iy [mm⁴]", "Iz [mm⁴]", "IT [mm⁴]", "Iω [mm⁶]"])
+                   "yT [mm]", "zT [mm]", "A [mm²]", "Iy [mm⁴]", "Iz [mm⁴]",
+                   "IT [mm⁴]", "Iω [mm⁶]"])
     for i, seg in enumerate(normalized_segments(state)):
         sec1, _ = eff_defs(state, seg)
         mat = material_for_segment(state, seg)
@@ -108,9 +109,10 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
             exact = (getattr(state, "tau_mode", "conservative") == "exact"
                      or getattr(state, "torsion_theory", "saint-venant") == "vlasov")
             sc = build_section(sec1, fem=exact, exact=exact)
-            avals = [fmt(sc.A), fmt(sc.Iy), fmt(sc.Iz), fmt(sc.IT), fmt(sc.Iw)]
+            avals = [fmt(sc.cx_raw), fmt(sc.cz_raw), fmt(sc.A), fmt(sc.Iy),
+                     fmt(sc.Iz), fmt(sc.IT), fmt(sc.Iw)]
         except Exception:
-            avals = ["—", "—", "—", "—", "—"]
+            avals = ["—", "—", "—", "—", "—", "—", "—"]
         _row(t, [str(i + 1), f"{fmt(seg.x1)}–{fmt(seg.x2)}",
                  getattr(mat, "name", "?"), getattr(sec1, "type", "?")] + avals)
 
@@ -162,15 +164,19 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         ))
         _img(doc, images, "margin")
 
-    # ── Vzpěr, konzervativní kontrola (sdílená obálka přes kombinace) ──
+    # ── Vzpěr a sdílená obálka přes kombinace ──
     if result and result.is_stable and result.points:
-        from .analysis import buckling_check, conservative_check, envelope_over_combinations
+        from .analysis import buckling_check, envelope_over_combinations
         env = None
         if getattr(state, "load_combinations", None):
             try:
                 env = envelope_over_combinations(state)
             except Exception:
                 env = None
+        if env is not None and getattr(env, "failed_combos", None):
+            doc.add_paragraph(
+                tr("VAROVÁNÍ: obálka je neúplná; nevyhodnocené kombinace: ")
+                + ", ".join(env.failed_combos))
         try:
             bc = buckling_check(state, result, env=env)
         except Exception:
@@ -226,22 +232,6 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
                          fmt(r["sigma_b"]), fmt(r["R_b"]), fmt(r["RF"]), fmt(r["MS"])])
             doc.add_paragraph(f"RF_min = {fmt(bcx.rf_min)} ({tr('řídí')} {bcx.crit_label}) — "
                               + tr("R_c + R_b/(1−R_c) ≤ 1; RF = 1/R_int, MS = RF−1."))
-
-        if env is not None:
-            try:
-                cc = conservative_check(state, env=env)
-            except Exception:
-                cc = None
-            if cc is not None:
-                doc.add_heading(tr("Konzervativní obálková kontrola (maxima naráz v řezu)"), 1)
-                doc.add_paragraph(f"|N|={fmt(cc.N_max)} N   |V|={fmt(cc.V_max)} N   "
-                                  f"|M|={fmt(cc.M_max)} N·mm   |Mk|={fmt(cc.Mk_max)} N·mm")
-                t = _tbl(doc, [tr("Úsek"), "σ [MPa]", "τ [MPa]", "σ_red [MPa]", "RF"])
-                for r in cc.rows:
-                    _row(t, [r["label"], fmt(r["sigma"]), fmt(r["tau"]),
-                             fmt(r["sred"]), fmt(r["RF"])])
-                doc.add_paragraph(f"RF_konzervativní = {fmt(cc.rf_min)} "
-                                  f"({tr('řídí')} {cc.crit_label})")
 
     doc.save(path)
     return path

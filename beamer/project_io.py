@@ -10,7 +10,7 @@ from .model import (
     migrate_combinations_to_loads,
 )
 
-PROJECT_FORMAT_VERSION = 1
+PROJECT_FORMAT_VERSION = 2
 
 
 def state_to_dict(state: ProjectState) -> dict:
@@ -126,7 +126,7 @@ def dict_to_state(d: dict) -> ProjectState:
         torsion_theory=d.get("torsion_theory", "saint-venant"),
         selected_active_combination_id=d.get("selected_active_combination_id", ""),
     )
-    # starý model kombinací (faktor×stav) → nový (faktor×zatížení)
+    # starý model s faktory jednotlivých zatížení → jednoznačný faktor×stav
     migrate_combinations_to_loads(st)
     return st
 

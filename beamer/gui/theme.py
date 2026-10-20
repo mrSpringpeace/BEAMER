@@ -53,8 +53,34 @@ def tokens(theme: str) -> dict:
     return _TOKENS.get(resolve(theme), LIGHT)
 
 
+def _chevron_svg(color: str) -> str:
+    """Zapíše tenkou šipku dolů (chevron) v barvě `color` jako SVG a vrátí cestu
+    pro QSS `url(...)`. Převzato z OpenAPL – nahrazuje Qt výchozí „krabicový"
+    trojúhelník u rozbalovátek. Cache per barva v temp adresáři."""
+    import hashlib
+    import tempfile
+    from pathlib import Path
+    cache = (Path(tempfile.gettempdir()) / "beamer_theme"
+             / hashlib.md5(color.encode()).hexdigest()[:8])
+    svg = cache / "down.svg"
+    try:
+        if not svg.exists():
+            cache.mkdir(parents=True, exist_ok=True)
+            svg.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" '
+                f'stroke="{color}" stroke-width="1.5" stroke-linecap="round" '
+                'stroke-linejoin="round"><path d="M3 4.5 L6 7.5 L9 4.5"/></svg>',
+                encoding="utf-8")
+    except OSError:
+        return ""
+    return str(svg).replace("\\", "/")
+
+
 def build_qss(theme: str) -> str:
     t = tokens(theme)
+    chev = _chevron_svg(t["text2"])
+    arrow = (f'QComboBox::down-arrow {{ image: url("{chev}"); width: 10px; height: 10px; }}'
+             if chev else "")
     return f"""
     /* Základ: barva textu všude; pozadí kreslí jen kontejnery, QLabel je průhledný,
        takže text vždy odpovídá panelu za ním (čitelnost v tmavém režimu). */
@@ -72,8 +98,13 @@ def build_qss(theme: str) -> str:
         padding: 2px 6px; selection-background-color: {t['accent']};
         selection-color: {t['on_accent']};
     }}
-    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+    QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus,
+    QDoubleSpinBox:focus, QComboBox:focus,
     QAbstractSpinBox:focus {{ border: 1px solid {t['accent']}; }}
+    QComboBox {{ padding-right: 18px; }}
+    QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
+        width: 18px; border: none; background: transparent; }}
+    {arrow}
     QComboBox QAbstractItemView {{
         background: {t['s2']}; color: {t['text']}; border: 1px solid {t['border']};
         selection-background-color: {t['accent_bg']}; selection-color: {t['accent_fg']};
@@ -88,6 +119,10 @@ def build_qss(theme: str) -> str:
     QPushButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; }}
     QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; border: none; font-weight: 500; }}
     QPushButton#primary:hover {{ background: {t['accent_fg']}; }}
+    QPushButton#primary:disabled {{ background: {t['border']}; color: {t['muted']}; }}
+
+    /* Oddělovače: seznam vs. tlačítka „+ Přidat" */
+    QFrame#panelSep {{ background: {t['border_strong']}; border: none; }}
 
     QTabWidget::pane {{ border: 1px solid {t['border']}; border-radius: 8px; top: -1px; }}
     QTabBar::tab {{ background: transparent; color: {t['text2']}; padding: 6px 12px;
@@ -136,12 +171,15 @@ def build_qss(theme: str) -> str:
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
     QCheckBox, QRadioButton {{ background: transparent; spacing: 6px; }}
 
-    /* Levá ikonová lišta (pro budoucí přepínání karet vstupu) */
-    QListWidget#card_rail {{ background: {t['s1']}; border: none;
-        border-right: 1px solid {t['border']}; outline: 0; }}
-    QListWidget#card_rail::item {{ border-radius: 8px; margin: 3px; }}
-    QListWidget#card_rail::item:hover {{ background: {t['s2']}; }}
-    QListWidget#card_rail::item:selected {{ background: {t['accent_bg']}; }}
+    /* Levá ikonová lišta karet: vycentrovaná tlačítka + skupinové oddělovače */
+    QFrame#card_rail {{ background: {t['s1']}; border: none;
+        border-right: 1px solid {t['border']}; }}
+    QScrollArea#card_rail_scroll {{ background: {t['s1']}; border: none; }}
+    QToolButton#railBtn {{ background: transparent; border: none; border-radius: 8px;
+        padding: 0; }}
+    QToolButton#railBtn:hover {{ background: {t['s2']}; }}
+    QToolButton#railBtn:checked {{ background: {t['accent_bg']}; }}
+    QFrame#railSep {{ background: {t['border_strong']}; border: none; }}
     """
 
 

@@ -28,7 +28,8 @@ class CompositeEditorDialog(QDialog):
             prop.composite_parts = []
         self.setWindowTitle(tr("Skladba složeného průřezu") +
                             f" – {prop.name or ('PID ' + str(prop.pid))}")
-        self.resize(940, 560)
+        from .screen import fit_resize
+        fit_resize(self, 940, 560)
 
         root = QHBoxLayout(self)
         split = QSplitter(Qt.Horizontal)
@@ -234,7 +235,12 @@ class CompositeEditorDialog(QDialog):
         try:
             cs = build_section(cdef, fem=False)
             self.canvas.plot(cs)
+            from ..composite import composite_weighted
+            weighted = composite_weighted(self.state, self.prop)
+            ecenter = (f"    yE = {fmt(weighted.y_NA)} mm    zE = {fmt(weighted.z_NA)} mm"
+                       if weighted is not None else "")
             self.info.setText(
+                f"yT = {fmt(cs.cx_raw)} mm    zT = {fmt(cs.cz_raw)} mm{ecenter}\n"
                 f"A = {fmt(cs.A)} mm²    Iy = {fmt(cs.Iy)} mm⁴    Iz = {fmt(cs.Iz)} mm⁴")
         except Exception as e:
             self.canvas.plot(None)

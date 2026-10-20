@@ -19,21 +19,64 @@ def interp_def(d1: CrossSectionDef, d2: CrossSectionDef, t: float) -> CrossSecti
     Vyžaduje stejný typ. Parametry / body polygonu se interpolují lineárně."""
     if d1.type != d2.type:
         raise ValueError("Náběh (tapered) vyžaduje stejný typ průřezu na obou koncích.")
+    rotation = (1-t)*float(getattr(d1, "rotation", 0.0) or 0.0) \
+        + t*float(getattr(d2, "rotation", 0.0) or 0.0)
+
+    def interp_ring(a, b):
+        if len(a) != len(b) or len(a) < 3:
+            raise ValueError("Tapered polygon vyžaduje shodnou topologii a počet bodů.")
+        return [{"y": (1-t)*float(pa["y"]) + t*float(pb["y"]),
+                 "z": (1-t)*float(pa["z"]) + t*float(pb["z"])}
+                for pa, pb in zip(a, b)]
+
     if d1.type == "polygon":
-        p1 = d1.polygon_points or []
-        p2 = d2.polygon_points or []
-        if len(p1) != len(p2) or not p1:
-            raise ValueError("Tapered polygon vyžaduje stejný počet bodů na obou koncích.")
-        pts = [{"y": (1-t)*a["y"] + t*b["y"], "z": (1-t)*a["z"] + t*b["z"]}
-               for a, b in zip(p1, p2)]
-        return CrossSectionDef(type="polygon", polygon_points=pts)
+        if bool(d1.bodies) != bool(d2.bodies):
+            raise ValueError("Oba konce tapered polygonu musí používat stejný formát geometrie.")
+        if d1.bodies:
+            bodies1 = d1.bodies
+            bodies2 = d2.bodies or []
+            if len(bodies1) != len(bodies2):
+                raise ValueError("Tapered polygon vyžaduje stejný počet těles.")
+            from .model import Body
+            bodies = []
+            for ba, bb in zip(bodies1, bodies2):
+                pa = ba.points if hasattr(ba, "points") else ba.get("points", [])
+                pb = bb.points if hasattr(bb, "points") else bb.get("points", [])
+                ha = ba.holes if hasattr(ba, "holes") else ba.get("holes", [])
+                hb = bb.holes if hasattr(bb, "holes") else bb.get("holes", [])
+                ma = ba.material_id if hasattr(ba, "material_id") else ba.get("material_id")
+                mb = bb.material_id if hasattr(bb, "material_id") else bb.get("material_id")
+                if len(ha) != len(hb) or ma != mb:
+                    raise ValueError("Tapered polygon vyžaduje shodné díry a materiály těles.")
+                bodies.append(Body(interp_ring(pa, pb),
+                                   [interp_ring(x, y) for x, y in zip(ha, hb)], ma))
+            return CrossSectionDef(type="polygon", bodies=bodies, rotation=rotation,
+                                   name=d1.name or d2.name)
+        p1, p2 = d1.polygon_points or [], d2.polygon_points or []
+        h1, h2 = d1.polygon_holes or [], d2.polygon_holes or []
+        if len(h1) != len(h2):
+            raise ValueError("Tapered polygon vyžaduje stejný počet děr.")
+        return CrossSectionDef(
+            type="polygon", polygon_points=interp_ring(p1, p2),
+            polygon_holes=[interp_ring(a, b) for a, b in zip(h1, h2)],
+            polygon_thickness=(
+                (1-t)*float(d1.polygon_thickness) + t*float(d2.polygon_thickness)
+                if d1.polygon_thickness is not None and d2.polygon_thickness is not None
+                else d1.polygon_thickness if d1.polygon_thickness == d2.polygon_thickness else None
+            ),
+            polygon_closed=d1.polygon_closed and d2.polygon_closed,
+            rotation=rotation, name=d1.name or d2.name,
+        )
+    if d1.type == "construction":
+        raise ValueError("Tapered konstrukční tvar není podporován; použij parametrický nebo polygonální profil.")
     params = {}
     keys = set(d1.params) | set(d2.params)
     for k in keys:
         v1 = float(d1.params.get(k, d2.params.get(k, 0)))
         v2 = float(d2.params.get(k, d1.params.get(k, 0)))
         params[k] = (1-t)*v1 + t*v2
-    return CrossSectionDef(type=d1.type, params=params)
+    return CrossSectionDef(type=d1.type, params=params, rotation=rotation,
+                           name=d1.name or d2.name)
 
 
 def normalized_segments(state) -> list:

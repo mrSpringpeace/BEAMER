@@ -2,6 +2,45 @@
 
 Version format: **X.XX**
 
+## 1.43
+
+Usability release.
+
+- Card rail redesigned: centred buttons, group separators and new icons that
+  stay sharp at any display scale; the active card is highlighted. Item lists
+  are separated from their "+ Add" buttons.
+- Section library: the name field spans the full width; section type and
+  actions sit below it.
+- The Materials card offers the user and shared material libraries directly,
+  just like segments and properties; picking an entry copies it into the
+  project.
+- Loads by mass: new "+ Mass" button; point forces accept a mass m [kg]
+  (Fz = −m·g), distributed loads accept m'1/m'2 [kg/m] or a total mass M [kg].
+  All mass fields are linked both ways with the forces; a load factor n is
+  entered as the load-case factor. Project files and the solver are unchanged.
+- Distributed loads are entered with three decimal places.
+- High Windows display scaling (150–300 %): windows fit on the screen (the main
+  window maximizes when needed), the toolbar and add-buttons wrap, panels have
+  smaller minimum widths and no longer overlap. New setting "Interface scale"
+  (50–200 % on top of the Windows scale, applied after restart).
+- Combo boxes use a thin themed chevron.
+
+## 1.42
+
+Corrective release after an audit of section geometry, strength checks and
+load cases.
+
+- Fixed centroid, second moments of area and FEM geometry of polygons with holes
+  and rotation. Geometric centroid coordinates are shown in editors, previews
+  and reports; for composites they are kept separate from the E-weighted
+  neutral axis.
+- Combinations now use a single factor per load case. Older per-load factors are
+  converted on load without changing the response.
+- The strength check covers all bodies and short segments, evaluates
+  temperature with the factors of the solved combination and explicitly flags
+  an incomplete envelope. Stale results cannot be exported and overlapping
+  composite parts are rejected.
+
 ## 1.41
 
 Final product-closeout release before maintenance mode.
