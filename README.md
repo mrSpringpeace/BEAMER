@@ -17,7 +17,7 @@ Current release: **1.44**.
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
 > requests are not accepted at this time.
 
-![BEAMER application screenshot](assets/screenshot.png)
+![BEAMER v1.44 – demo beam with self-weight: load card, internal forces and reserve factor along the beam (Czech UI)](assets/screenshot.png)
 
 > ### ⚠️ Disclaimer
 >
@@ -68,8 +68,14 @@ Current release: **1.44**.
   **prescribed settlement**. Point forces, moments, torsion, distributed loads
   (including from a pasted *x, q* curve) and **thermal** loads — uniform ΔT
   (axial) and a **through-depth gradient** (thermal curvature / bending).
-- **Load combinations & envelope** — an **envelope** of internal forces and RF
-  across all combinations, plus a **conservative** hand-analysis-style check.
+- **Loads by mass & self-weight** — point loads from a mass *m* [kg], distributed
+  loads from *m′* [kg/m] or a total mass *M*, and an automatic **beam
+  self-weight** *q(x) = −ρ·A(x)·g* derived per segment from material density and
+  section area (tapers and composite sections included). A load factor *n* is
+  applied as the load-case factor.
+- **Load combinations & envelope** — combinations with one factor per load
+  case, an **envelope** of internal forces and RF across all combinations, plus
+  a **conservative** hand-analysis-style check.
 - **Column buckling** — a per-segment Johnson–Euler check (weak axis, editable
   buckling-length factor μ) and a **system eigenvalue buckling analysis** (phase
   2): the critical load factor and mode shape from the geometric stiffness
@@ -81,7 +87,8 @@ Current release: **1.44**.
 - **Files & export** — human-readable JSON projects; polygon import from text
   coordinates and a planar IGES/IGS subset; text and **DOCX** reports; PNG
   export of diagrams.
-- **Bilingual UI** — English / Czech (switchable in Settings).
+- **Bilingual UI** — English / Czech (switchable in Settings); supports high
+  Windows display scaling (150–300 %) with an extra "Interface scale" setting.
 
 ---
 
@@ -116,7 +123,8 @@ To package BEAMER into a single standalone `.exe`, see
 ## Documentation
 
 A full user manual is available:
-[manual/BEAMER_manual_EN_v1.41.docx](manual/BEAMER_manual_EN_v1.41.docx).
+[manual/BEAMER_manual_EN_v1.44.docx](manual/BEAMER_manual_EN_v1.44.docx)
+(covers v1.44; older editions are kept in [manual/](manual/)).
 
 ## Tests
 
@@ -128,6 +136,9 @@ Euler–Bernoulli, stress sign convention):
 pip install -r requirements-dev.txt
 python -m pytest beamer/tests/ -v
 ```
+
+GUI smoke tests are skipped automatically when PySide6 is not installed (the
+`tests` CI workflow runs headless, the `quality` workflow runs the full suite).
 
 ---
 

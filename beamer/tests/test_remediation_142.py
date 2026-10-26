@@ -222,6 +222,7 @@ def test_envelope_lists_unstable_combinations():
 
 
 def test_table_envelope_keeps_incomplete_marker_with_governing_combo():
+    pytest.importorskip("PySide6")
     from beamer.gui.loadcase_dialog import LoadCaseBuilderDialog
     from beamer.i18n import tr
 
@@ -235,6 +236,7 @@ def test_table_envelope_keeps_incomplete_marker_with_governing_combo():
 
 
 def test_loading_state_invalidates_result_and_queues_recompute_for_running_worker():
+    pytest.importorskip("PySide6")
     from types import SimpleNamespace
 
     from beamer.gui.main_window import MainWindow

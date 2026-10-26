@@ -144,6 +144,7 @@ def test_iges_arc_bspline_and_transform_primitives():
 
 
 def test_section_dialog_exposes_text_and_iges_imports():
+    pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
 
     from beamer.gui.section_dialog import SectionEditorDialog
