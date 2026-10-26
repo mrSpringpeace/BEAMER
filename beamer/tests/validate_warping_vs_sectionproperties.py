@@ -5,8 +5,10 @@ Porovnava tri cesty:
   B) BEAMER FEM (prevod na polygon + analyze_section)
   C) sectionproperties (referencni)
 """
+import os
 import sys
-sys.path.insert(0, r"C:\Uziv\BEAMER\PYTHON")
+# koren repozitare (o dve urovne nad beamer/tests) – skript lze spustit odkudkoli
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 CASES = [
     ("I-profil 200x100 t10/6", "i_section",
