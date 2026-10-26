@@ -143,14 +143,15 @@ def test_free_warping_cantilever_reduces_to_saint_venant():
 
 def test_text_report_states_effective_warping_boundary_condition():
     """Protokol nesmí skrýt, zda podpora deplanaci skutečně brání."""
+    from beamer.i18n import tr
     from beamer.report import build_report
 
     state, _, _, _ = _torsion_state(vlasov=True, Iw=2.5e8)
     result = solve_beam(state)
-    assert "deplanace=bráněná" in build_report(state, result, [])
+    assert f"{tr('deplanace')}={tr('bráněná')}" in build_report(state, result, [])
     state.supports[0].restrain_warping = False
     result = solve_beam(state)
-    assert "deplanace=volná" in build_report(state, result, [])
+    assert f"{tr('deplanace')}={tr('volná')}" in build_report(state, result, [])
 
 
 def test_composite_warping_rigidity_scales_with_material_E():

@@ -1100,7 +1100,9 @@ def test_docx_report_builds():
     from docx import Document
     d = Document(path)
     heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
-    assert any("Nosník" in h for h in heads) and any("Posouzení" in h for h in heads)
+    from beamer.i18n import tr
+    assert any(tr("1  Nosník a model") in h for h in heads)
+    assert any(tr("4  Posouzení (RF = reserve factor, ≥ 1 vyhovuje)") in h for h in heads)
     assert len(d.tables) >= 3
     os.remove(path)
 
