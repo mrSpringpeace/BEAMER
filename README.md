@@ -17,7 +17,7 @@ Current release: **1.44**.
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
 > requests are not accepted at this time.
 
-![BEAMER v1.44 – demo beam with self-weight: load card, internal forces and reserve factor along the beam (Czech UI)](assets/screenshot.png)
+![BEAMER v1.44 – demo beam with self-weight: load card, internal forces and the results report](assets/screenshot.png)
 
 > ### ⚠️ Disclaimer
 >

@@ -31,6 +31,10 @@ class CollapsibleBox(QWidget):
         self.toggle.setCheckable(True)
         self.toggle.setChecked(expanded)
         self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # dlouhý titulek (hlavně v EN) nesmí roztáhnout úzký panel – ořízne se,
+        # celý je v tooltipu
+        self.toggle.setMinimumWidth(1)
+        self.toggle.setToolTip(title)
         self.toggle.setToolButtonStyle(_Qt.ToolButtonTextBesideIcon)
         self.toggle.setArrowType(_Qt.DownArrow if expanded else _Qt.RightArrow)
         self.toggle.toggled.connect(self._on_toggle)
@@ -55,6 +59,7 @@ class CollapsibleBox(QWidget):
 
     def setTitle(self, t):
         self.toggle.setText(t)
+        self.toggle.setToolTip(t)
 
 from ..model import (
     Material, Support, Hinge, ControlPoint, Load, CrossSectionDef, SectionSegment, Property, new_id,
@@ -2227,7 +2232,7 @@ class ResultsPanel(QWidget):
                  f"{fmt(assess.get('RF_yield', 0))} / {fmt(assess.get('RF_ultimate', 0))}"),
             ]
             if assess.get("RF_local_buckling") is not None:
-                wall = assess.get("critical_wall", "")
+                wall = tr(assess.get("critical_wall", ""))
                 prows.append(("RF_local buckling",
                               f"{fmt(assess['RF_local_buckling'])} ({wall})"))
             if assess.get("RF_crippling") is not None:
@@ -2317,7 +2322,7 @@ class ResultsPanel(QWidget):
             ]
             if crit.RF_local_buckling is not None:
                 arows.append(("  RF_local buckling",
-                              f"{fmt(crit.RF_local_buckling)} ({crit.critical_wall})"))
+                              f"{fmt(crit.RF_local_buckling)} ({tr(crit.critical_wall)})"))
             if crit.RF_crippling is not None:
                 arows.append(("  RF_crippling", fmt(crit.RF_crippling)))
         self._fill(self.tbl_vvu, vrows or [(tr("(stiskněte Spočítat)"), "")])
@@ -2512,7 +2517,7 @@ class ReportPanel(QWidget):
             ]
             if d.get("RF_local_buckling") is not None:
                 rows.append(("RF_local buckling",
-                             f"{fmt(d['RF_local_buckling'])} ({d.get('critical_wall', '')})"))
+                             f"{fmt(d['RF_local_buckling'])} ({tr(d.get('critical_wall', ''))})"))
             if d.get("RF_crippling") is not None:
                 rows.append(("RF_crippling", fmt(d["RF_crippling"])))
             if d.get("local_stability_note"):

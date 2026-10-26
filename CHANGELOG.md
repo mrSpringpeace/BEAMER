@@ -11,6 +11,9 @@ Version format: **X.XX**
   follows section and material changes; a load factor n is entered as the
   load-case factor. The load card shows mass and weight, the schema draws a
   hatched band, and the report lists mass and weight.
+- English UI: about 240 missing translations added (cards, plots, reports,
+  DOCX report, editors and dialogs, demo names); long panel headers no
+  longer widen the input panel.
 
 ## 1.43
 

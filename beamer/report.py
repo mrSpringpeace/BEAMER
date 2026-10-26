@@ -110,7 +110,7 @@ def build_report(state, result, margins, include_envelope=False) -> str:
                      f"RF_min={fmt(c.RF)} ({c.critical})")
             if c.RF_local_buckling is not None:
                 L.append(f"       RF_local={fmt(c.RF_local_buckling)} "
-                         f"({c.critical_wall})")
+                         f"({tr(c.critical_wall)})")
             if c.RF_crippling is not None:
                 L.append(f"       RF_crippling={fmt(c.RF_crippling)}")
         L.append("")
@@ -195,7 +195,7 @@ def build_report(state, result, margins, include_envelope=False) -> str:
         L.append(f"  RF_min ({tr('celý nosník')}) = {fmt(crit.RF)} ({crit.critical}) @ x={crit.x:.0f} mm")
         if crit.RF_local_buckling is not None:
             L.append(f"  RF_local = {fmt(crit.RF_local_buckling)} "
-                     f"(stěna: {crit.critical_wall})")
+                     f"({tr('stěna')}: {tr(crit.critical_wall)})")
         if crit.RF_crippling is not None:
             L.append(f"  RF_crippling = {fmt(crit.RF_crippling)}")
         L.append(tr("  Lokální boulení: klasická desková teorie; crippling: "
@@ -312,7 +312,7 @@ def build_report(state, result, margins, include_envelope=False) -> str:
                          f"RF={fmt(d['RF'])} ({d['critical']})")
                 if d.get("RF_local_buckling") is not None:
                     L.append(f"       RF_local={fmt(d['RF_local_buckling'])} "
-                             f"({d.get('critical_wall', '')})")
+                             f"({tr(d.get('critical_wall', ''))})")
                 if d.get("RF_crippling") is not None:
                     L.append(f"       RF_crippling={fmt(d['RF_crippling'])}")
         L.append("")

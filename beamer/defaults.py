@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy as _copy
 
+from .i18n import tr
+
 from .model import (
     Material, Support, Load, LoadCase, LoadCombination,
     CrossSectionDef, SectionSegment, ProjectState,
@@ -39,8 +41,8 @@ def create_empty_state() -> ProjectState:
         length=1000,
         supports=[],
         hinges=[],
-        load_cases=[LoadCase(LC, "LC1 – Provozní", False)],
-        load_combinations=[LoadCombination(COMB, "Kombi 1", {LC: 1.0})],
+        load_cases=[LoadCase(LC, tr("LC1 – Provozní"), False)],
+        load_combinations=[LoadCombination(COMB, tr("Kombi 1"), {LC: 1.0})],
         loads=[],
         materials=[Material(**vars(m)) for m in MATERIAL_LIBRARY],
         selected_material_id="mat_al2024",
@@ -65,10 +67,10 @@ def create_default_state() -> ProjectState:
             Support("sup_B", 2000, "roller", 0),
         ],
         hinges=[],
-        load_cases=[LoadCase(LC, "LC1 – Provozní", False)],
-        load_combinations=[LoadCombination(COMB, "Kombi 1", {LC: 1.0})],
+        load_cases=[LoadCase(LC, tr("LC1 – Provozní"), False)],
+        load_combinations=[LoadCombination(COMB, tr("Kombi 1"), {LC: 1.0})],
         loads=[
-            Load("load_q1", "distributed", "Spojité zatížení", LC,
+            Load("load_q1", "distributed", tr("Spojité zatížení"), LC,
                  x1=0, x2=2000, q1=-1.0, q2=-1.0),
         ],
         materials=[Material(**vars(m)) for m in MATERIAL_LIBRARY],

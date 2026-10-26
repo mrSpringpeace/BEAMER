@@ -155,7 +155,7 @@ def build_docx(state, result, margins, path, images=None, project_name=""):
         if crit.RF_local_buckling is not None:
             doc.add_paragraph(
                 f"RF_local = {fmt(crit.RF_local_buckling)} "
-                f"(stěna: {crit.critical_wall})")
+                f"({tr('stěna')}: {tr(crit.critical_wall)})")
         if crit.RF_crippling is not None:
             doc.add_paragraph(f"RF_crippling = {fmt(crit.RF_crippling)}")
         doc.add_paragraph(tr(
