@@ -10,7 +10,7 @@ reserve-factor assessment.
 
 Python · PySide6 · NumPy · Matplotlib · SciPy.
 
-Current release: **1.44**.
+Current release: **1.44** · **[⬇ Download BEAMER for Windows (.exe)](https://github.com/mrSpringpeace/BEAMER/releases/latest)**
 
 [![tests](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml/badge.svg)](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml)
 
@@ -92,7 +92,19 @@ Current release: **1.44**.
 
 ---
 
-## Installation
+## Download
+
+A ready-to-run Windows build is attached to every
+[release](https://github.com/mrSpringpeace/BEAMER/releases/latest): download
+`BEAMER_vX.XX.exe` and run it, no Python or installation needed. The first
+start takes a few seconds while the single-file build unpacks.
+
+> The executable is not code-signed. Windows SmartScreen may show *"Windows
+> protected your PC"*; click **More info → Run anyway**. Some antivirus tools
+> flag packed Python applications by mistake. Each release lists the SHA-256
+> checksum of the file.
+
+## Installation (from source)
 
 Requires **Python 3.11+**.
 
