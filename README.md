@@ -13,9 +13,13 @@ Python · PySide6 · NumPy · Matplotlib · SciPy.
 Current release: **1.44** · **[⬇ Download BEAMER for Windows (.exe)](https://github.com/mrSpringpeace/BEAMER/releases/latest)**
 
 [![tests](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml/badge.svg)](https://github.com/mrSpringpeace/BEAMER/actions/workflows/tests.yml)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/qHYEwrkfWm)
 
 > ⚠️ This repository is **read-only**. Issues are welcome, but external pull
 > requests are not accepted at this time.
+>
+> 💬 Questions, feedback or ideas? Join the
+> [BEAMER Discord server](https://discord.gg/qHYEwrkfWm).
 
 ![BEAMER v1.44 – demo beam with self-weight: load card, internal forces and the results report](assets/screenshot.png)
 
